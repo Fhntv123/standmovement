@@ -1632,6 +1632,12 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         const ImU32 gradTop = ImGui::GetColorU32(ImVec4(0.08f, 0.04f, 0.15f, 0.95f));
         const ImU32 gradBottom = ImGui::GetColorU32(ImVec4(0.02f, 0.01f, 0.04f, 0.98f));
         gradList->AddRectFilledMultiColor(gp, ImVec2(gp.x + gs.x, gp.y + gs.y), gradTop, gradTop, gradBottom, gradBottom);
+
+        // Decorative side borders: thin accent lines on left and right edges.
+        const float borderW = 2.0f;
+        const ImU32 borderCol = ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.35f));
+        gradList->AddRectFilled(gp, ImVec2(gp.x + borderW, gp.y + gs.y), borderCol, 0.0f);
+        gradList->AddRectFilled(ImVec2(gp.x + gs.x - borderW, gp.y), ImVec2(gp.x + gs.x, gp.y + gs.y), borderCol, 0.0f);
     }
 
     if (useCustomBackground && backgroundTexture) {
