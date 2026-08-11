@@ -1664,13 +1664,14 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     const char* tabNames[] = { "MOVEMENT", "VISUALS", "WEAPONS" };
     for (int tab = 0; tab < 3; ++tab) {
         if (tab > 0) ImGui::SameLine();
-        if (currentTab == tab) {
+        const bool selected = (currentTab == tab);
+        if (selected) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(accent.x, accent.y, accent.z, 0.24f));
             ImGui::PushStyleColor(ImGuiCol_Text, accent);
         }
         if (ImGui::Button(tabNames[tab], ImVec2(tabWidth, 36.0f)))
             currentTab = tab;
-        if (currentTab == tab)
+        if (selected)
             ImGui::PopStyleColor(2);
     }
 
