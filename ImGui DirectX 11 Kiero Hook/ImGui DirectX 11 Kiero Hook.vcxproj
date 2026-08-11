@@ -1,5 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
-<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
       <Configuration>Debug</Configuration>
@@ -161,7 +160,7 @@
     <ClCompile Include="kiero\minhook\src\hook.c" />
     <ClCompile Include="kiero\minhook\src\trampoline.c" />
     <ClCompile Include="main.cpp" />
-  </ItemGroup>
+  <ClCompile Include="velocity_limiter.cpp" /></ItemGroup>
   <ItemGroup>
     <None Include="detours.X64\.gitkeep" />
     <None Include="detours.X86\.gitkeep" />
@@ -193,7 +192,7 @@
     <ClInclude Include="kiero\minhook\src\trampoline.h" />
     <ClInclude Include="src\detours.h" />
     <ClInclude Include="src\detver.h" />
-  </ItemGroup>
+  <ClInclude Include="velocity_limiter.h" /></ItemGroup>
   <ItemGroup>
     <Library Include="detours.X64\detours.lib" />
     <Library Include="detours.X64\syelog.lib" />
