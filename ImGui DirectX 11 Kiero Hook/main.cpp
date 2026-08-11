@@ -45,6 +45,8 @@ bool keyValidated = false;
 
 bool unloadRequested = false;
 
+bool menuOpen = true;
+
 
 
 struct Vector3 {
@@ -383,9 +385,9 @@ int currentTab = 0;
 
 bool showConfigMenu = false;
 
-float menuColor[3] = { 0.1f, 0.1f, 0.15f }; // RGB для цвета меню
+float menuColor[3] = { 0.045f, 0.035f, 0.075f }; // Fatality-inspired dark violet
 
-float accentColor[3] = { 0.4f, 0.6f, 1.0f }; // RGB для акцентного цвета
+float accentColor[3] = { 0.52f, 0.30f, 0.92f }; // Purple accent
 
 bool useCustomBackground = false;
 
@@ -1325,9 +1327,17 @@ void InitImGui()
 
 LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
-    if (keyValidated && ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam)) return true;
+    if (uMsg == WM_KEYUP && wParam == VK_INSERT) {
+        menuOpen = !menuOpen;
+        if (!menuOpen) {
+            showConfigMenu = false;
+            waitingForBind = nullptr;
+        }
+        return true;
+    }
 
-    if (ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam)) return true;
+    if (keyValidated && menuOpen && ImGui::GetCurrentContext() &&
+        ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam)) return true;
 
 
 
@@ -1485,6 +1495,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
 
 
+    // Menu windows are rendered only while Insert toggle is open.
+    if (menuOpen) {
+
     // Config window
 
     if (showConfigMenu) {
@@ -1575,9 +1588,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     style.FramePadding = ImVec2(10.0f, 7.0f);
     style.ItemSpacing = ImVec2(10.0f, 9.0f);
     style.ItemInnerSpacing = ImVec2(8.0f, 6.0f);
-    style.WindowRounding = 12.0f;
-    style.ChildRounding = 9.0f;
-    style.FrameRounding = 6.0f;
+    style.WindowRounding = 6.0f;
+    style.ChildRounding = 4.0f;
+    style.FrameRounding = 3.0f;
     style.PopupRounding = 8.0f;
     style.ScrollbarRounding = 9.0f;
     style.GrabRounding = 6.0f;
@@ -1588,10 +1601,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     const ImVec4 accent(accentColor[0], accentColor[1], accentColor[2], 1.0f);
     style.Colors[ImGuiCol_Text] = ImVec4(0.92f, 0.94f, 0.97f, 1.00f);
     style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.46f, 0.50f, 0.58f, 1.00f);
-    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.035f, 0.043f, 0.060f, 0.98f);
-    style.Colors[ImGuiCol_ChildBg] = ImVec4(0.055f, 0.065f, 0.088f, 0.96f);
+    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.030f, 0.024f, 0.050f, 0.985f);
+    style.Colors[ImGuiCol_ChildBg] = ImVec4(0.050f, 0.040f, 0.078f, 0.97f);
     style.Colors[ImGuiCol_PopupBg] = ImVec4(0.045f, 0.054f, 0.074f, 0.99f);
-    style.Colors[ImGuiCol_Border] = ImVec4(0.15f, 0.18f, 0.24f, 0.85f);
+    style.Colors[ImGuiCol_Border] = ImVec4(0.24f, 0.15f, 0.38f, 0.90f);
     style.Colors[ImGuiCol_FrameBg] = ImVec4(0.085f, 0.10f, 0.135f, 1.00f);
     style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(accent.x, accent.y, accent.z, 0.16f);
     style.Colors[ImGuiCol_FrameBgActive] = ImVec4(accent.x, accent.y, accent.z, 0.24f);
@@ -1859,6 +1872,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     ImGui::End();
 
+    } // menuOpen
 
 
 
