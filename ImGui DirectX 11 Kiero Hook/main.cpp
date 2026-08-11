@@ -1595,11 +1595,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     style.ItemSpacing = ImVec2(8.0f, 10.0f);
     style.WindowPadding = ImVec2(0.0f, 0.0f);
 
-    const ImVec4 bgDark(0.067f, 0.059f, 0.141f, 1.0f);
-    const ImVec4 bgPanel(0.098f, 0.086f, 0.208f, 1.0f);
-    const ImVec4 borderCol(1.0f, 1.0f, 1.0f, 0.08f);
+    const ImVec4 bgDark(0.04f, 0.02f, 0.08f, 1.0f);
+    const ImVec4 bgPanel(0.06f, 0.03f, 0.12f, 1.0f);
+    const ImVec4 borderCol(1.0f, 1.0f, 1.0f, 0.12f);
     const ImVec4 accent(accentColor[0], accentColor[1], accentColor[2], 1.0f);
-    const ImVec4 textDim(1.0f, 1.0f, 1.0f, 0.5f);
+    const ImVec4 textDim(1.0f, 1.0f, 1.0f, 0.45f);
 
     style.Colors[ImGuiCol_Text] = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
     style.Colors[ImGuiCol_TextDisabled] = textDim;
@@ -1625,12 +1625,12 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     ImGui::Begin("ze0nware", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
     {
-        // Diagonal gradient behind the whole window: dark violet -> deep charcoal.
+        // Strong mica-like gradient: dark purple -> near-black with high contrast.
         ImDrawList* gradList = ImGui::GetWindowDrawList();
         const ImVec2 gp = ImGui::GetWindowPos();
         const ImVec2 gs = ImGui::GetWindowSize();
-        const ImU32 gradTop = ImGui::GetColorU32(ImVec4(0.11f, 0.07f, 0.19f, 1.0f));
-        const ImU32 gradBottom = ImGui::GetColorU32(ImVec4(0.045f, 0.04f, 0.09f, 1.0f));
+        const ImU32 gradTop = ImGui::GetColorU32(ImVec4(0.08f, 0.04f, 0.15f, 0.95f));
+        const ImU32 gradBottom = ImGui::GetColorU32(ImVec4(0.02f, 0.01f, 0.04f, 0.98f));
         gradList->AddRectFilledMultiColor(gp, ImVec2(gp.x + gs.x, gp.y + gs.y), gradTop, gradTop, gradBottom, gradBottom);
     }
 
@@ -1664,7 +1664,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImDrawList* sideGrad = ImGui::GetWindowDrawList();
         const ImVec2 sp = ImGui::GetWindowPos();
         const ImVec2 ss = ImGui::GetWindowSize();
-        const ImU32 sideTop = ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.10f));
+        const ImU32 sideTop = ImGui::GetColorU32(ImVec4(accent.x * 0.5f, accent.y * 0.5f, accent.z * 0.5f, 0.18f));
         const ImU32 sideBottom = ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         sideGrad->AddRectFilledMultiColor(sp, ImVec2(sp.x + ss.x, sp.y + ss.y), sideTop, sideTop, sideBottom, sideBottom);
     }
@@ -1709,9 +1709,15 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         FeatureLine("jb.c1", "##jb", &jbActive);
         FeatureLine("airj.c1", "##aj", &airJump);
         if (jbActive) ImGui::SliderFloat("speed", &surfSpeed, 0.5f, 3.0f, "%.2f");
+        ImGui::Dummy(ImVec2(0.0f, 12.0f));
+        {
+            ImDrawList* divDl = ImGui::GetWindowDrawList();
+            const ImVec2 divPos = ImGui::GetCursorScreenPos();
+            divDl->AddLine(ImVec2(divPos.x, divPos.y), ImVec2(divPos.x + ImGui::GetContentRegionAvail().x, divPos.y), ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.25f)), 1.0f);
+        }
         ImGui::Dummy(ImVec2(0.0f, 8.0f));
         ImGui::TextColored(accent, "KEYBINDS");
-        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
         ImGui::Dummy(ImVec2(0.0f, 4.0f));
         ImGui::Text("pixx.c1"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 70.0f);
         if (ImGui::Button(waitingForBind == &psBind.key ? "[...]##psb" : (psBind.key > 0 ? GetKeyName(psBind.key).c_str() : "none##psb"), ImVec2(60.0f, 0.0f))) waitingForBind = &psBind.key;
@@ -1734,9 +1740,14 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderInt("esp count", &espCount, 1, 20);
             ImGui::SliderFloat("esp range", &espMaxDistance, 10.0f, 200.0f, "%.0f");
         }
+        ImGui::Dummy(ImVec2(0.0f, 12.0f));
+        {
+            ImDrawList* divDl = ImGui::GetWindowDrawList();
+            const ImVec2 divPos = ImGui::GetCursorScreenPos();
+            divDl->AddLine(ImVec2(divPos.x, divPos.y), ImVec2(divPos.x + ImGui::GetContentRegionAvail().x, divPos.y), ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.25f)), 1.0f);
+        }
         ImGui::Dummy(ImVec2(0.0f, 8.0f));
         ImGui::TextColored(accent, "KEYBINDS");
-        ImGui::Separator();
         ImGui::Dummy(ImVec2(0.0f, 4.0f));
         ImGui::Text("velo.c1"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 70.0f);
         if (ImGui::Button(waitingForBind == &velocityBind.key ? "[...]##velb" : (velocityBind.key > 0 ? GetKeyName(velocityBind.key).c_str() : "none##velb"), ImVec2(60.0f, 0.0f))) waitingForBind = &velocityBind.key;
@@ -1749,9 +1760,14 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Separator();
         ImGui::Dummy(ImVec2(0.0f, 4.0f));
         FeatureLine("ammo.c1", "##ammo", &infinityAmmo);
+        ImGui::Dummy(ImVec2(0.0f, 12.0f));
+        {
+            ImDrawList* divDl = ImGui::GetWindowDrawList();
+            const ImVec2 divPos = ImGui::GetCursorScreenPos();
+            divDl->AddLine(ImVec2(divPos.x, divPos.y), ImVec2(divPos.x + ImGui::GetContentRegionAvail().x, divPos.y), ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.25f)), 1.0f);
+        }
         ImGui::Dummy(ImVec2(0.0f, 8.0f));
         ImGui::TextColored(accent, "KEYBINDS");
-        ImGui::Separator();
         ImGui::Dummy(ImVec2(0.0f, 4.0f));
         ImGui::Text("ammo.c1"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 70.0f);
         if (ImGui::Button(waitingForBind == &ammoBind.key ? "[...]##amb" : (ammoBind.key > 0 ? GetKeyName(ammoBind.key).c_str() : "none##amb"), ImVec2(60.0f, 0.0f))) waitingForBind = &ammoBind.key;
