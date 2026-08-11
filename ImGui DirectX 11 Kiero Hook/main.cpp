@@ -41,7 +41,7 @@ ID3D11RenderTargetView* mainRenderTargetView;
 
 bool init = false;
 
-bool keyValidated = false;
+bool keyValidated = true;
 
 bool unloadRequested = false;
 
@@ -1449,35 +1449,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
 
 
-    if (!keyValidated) {
 
-        ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, ImGui::GetIO().DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-
-        ImGui::Begin("Enter Key", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize);
-
-        ImGui::Text("t.me/ze0ntap");
-
-        static char key[64] = "";
-
-        ImGui::InputText("##key", key, 64);
-
-        if (ImGui::Button("Submit") || (ImGui::IsKeyPressed(ImGuiKey_Enter) && strlen(key) > 0)) {
-
-            if (strcmp(key, "ze0ntap") == 0) keyValidated = true;
-
-        }
-
-        ImGui::End();
-
-        ImGui::Render();
-
-        pContext->OMSetRenderTargets(1, &mainRenderTargetView, NULL);
-
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-
-        return oPresent(pSwapChain, SyncInterval, Flags);
-
-    }
 
 
 
