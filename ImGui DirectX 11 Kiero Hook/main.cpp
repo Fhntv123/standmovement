@@ -1410,33 +1410,44 @@ LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 
 
 
-static bool FatalCheckbox(const char* label, bool* value) {
-    ImGuiStyle& style = ImGui::GetStyle();
-    const float squareSize = ImGui::GetFrameHeight();
+static bool GlowCheckbox(const char* label, bool* value) {
+    const float boxSize = 15.0f;
+    const float rowHeight = ImGui::GetTextLineHeight();
     const float avail = ImGui::GetContentRegionAvail().x;
     const ImVec2 rowPos = ImGui::GetCursorScreenPos();
-    const ImVec2 boxPos(rowPos.x + avail - squareSize, rowPos.y);
+    const ImVec2 boxPos(rowPos.x + avail - boxSize, rowPos.y + (rowHeight - boxSize) * 0.5f);
 
-    ImGui::InvisibleButton(label, ImVec2(avail, squareSize));
+    ImGui::InvisibleButton(label, ImVec2(avail, rowHeight));
     const bool hovered = ImGui::IsItemHovered();
     const bool clicked = ImGui::IsItemClicked();
     if (clicked) *value = !*value;
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
-    const ImU32 boxColor = ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
-    drawList->AddRectFilled(boxPos, ImVec2(boxPos.x + squareSize, boxPos.y + squareSize), boxColor, style.FrameRounding);
+    const ImVec4 accentCol = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
 
     if (*value) {
-        const ImU32 checkColor = ImGui::GetColorU32(ImGuiCol_CheckMark);
-        const float pad = squareSize * 0.22f;
-        const ImVec2 a(boxPos.x + pad, boxPos.y + squareSize * 0.55f);
-        const ImVec2 b(boxPos.x + squareSize * 0.42f, boxPos.y + squareSize - pad);
-        const ImVec2 c(boxPos.x + squareSize - pad, boxPos.y + pad);
-        drawList->AddLine(a, b, checkColor, 2.0f);
-        drawList->AddLine(b, c, checkColor, 2.0f);
+        // Soft layered glow behind the checked box (cheap blur via fading, expanding rounded rects).
+        for (int i = 4; i >= 1; --i) {
+            const float expand = (float)i * 2.4f;
+            const float alpha = 0.09f * (5 - i);
+            const ImU32 glowColor = ImGui::GetColorU32(ImVec4(accentCol.x, accentCol.y, accentCol.z, alpha));
+            drawList->AddRectFilled(ImVec2(boxPos.x - expand, boxPos.y - expand), ImVec2(boxPos.x + boxSize + expand, boxPos.y + boxSize + expand), glowColor, 4.0f + expand);
+        }
+        drawList->AddRectFilled(boxPos, ImVec2(boxPos.x + boxSize, boxPos.y + boxSize), ImGui::GetColorU32(accentCol), 3.0f);
+        const ImU32 markColor = ImGui::GetColorU32(ImVec4(0.05f, 0.05f, 0.08f, 1.0f));
+        const float pad = boxSize * 0.24f;
+        const ImVec2 a(boxPos.x + pad, boxPos.y + boxSize * 0.55f);
+        const ImVec2 b(boxPos.x + boxSize * 0.42f, boxPos.y + boxSize - pad);
+        const ImVec2 c(boxPos.x + boxSize - pad, boxPos.y + pad);
+        drawList->AddLine(a, b, markColor, 1.6f);
+        drawList->AddLine(b, c, markColor, 1.6f);
+    } else {
+        const ImU32 boxColor = ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
+        drawList->AddRectFilled(boxPos, ImVec2(boxPos.x + boxSize, boxPos.y + boxSize), boxColor, 3.0f);
+        drawList->AddRect(boxPos, ImVec2(boxPos.x + boxSize, boxPos.y + boxSize), ImGui::GetColorU32(ImGuiCol_Border), 3.0f, 0, 1.0f);
     }
 
-    drawList->AddText(ImVec2(rowPos.x, rowPos.y + (squareSize - ImGui::GetFontSize()) * 0.5f), ImGui::GetColorU32(ImGuiCol_Text), label);
+    drawList->AddText(ImVec2(rowPos.x, rowPos.y + (rowHeight - ImGui::GetFontSize()) * 0.5f), ImGui::GetColorU32(ImGuiCol_Text), label);
     return clicked;
 }
 
@@ -1774,14 +1785,14 @@ const float row_width = winSize.x / 3.0f - 13.0f;
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.098f, 0.086f, 0.208f, 1.0f));
 
     auto FeatureBind = [&](const char* label, bool* value, BindConfig& bind, const char* id) {
-        FatalCheckbox((std::string(label) + "##" + id).c_str(), value);
+        GlowCheckbox((std::string(label) + "##" + id).c_str(), value);
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 70.0f);
         std::string buttonLabel = waitingForBind == &bind.key ? "[...]##" : (bind.key > 0 ? GetKeyName(bind.key) + "##" : "none##");
         buttonLabel += id;
         if (ImGui::Button(buttonLabel.c_str(), ImVec2(66.0f, 0.0f))) waitingForBind = &bind.key;
-        ImGui::Text("toggle");
+        ImGui::TextDisabled("toggle");
         ImGui::SameLine();
-        FatalCheckbox((std::string("##toggle_") + id).c_str(), &bind.toggleMode);
+        GlowCheckbox((std::string("##toggle_") + id).c_str(), &bind.toggleMode);
     };
 
     if (currentTab == 0) {
@@ -1789,23 +1800,23 @@ const float row_width = winSize.x / 3.0f - 13.0f;
 
         ImGui::BeginChild("move_row_1", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("GENERAL");
-        FeatureBind("Pixel surf", &pixelSurf, psBind, "ps");
-        FeatureBind("Jump bug", &jbActive, jbBind, "jb");
+        FeatureBind("pixx.c1", &pixelSurf, psBind, "ps");
+        FeatureBind("jb.c1", &jbActive, jbBind, "jb");
         if (jbActive) ImGui::SliderFloat("Surf speed", &surfSpeed, 0.5f, 3.0f, "%.2f");
         ImGui::EndChild();
 
         ImGui::SameLine(row_width + 10.0f);
         ImGui::BeginChild("move_row_2", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("AIR");
-        FeatureBind("Air jump", &airJump, airJumpBind, "aj");
+        FeatureBind("airj.c1", &airJump, airJumpBind, "aj");
         ImGui::EndChild();
 
         ImGui::SameLine((row_width + 10.0f) * 2.0f);
         ImGui::BeginChild("move_row_3", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("STATUS");
-        ImGui::Text("Pixel surf"); ImGui::SameLine(); ImGui::TextColored(pixelSurf ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), pixelSurf ? "active" : "off");
-        ImGui::Text("Jump bug"); ImGui::SameLine(); ImGui::TextColored(jbActive ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), jbActive ? "active" : "off");
-        ImGui::Text("Air jump"); ImGui::SameLine(); ImGui::TextColored(airJump ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), airJump ? "active" : "off");
+        ImGui::Text("pixx.c1"); ImGui::SameLine(); ImGui::TextColored(pixelSurf ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), pixelSurf ? "active" : "off");
+        ImGui::Text("jb.c1"); ImGui::SameLine(); ImGui::TextColored(jbActive ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), jbActive ? "active" : "off");
+        ImGui::Text("airj.c1"); ImGui::SameLine(); ImGui::TextColored(airJump ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), airJump ? "active" : "off");
         ImGui::EndChild();
 
         ImGui::PopStyleVar();
@@ -1814,8 +1825,8 @@ const float row_width = winSize.x / 3.0f - 13.0f;
 
         ImGui::BeginChild("visual_row_1", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("INDICATORS");
-        FeatureBind("Velocity", &showVelocity, velocityBind, "vel");
-        FeatureBind("Movement trail", &showTrail, trailBind, "trail");
+        FeatureBind("velo.c1", &showVelocity, velocityBind, "vel");
+        FeatureBind("trail.c1", &showTrail, trailBind, "trail");
         if (showTrail) {
             ImGui::SliderInt("Trail length", &maxTrailPoints, 100, 1000);
             ImGui::SliderFloat("Trail distance", &trailMinDistance, 1.0f, 20.0f, "%.1f");
@@ -1826,7 +1837,7 @@ const float row_width = winSize.x / 3.0f - 13.0f;
         ImGui::SameLine(row_width + 10.0f);
         ImGui::BeginChild("visual_row_2", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("ESP");
-        FeatureBind("Box ESP", &boxEsp, espBind, "esp");
+        FeatureBind("esp.c1", &boxEsp, espBind, "esp");
         if (boxEsp) {
             ImGui::SliderInt("Count", &espCount, 1, 20);
             ImGui::SliderFloat("Distance", &espMaxDistance, 10.0f, 200.0f, "%.0f");
@@ -1836,9 +1847,9 @@ const float row_width = winSize.x / 3.0f - 13.0f;
         ImGui::SameLine((row_width + 10.0f) * 2.0f);
         ImGui::BeginChild("visual_row_3", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("STATUS");
-        ImGui::Text("Velocity"); ImGui::SameLine(); ImGui::TextColored(showVelocity ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), showVelocity ? "on" : "off");
+        ImGui::Text("velo.c1"); ImGui::SameLine(); ImGui::TextColored(showVelocity ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), showVelocity ? "on" : "off");
         ImGui::Text("Trail"); ImGui::SameLine(); ImGui::TextColored(showTrail ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), showTrail ? "on" : "off");
-        ImGui::Text("Box ESP"); ImGui::SameLine(); ImGui::TextColored(boxEsp ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), boxEsp ? "on" : "off");
+        ImGui::Text("esp.c1"); ImGui::SameLine(); ImGui::TextColored(boxEsp ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), boxEsp ? "on" : "off");
         ImGui::EndChild();
 
         ImGui::PopStyleVar();
@@ -1847,13 +1858,13 @@ const float row_width = winSize.x / 3.0f - 13.0f;
 
         ImGui::BeginChild("weapon_row_1", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("GENERAL");
-        FeatureBind("Infinite ammo", &infinityAmmo, ammoBind, "ammo");
+        FeatureBind("ammo.c1", &infinityAmmo, ammoBind, "ammo");
         ImGui::EndChild();
 
         ImGui::SameLine(row_width + 10.0f);
         ImGui::BeginChild("weapon_row_2", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("STATUS");
-        ImGui::Text("Infinite ammo"); ImGui::SameLine(); ImGui::TextColored(infinityAmmo ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), infinityAmmo ? "on" : "off");
+        ImGui::Text("ammo.c1"); ImGui::SameLine(); ImGui::TextColored(infinityAmmo ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), infinityAmmo ? "on" : "off");
         ImGui::EndChild();
 
         ImGui::SameLine((row_width + 10.0f) * 2.0f);
