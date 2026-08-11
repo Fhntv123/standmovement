@@ -1,0 +1,2 @@
+ImGui[[:space:]]DirectX[[:space:]]11[[:space:]]Kiero[[:space:]]Hook/dump/*.json filter=lfs diff=lfs merge=lfs -text
+ImGui[[:space:]]DirectX[[:space:]]11[[:space:]]Kiero[[:space:]]Hook/dump/*.h filter=lfs diff=lfs merge=lfs -text

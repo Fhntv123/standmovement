@@ -1,0 +1,8 @@
+models:
+  - title: "Lindy AI"
+    provider: "custom"
+    model: "lindy-agent"
+    apiBase: "https://lindy.ai"
+    requestOptions:
+      headers:
+        Authorization: "Bearer e6ebb702bb0ff5c8be3716b0903e549445606383cabb2c290956ceb0df218479"
