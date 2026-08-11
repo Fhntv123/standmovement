@@ -1413,55 +1413,75 @@ LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 
 static bool DrawSmallCheckbox(const char* strId, bool value) {
     static std::unordered_map<ImGuiID, float> animState;
-    const float box = 16.0f;
+    const float switchW = 34.0f;
+    const float switchH = 18.0f;
     const ImVec2 p = ImGui::GetCursorScreenPos();
     const ImGuiID id = ImGui::GetID(strId);
-    ImGui::InvisibleButton(strId, ImVec2(box, box));
+    ImGui::InvisibleButton(strId, ImVec2(switchW, switchH));
     const bool hovered = ImGui::IsItemHovered();
     const bool clicked = ImGui::IsItemClicked();
 
-    // Smooth transition toward checked/unchecked state.
     float& anim = animState[id];
     const float target = value ? 1.0f : 0.0f;
-    const float speed = ImGui::GetIO().DeltaTime * 6.0f;
+    const float speed = ImGui::GetIO().DeltaTime * 8.0f;
     anim += (target - anim) * (speed > 1.0f ? 1.0f : speed);
     if (fabsf(anim - target) < 0.01f) anim = target;
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec4 accentCol = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
-    const ImU32 accentU32 = ImGui::GetColorU32(accentCol);
+    const ImVec4 offCol = ImVec4(1.0f, 1.0f, 1.0f, hovered ? 0.16f : 0.10f);
+    const ImVec4 trackCol = ImVec4(
+        offCol.x + (accentCol.x - offCol.x) * anim,
+        offCol.y + (accentCol.y - offCol.y) * anim,
+        offCol.z + (accentCol.z - offCol.z) * anim,
+        offCol.w + (accentCol.w - offCol.w) * anim);
 
-    if (anim > 0.01f) {
+    // Glow when on.
+    if (anim > 0.02f) {
         for (int i = 3; i >= 1; --i) {
-            const float expand = (float)i * 2.2f;
-            const float alpha = 0.12f * (4 - i) * anim;
-            dl->AddRectFilled(ImVec2(p.x - expand, p.y - expand), ImVec2(p.x + box + expand, p.y + box + expand),
-                ImGui::GetColorU32(ImVec4(accentCol.x, accentCol.y, accentCol.z, alpha)), 4.0f + expand);
-        }
-        const ImVec4 fillCol = ImVec4(accentCol.x, accentCol.y, accentCol.z, anim);
-        dl->AddRectFilled(p, ImVec2(p.x + box, p.y + box), ImGui::GetColorU32(fillCol), 4.0f);
-        if (anim > 0.4f) {
-            const ImU32 markColor = ImGui::GetColorU32(ImVec4(0.06f, 0.06f, 0.09f, anim));
-            const float pad = box * 0.26f;
-            dl->AddLine(ImVec2(p.x + pad, p.y + box * 0.55f), ImVec2(p.x + box * 0.42f, p.y + box - pad), markColor, 1.8f);
-            dl->AddLine(ImVec2(p.x + box * 0.42f, p.y + box - pad), ImVec2(p.x + box - pad, p.y + pad), markColor, 1.8f);
+            const float expand = (float)i * 1.8f;
+            const float alpha = 0.10f * (4 - i) * anim;
+            dl->AddRectFilled(ImVec2(p.x - expand, p.y - expand), ImVec2(p.x + switchW + expand, p.y + switchH + expand),
+                ImGui::GetColorU32(ImVec4(accentCol.x, accentCol.y, accentCol.z, alpha)), (switchH * 0.5f) + expand);
         }
     }
-    if (anim < 0.99f) {
-        const float inv = 1.0f - anim;
-        const ImVec4 fillCol = hovered ? ImVec4(accentCol.x, accentCol.y, accentCol.z, 0.18f * inv) : ImVec4(1.0f, 1.0f, 1.0f, 0.05f * inv);
-        dl->AddRectFilled(p, ImVec2(p.x + box, p.y + box), ImGui::GetColorU32(fillCol), 4.0f);
-        const ImVec4 borderCol = hovered ? ImVec4(accentCol.x, accentCol.y, accentCol.z, inv) : ImVec4(1.0f, 1.0f, 1.0f, 0.35f * inv);
-        dl->AddRect(p, ImVec2(p.x + box, p.y + box), ImGui::GetColorU32(borderCol), 4.0f, 0, 1.5f);
-    }
+
+    dl->AddRectFilled(p, ImVec2(p.x + switchW, p.y + switchH), ImGui::GetColorU32(trackCol), switchH * 0.5f);
+
+    const float knobR = switchH * 0.5f - 2.0f;
+    const float knobX = p.x + switchH * 0.5f + (switchW - switchH) * anim;
+    const float knobY = p.y + switchH * 0.5f;
+    dl->AddCircleFilled(ImVec2(knobX, knobY), knobR, IM_COL32(245, 245, 250, 255), 16);
+
     return clicked;
 }
 
-// Small checkbox immediately left of its label; clicking the label also toggles.
+// Modern card-style feature row: label left, animated toggle switch right, rounded hover background.
 static void FeatureLine(const char* displayName, const char* strId, bool* value) {
+    const float rowH = 32.0f;
+    const ImVec2 rowStart = ImGui::GetCursorScreenPos();
+    const float rowW = ImGui::GetContentRegionAvail().x;
+
+    ImGui::PushID(strId);
+    ImGui::InvisibleButton("##row", ImVec2(rowW, rowH));
+    const bool rowHovered = ImGui::IsItemHovered();
+    const bool rowClicked = ImGui::IsItemClicked();
+    ImGui::PopID();
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (rowHovered || *value) {
+        const ImVec4 accentCol = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
+        const float a = *value ? (rowHovered ? 0.14f : 0.09f) : 0.06f;
+        dl->AddRectFilled(rowStart, ImVec2(rowStart.x + rowW, rowStart.y + rowH), ImGui::GetColorU32(ImVec4(accentCol.x, accentCol.y, accentCol.z, a)), 6.0f);
+    }
+
+    dl->AddText(ImVec2(rowStart.x + 10.0f, rowStart.y + (rowH - ImGui::GetFontSize()) * 0.5f), ImGui::GetColorU32(ImGuiCol_Text), displayName);
+
+    ImGui::SetCursorScreenPos(ImVec2(rowStart.x + rowW - 34.0f - 10.0f, rowStart.y + (rowH - 18.0f) * 0.5f));
     if (DrawSmallCheckbox(strId, *value)) *value = !*value;
-    ImGui::SameLine(0.0f, 8.0f);
-    if (ImGui::Selectable(displayName, false, 0, ImVec2(0.0f, ImGui::GetFrameHeight()))) *value = !*value;
+    ImGui::SetCursorScreenPos(ImVec2(rowStart.x, rowStart.y + rowH));
+
+    if (rowClicked) *value = !*value;
 }
 
 
@@ -1652,10 +1672,27 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     const char* tabNames[] = { "MOVEMENT", "VISUALS", "WEAPONS" };
     for (int tab = 0; tab < 3; ++tab) {
         const bool selected = currentTab == tab;
-        if (selected) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(accent.x, accent.y, accent.z, 0.32f));
-        if (ImGui::Button(tabNames[tab], ImVec2(sidebarW - 16.0f, 36.0f))) currentTab = tab;
-        if (selected) ImGui::PopStyleColor();
-        ImGui::Spacing();
+        const ImVec2 itemPos = ImGui::GetCursorScreenPos();
+        const ImVec2 itemSize(sidebarW - 16.0f, 36.0f);
+
+        ImGui::PushID(tab);
+        ImGui::InvisibleButton("##tabitem", itemSize);
+        const bool tabHovered = ImGui::IsItemHovered();
+        const bool tabClicked = ImGui::IsItemClicked();
+        ImGui::PopID();
+        if (tabClicked) currentTab = tab;
+
+        ImDrawList* tabDl = ImGui::GetWindowDrawList();
+        if (selected) {
+            tabDl->AddRectFilled(itemPos, ImVec2(itemPos.x + itemSize.x, itemPos.y + itemSize.y), ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.20f)), 6.0f);
+            tabDl->AddRectFilled(ImVec2(itemPos.x, itemPos.y + 6.0f), ImVec2(itemPos.x + 3.0f, itemPos.y + itemSize.y - 6.0f), ImGui::GetColorU32(accent), 2.0f);
+        } else if (tabHovered) {
+            tabDl->AddRectFilled(itemPos, ImVec2(itemPos.x + itemSize.x, itemPos.y + itemSize.y), ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.05f)), 6.0f);
+        }
+        const ImVec4 labelCol = selected ? accent : (tabHovered ? ImVec4(1.0f, 1.0f, 1.0f, 0.9f) : ImVec4(1.0f, 1.0f, 1.0f, 0.55f));
+        tabDl->AddText(ImVec2(itemPos.x + 16.0f, itemPos.y + (itemSize.y - ImGui::GetFontSize()) * 0.5f), ImGui::GetColorU32(labelCol), tabNames[tab]);
+
+        ImGui::SetCursorScreenPos(ImVec2(itemPos.x, itemPos.y + itemSize.y + 6.0f));
     }
     ImGui::EndChild();
 
