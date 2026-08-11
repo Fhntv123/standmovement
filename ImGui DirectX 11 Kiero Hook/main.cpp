@@ -866,16 +866,21 @@ Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 
             if (horSpeed < 1.0f) horSpeed = surfSpeed * 5.0f;
 
-            // Set static speed instead of gradual acceleration
-            if (velocityLimiterEnabled && velocityLimit > 0.0f) {
-                // Static speed mode: maintain exact velocity limit
-                if (horSpeed > 0.1f) {
-                    float scale = velocityLimit / horSpeed;
+            // Gate is solely on the enable flag so limit=0 is a valid static value
+            if (velocityLimiterEnabled) {
+
+                // Static speed mode: always force EXACT velocityLimit, never let it grow
+                if (horSpeed > 0.01f) {
                     vel.x = (vel.x / horSpeed) * velocityLimit;
                     vel.z = (vel.z / horSpeed) * velocityLimit;
+                } else {
+                    vel.x = velocityLimit;
+                    vel.z = 0.0f;
                 }
+
             } else {
-                // Original gradual acceleration
+
+                // Original gradual bhop acceleration
                 if (vel.Length2D() < surfSpeed * 3.0f) {
 
                     vel.x *= 1.05f;
@@ -883,6 +888,7 @@ Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
                     vel.z *= 1.05f;
 
                 }
+
             }
 
             vel.y = 0;
@@ -905,7 +911,18 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 
         float speed = sqrt(motion.x * motion.x + motion.z * motion.z);
 
-        if (speed > 0.1f) {
+        if (velocityLimiterEnabled) {
+
+            // Static speed mode: force EXACT velocityLimit on the actual applied motion too
+            if (speed > 0.01f) {
+                motion.x = (motion.x / speed) * velocityLimit;
+                motion.z = (motion.z / speed) * velocityLimit;
+            } else {
+                motion.x = velocityLimit;
+                motion.z = 0.0f;
+            }
+
+        } else if (speed > 0.1f) {
 
             motion.x = (motion.x / speed) * surfSpeed * 10.0f;
 
