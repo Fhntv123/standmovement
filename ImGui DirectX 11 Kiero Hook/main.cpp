@@ -1754,7 +1754,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (currentTab == 0) {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 10.0f));
 
-        ImGui::BeginChild("move_row_1", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        ImGui::BeginChild("move_row_1", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("GENERAL");
         FeatureBind("Pixel surf", &pixelSurf, psBind, "ps");
         FeatureBind("Jump bug", &jbActive, jbBind, "jb");
@@ -1762,13 +1762,13 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::EndChild();
 
         ImGui::SameLine(row_width + 10.0f);
-        ImGui::BeginChild("move_row_2", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        ImGui::BeginChild("move_row_2", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("AIR");
         FeatureBind("Air jump", &airJump, airJumpBind, "aj");
         ImGui::EndChild();
 
         ImGui::SameLine((row_width + 10.0f) * 2.0f);
-        ImGui::BeginChild("move_row_3", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        ImGui::BeginChild("move_row_3", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("STATUS");
         ImGui::Text("Pixel surf"); ImGui::SameLine(); ImGui::TextColored(pixelSurf ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), pixelSurf ? "active" : "off");
         ImGui::Text("Jump bug"); ImGui::SameLine(); ImGui::TextColored(jbActive ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), jbActive ? "active" : "off");
@@ -1779,7 +1779,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     } else if (currentTab == 1) {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 10.0f));
 
-        ImGui::BeginChild("visual_row_1", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        ImGui::BeginChild("visual_row_1", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("INDICATORS");
         FeatureBind("Velocity", &showVelocity, velocityBind, "vel");
         FeatureBind("Movement trail", &showTrail, trailBind, "trail");
@@ -1791,7 +1791,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::EndChild();
 
         ImGui::SameLine(row_width + 10.0f);
-        ImGui::BeginChild("visual_row_2", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        ImGui::BeginChild("visual_row_2", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("ESP");
         FeatureBind("Box ESP", &boxEsp, espBind, "esp");
         if (boxEsp) {
@@ -1801,7 +1801,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::EndChild();
 
         ImGui::SameLine((row_width + 10.0f) * 2.0f);
-        ImGui::BeginChild("visual_row_3", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        ImGui::BeginChild("visual_row_3", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("STATUS");
         ImGui::Text("Velocity"); ImGui::SameLine(); ImGui::TextColored(showVelocity ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), showVelocity ? "on" : "off");
         ImGui::Text("Trail"); ImGui::SameLine(); ImGui::TextColored(showTrail ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), showTrail ? "on" : "off");
@@ -1812,19 +1812,19 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     } else {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 10.0f));
 
-        ImGui::BeginChild("weapon_row_1", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        ImGui::BeginChild("weapon_row_1", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("GENERAL");
         FeatureBind("Infinite ammo", &infinityAmmo, ammoBind, "ammo");
         ImGui::EndChild();
 
         ImGui::SameLine(row_width + 10.0f);
-        ImGui::BeginChild("weapon_row_2", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        ImGui::BeginChild("weapon_row_2", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("STATUS");
         ImGui::Text("Infinite ammo"); ImGui::SameLine(); ImGui::TextColored(infinityAmmo ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), infinityAmmo ? "on" : "off");
         ImGui::EndChild();
 
         ImGui::SameLine((row_width + 10.0f) * 2.0f);
-        ImGui::BeginChild("weapon_row_3", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        ImGui::BeginChild("weapon_row_3", ImVec2(row_width, row_height), ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
         AddSectionLabel("INFO");
         ImGui::TextWrapped("Weapon controls follow the same three-column layout as the other tabs.");
         ImGui::EndChild();
