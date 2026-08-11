@@ -1319,7 +1319,7 @@ void InitImGui()
 
     ImGui_ImplDX11_Init(pDevice, pContext);
 
-    io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 28.0f);
+    io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 16.0f);
 
 }
 
@@ -1594,7 +1594,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     style.Colors[ImGuiCol_ResizeGripHovered] = ImVec4(accent.x, accent.y, accent.z, 0.55f);
     style.Colors[ImGuiCol_ResizeGripActive] = accent;
 
-    ImGui::SetNextWindowSize(ImVec2(720.0f, 520.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(820.0f, 550.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("ze0nware", nullptr, ImGuiWindowFlags_NoCollapse);
 
     // Custom background
@@ -1633,203 +1633,110 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
 
 
-    // Header
-    ImGui::TextColored(accent, "ZE0NWARE");
+    // Fatality-style top navigation, left sub-navigation and three group panels.
+    ImGui::TextColored(ImVec4(0.92f, 0.30f, 0.48f, 1.0f), "FATALITY");
     ImGui::SameLine();
-    ImGui::TextDisabled("/ control center");
-    ImGui::SameLine(ImGui::GetWindowWidth() - 110.0f);
-    if (ImGui::Button("SETTINGS", ImVec2(84.0f, 30.0f)))
-        showConfigMenu = !showConfigMenu;
+    ImGui::TextDisabled("  /  ZE0NWARE");
+    ImGui::SameLine(ImGui::GetWindowWidth() - 190.0f);
+    ImGui::TextDisabled("release  |  online");
 
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
     ImGui::Separator();
-    ImGui::Dummy(ImVec2(0.0f, 5.0f));
-
-    const float tabWidth = (ImGui::GetContentRegionAvail().x - 20.0f) / 3.0f;
     const char* tabNames[] = { "MOVEMENT", "VISUALS", "WEAPONS" };
     for (int tab = 0; tab < 3; ++tab) {
         if (tab > 0) ImGui::SameLine();
-        const bool selected = (currentTab == tab);
+        const bool selected = currentTab == tab;
         if (selected) {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(accent.x, accent.y, accent.z, 0.24f));
-            ImGui::PushStyleColor(ImGuiCol_Text, accent);
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.11f, 0.19f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.34f, 0.52f, 1.0f));
         }
-        if (ImGui::Button(tabNames[tab], ImVec2(tabWidth, 36.0f)))
-            currentTab = tab;
-        if (selected)
-            ImGui::PopStyleColor(2);
+        if (ImGui::Button(tabNames[tab], ImVec2(122.0f, 32.0f))) currentTab = tab;
+        if (selected) ImGui::PopStyleColor(2);
     }
-
-    ImGui::Dummy(ImVec2(0.0f, 5.0f));
-    ImGui::BeginChild("##feature_panel", ImVec2(0.0f, -72.0f), true);
-    ImGui::TextColored(accent, currentTab == 0 ? "MOVEMENT FEATURES" : (currentTab == 1 ? "VISUAL FEATURES" : "WEAPON FEATURES"));
+    ImGui::SameLine(ImGui::GetWindowWidth() - 108.0f);
+    if (ImGui::Button("CONFIG", ImVec2(82.0f, 32.0f))) showConfigMenu = !showConfigMenu;
     ImGui::Separator();
-    ImGui::Dummy(ImVec2(0.0f, 3.0f));
+
+    auto FeatureBind = [&](const char* label, bool* value, BindConfig& bind, const char* id) {
+        ImGui::Checkbox(label, value);
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 70.0f);
+        std::string buttonLabel = waitingForBind == &bind.key ? "[...]##" : (bind.key > 0 ? GetKeyName(bind.key) + "##" : "none##");
+        buttonLabel += id;
+        if (ImGui::Button(buttonLabel.c_str(), ImVec2(66.0f, 0.0f))) waitingForBind = &bind.key;
+        ImGui::Checkbox((std::string("toggle##") + id).c_str(), &bind.toggleMode);
+    };
+
+    ImGui::BeginChild("##fatality_sidebar", ImVec2(105.0f, -42.0f), false);
+    ImGui::TextDisabled(currentTab == 0 ? "movement" : (currentTab == 1 ? "visuals" : "weapons"));
+    ImGui::Dummy(ImVec2(0.0f, 8.0f));
+    ImGui::TextColored(ImVec4(0.95f, 0.34f, 0.52f, 1.0f), "General");
+    ImGui::TextDisabled("Keybinds");
+    ImGui::TextDisabled("Advanced");
+    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 28.0f);
+    ImGui::TextDisabled("Insert / close");
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+    ImGui::BeginChild("##fatality_content", ImVec2(0.0f, -42.0f), false);
+    const float panelGap = 10.0f;
+    const float panelWidth = (ImGui::GetContentRegionAvail().x - panelGap * 2.0f) / 3.0f;
 
     if (currentTab == 0) {
-
-        // Movement tab
-
-        ImGui::Checkbox("PS", &pixelSurf);
-
+        ImGui::BeginChild("##move_general", ImVec2(panelWidth, 0.0f), true);
+        ImGui::TextDisabled("GENERAL"); ImGui::Separator();
+        FeatureBind("Pixel surf", &pixelSurf, psBind, "ps");
+        FeatureBind("Jump bug", &jbActive, jbBind, "jb");
+        ImGui::EndChild();
         ImGui::SameLine();
-
-        if (ImGui::Button(waitingForBind == &psBind.key ? "[...]##ps" : (psBind.key > 0 ? GetKeyName(psBind.key).c_str() : "None"))) waitingForBind = &psBind.key;
-
+        ImGui::BeginChild("##move_air", ImVec2(panelWidth, 0.0f), true);
+        ImGui::TextDisabled("AIR"); ImGui::Separator();
+        FeatureBind("Air jump", &airJump, airJumpBind, "aj");
+        if (jbActive) ImGui::SliderFloat("Surf speed", &surfSpeed, 0.5f, 3.0f, "%.2f");
+        ImGui::EndChild();
         ImGui::SameLine();
-
-        if (ImGui::Button("X##ps")) { psBind.key = 0; }
-
+        ImGui::BeginChild("##move_info", ImVec2(0.0f, 0.0f), true);
+        ImGui::TextDisabled("STATUS"); ImGui::Separator();
+        ImGui::Text("Pixel surf"); ImGui::SameLine(); ImGui::TextColored(pixelSurf ? accent : ImVec4(0.45f,0.45f,0.48f,1.0f), pixelSurf ? "active" : "off");
+        ImGui::Text("Jump bug"); ImGui::SameLine(); ImGui::TextColored(jbActive ? accent : ImVec4(0.45f,0.45f,0.48f,1.0f), jbActive ? "active" : "off");
+        ImGui::Text("Air jump"); ImGui::SameLine(); ImGui::TextColored(airJump ? accent : ImVec4(0.45f,0.45f,0.48f,1.0f), airJump ? "active" : "off");
+        ImGui::EndChild();
+    } else if (currentTab == 1) {
+        ImGui::BeginChild("##visual_general", ImVec2(panelWidth, 0.0f), true);
+        ImGui::TextDisabled("INDICATORS"); ImGui::Separator();
+        FeatureBind("Velocity", &showVelocity, velocityBind, "vel");
+        FeatureBind("Movement trail", &showTrail, trailBind, "trail");
+        ImGui::EndChild();
         ImGui::SameLine();
-
-        ImGui::Checkbox("Toggle##ps", &psBind.toggleMode);
-
-
-
-        ImGui::Checkbox("JB", &jbActive);
-
+        ImGui::BeginChild("##visual_trail", ImVec2(panelWidth, 0.0f), true);
+        ImGui::TextDisabled("TRAIL"); ImGui::Separator();
+        ImGui::SliderInt("Length", &maxTrailPoints, 100, 1000);
+        ImGui::SliderFloat("Distance", &trailMinDistance, 1.0f, 20.0f, "%.1f");
+        ImGui::TextDisabled("points: %d", (int)trailPoints.size());
+        ImGui::EndChild();
         ImGui::SameLine();
-
-        if (ImGui::Button(waitingForBind == &jbBind.key ? "[...]##jb" : (jbBind.key > 0 ? GetKeyName(jbBind.key).c_str() : "None"))) waitingForBind = &jbBind.key;
-
+        ImGui::BeginChild("##visual_esp", ImVec2(0.0f, 0.0f), true);
+        ImGui::TextDisabled("ESP"); ImGui::Separator();
+        FeatureBind("Box ESP", &boxEsp, espBind, "esp");
+        ImGui::SliderInt("Count", &espCount, 1, 20);
+        ImGui::SliderFloat("Distance", &espMaxDistance, 10.0f, 200.0f, "%.0f");
+        ImGui::EndChild();
+    } else {
+        ImGui::BeginChild("##weapon_general", ImVec2(panelWidth, 0.0f), true);
+        ImGui::TextDisabled("GENERAL"); ImGui::Separator();
+        FeatureBind("Infinite ammo", &infinityAmmo, ammoBind, "ammo");
+        ImGui::EndChild();
         ImGui::SameLine();
-
-        if (ImGui::Button("X##jb")) { jbBind.key = 0; }
-
+        ImGui::BeginChild("##weapon_status", ImVec2(panelWidth, 0.0f), true);
+        ImGui::TextDisabled("STATUS"); ImGui::Separator();
+        ImGui::TextDisabled("current weapon");
+        ImGui::Text("ammo override"); ImGui::SameLine();
+        ImGui::TextColored(infinityAmmo ? accent : ImVec4(0.45f,0.45f,0.48f,1.0f), infinityAmmo ? "active" : "off");
+        ImGui::EndChild();
         ImGui::SameLine();
-
-        ImGui::Checkbox("Toggle##jb", &jbBind.toggleMode);
-
-
-
-        if (jbActive) ImGui::SliderFloat("Surf Speed", &surfSpeed, 0.5f, 3.0f);
-
-
-
-        ImGui::Checkbox("AirJump", &airJump);
-
-        ImGui::SameLine();
-
-        if (ImGui::Button(waitingForBind == &airJumpBind.key ? "[...]##aj" : (airJumpBind.key > 0 ? GetKeyName(airJumpBind.key).c_str() : "None"))) waitingForBind = &airJumpBind.key;
-
-        ImGui::SameLine();
-
-        if (ImGui::Button("X##aj")) { airJumpBind.key = 0; }
-
-        ImGui::SameLine();
-
-        ImGui::Checkbox("Toggle##aj", &airJumpBind.toggleMode);
-
+        ImGui::BeginChild("##weapon_info", ImVec2(0.0f, 0.0f), true);
+        ImGui::TextDisabled("INFORMATION"); ImGui::Separator();
+        ImGui::TextWrapped("Weapon controls and keybinds are grouped here in the same three-column layout.");
+        ImGui::EndChild();
     }
-
-    else if (currentTab == 1) {
-
-        // Visuals tab
-
-        ImGui::Checkbox("Show Velocity", &showVelocity);
-
-        ImGui::SameLine();
-
-        if (ImGui::Button(waitingForBind == &velocityBind.key ? "[...]##vel" : (velocityBind.key > 0 ? GetKeyName(velocityBind.key).c_str() : "None"))) waitingForBind = &velocityBind.key;
-
-        ImGui::SameLine();
-
-        if (ImGui::Button("X##vel")) { velocityBind.key = 0; }
-
-        ImGui::SameLine();
-
-        ImGui::Checkbox("Toggle##vel", &velocityBind.toggleMode);
-
-
-
-        ImGui::Checkbox("Show Trail", &showTrail);
-
-        ImGui::SameLine();
-
-        if (ImGui::Button(waitingForBind == &trailBind.key ? "[...]##trail" : (trailBind.key > 0 ? GetKeyName(trailBind.key).c_str() : "None"))) waitingForBind = &trailBind.key;
-
-        ImGui::SameLine();
-
-        if (ImGui::Button("X##trail")) { trailBind.key = 0; }
-
-        ImGui::SameLine();
-
-        ImGui::Checkbox("Toggle##trail", &trailBind.toggleMode);
-
-        
-
-        if (showTrail) {
-
-            ImGui::SliderInt("Trail Length", &maxTrailPoints, 100, 1000);
-
-            ImGui::SliderFloat("Trail Distance", &trailMinDistance, 1.0f, 20.0f);
-
-            ImGui::Text("Trail Points: %d", (int)trailPoints.size());
-
-        }
-
-        
-
-        ImGui::Separator();
-
-        
-
-        ImGui::Checkbox("Box ESP", &boxEsp);
-
-        ImGui::SameLine();
-
-        if (ImGui::Button(waitingForBind == &espBind.key ? "[...]##esp" : (espBind.key > 0 ? GetKeyName(espBind.key).c_str() : "None"))) waitingForBind = &espBind.key;
-
-        ImGui::SameLine();
-
-        if (ImGui::Button("X##esp")) { espBind.key = 0; }
-
-        ImGui::SameLine();
-
-        ImGui::Checkbox("Toggle##esp", &espBind.toggleMode);
-
-        
-
-        if (boxEsp) {
-
-            // Автоматически включаем хуки
-
-                        ImGui::SliderInt("ESP Count", &espCount, 1, 20);
-
-            ImGui::SliderFloat("ESP Distance", &espMaxDistance, 10.0f, 200.0f);
-
-            ImGui::Text("ESP mode: IL2CPP (PlayerManager)");
-
-        } else {
-
-            // Отключаем хуки когда ESP выключен
-
-                    }
-
-    }
-
-    else if (currentTab == 2) {
-
-        // Weapons tab
-
-        ImGui::Checkbox("Infinity Ammo", &infinityAmmo);
-
-        ImGui::SameLine();
-
-        if (ImGui::Button(waitingForBind == &ammoBind.key ? "[...]##ammo" : (ammoBind.key > 0 ? GetKeyName(ammoBind.key).c_str() : "None"))) waitingForBind = &ammoBind.key;
-
-        ImGui::SameLine();
-
-        if (ImGui::Button("X##ammo")) { ammoBind.key = 0; }
-
-        ImGui::SameLine();
-
-        ImGui::Checkbox("Toggle##ammo", &ammoBind.toggleMode);
-
-    }
-
-
-
     ImGui::EndChild();
 
     ImGui::TextDisabled("INSERT  menu  |  END  unload");
