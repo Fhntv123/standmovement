@@ -1737,18 +1737,50 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     ImGui::SetCursorPos(ImVec2(10.0f, maintab_h + 1.0f + 10.0f));
     ImGui::BeginChild("fatal_main", ImVec2(winSize.x - 20.0f, winSize.y - endtab_h - maintab_h - 22.0f), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
-    const float row_width = winSize.x / 3.0f - 13.0f;
+    static bool FatalCheckbox(const char* label, bool* value) {
+    ImGuiStyle& style = ImGui::GetStyle();
+    const float squareSize = ImGui::GetFrameHeight();
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const ImVec2 rowPos = ImGui::GetCursorScreenPos();
+    const ImVec2 boxPos(rowPos.x + avail - squareSize, rowPos.y);
+
+    ImGui::InvisibleButton(label, ImVec2(avail, squareSize));
+    const bool hovered = ImGui::IsItemHovered();
+    const bool clicked = ImGui::IsItemClicked();
+    if (clicked) *value = !*value;
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImU32 boxColor = ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
+    drawList->AddRectFilled(boxPos, ImVec2(boxPos.x + squareSize, boxPos.y + squareSize), boxColor, style.FrameRounding);
+
+    if (*value) {
+        const ImU32 checkColor = ImGui::GetColorU32(ImGuiCol_CheckMark);
+        const float pad = squareSize * 0.22f;
+        const ImVec2 a(boxPos.x + pad, boxPos.y + squareSize * 0.55f);
+        const ImVec2 b(boxPos.x + squareSize * 0.42f, boxPos.y + squareSize - pad);
+        const ImVec2 c(boxPos.x + squareSize - pad, boxPos.y + pad);
+        drawList->AddLine(a, b, checkColor, 2.0f);
+        drawList->AddLine(b, c, checkColor, 2.0f);
+    }
+
+    drawList->AddText(ImVec2(rowPos.x, rowPos.y + (squareSize - ImGui::GetFontSize()) * 0.5f), ImGui::GetColorU32(ImGuiCol_Text), label);
+    return clicked;
+}
+
+const float row_width = winSize.x / 3.0f - 13.0f;
     const float row_height = winSize.y - endtab_h - maintab_h - 44.0f;
 
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.098f, 0.086f, 0.208f, 1.0f));
 
     auto FeatureBind = [&](const char* label, bool* value, BindConfig& bind, const char* id) {
-        ImGui::Checkbox(label, value);
+        FatalCheckbox((std::string(label) + "##" + id).c_str(), value);
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 70.0f);
         std::string buttonLabel = waitingForBind == &bind.key ? "[...]##" : (bind.key > 0 ? GetKeyName(bind.key) + "##" : "none##");
         buttonLabel += id;
         if (ImGui::Button(buttonLabel.c_str(), ImVec2(66.0f, 0.0f))) waitingForBind = &bind.key;
-        ImGui::Checkbox((std::string("toggle##") + id).c_str(), &bind.toggleMode);
+        ImGui::Text("toggle");
+        ImGui::SameLine();
+        FatalCheckbox((std::string("##toggle_") + id).c_str(), &bind.toggleMode);
     };
 
     if (currentTab == 0) {
