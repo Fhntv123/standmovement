@@ -412,9 +412,9 @@ int currentTab = 0;
 
 bool showConfigMenu = false;
 
-float menuColor[3] = { 0.055f, 0.055f, 0.060f }; // Fatality flat charcoal
+float menuColor[3] = { 0.066f, 0.059f, 0.141f }; // Fatality window_bg
 
-float accentColor[3] = { 0.95f, 0.22f, 0.42f }; // Fatality hot-pink accent
+float accentColor[3] = { 0.761f, 0.09f, 0.314f }; // Fatality selection
 
 bool useCustomBackground = false;
 
@@ -1580,9 +1580,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     style.FramePadding = ImVec2(10.0f, 7.0f);
     style.ItemSpacing = ImVec2(10.0f, 9.0f);
     style.ItemInnerSpacing = ImVec2(8.0f, 6.0f);
-    style.WindowRounding = 0.0f;
-    style.ChildRounding = 0.0f;
-    style.FrameRounding = 0.0f;
+    style.WindowRounding = 4.0f;
+    style.ChildRounding = 4.0f;
+    style.FrameRounding = 4.0f;
     style.PopupRounding = 8.0f;
     style.ScrollbarRounding = 9.0f;
     style.GrabRounding = 6.0f;
@@ -1590,31 +1590,48 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     style.ChildBorderSize = 1.0f;
     style.FrameBorderSize = 0.0f;
 
-    const ImVec4 accent(accentColor[0], accentColor[1], accentColor[2], 1.0f);
-    style.Colors[ImGuiCol_Text] = ImVec4(0.92f, 0.94f, 0.97f, 1.00f);
-    style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.46f, 0.50f, 0.58f, 1.00f);
-    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.055f, 0.055f, 0.060f, 0.985f);
-    style.Colors[ImGuiCol_ChildBg] = ImVec4(0.075f, 0.075f, 0.080f, 0.98f);
-    style.Colors[ImGuiCol_PopupBg] = ImVec4(0.045f, 0.054f, 0.074f, 0.99f);
-    style.Colors[ImGuiCol_Border] = ImVec4(0.23f, 0.23f, 0.25f, 1.00f);
-    style.Colors[ImGuiCol_FrameBg] = ImVec4(0.085f, 0.10f, 0.135f, 1.00f);
-    style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(accent.x, accent.y, accent.z, 0.16f);
-    style.Colors[ImGuiCol_FrameBgActive] = ImVec4(accent.x, accent.y, accent.z, 0.24f);
-    style.Colors[ImGuiCol_Button] = ImVec4(0.085f, 0.10f, 0.135f, 1.00f);
-    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(accent.x, accent.y, accent.z, 0.22f);
-    style.Colors[ImGuiCol_ButtonActive] = ImVec4(accent.x, accent.y, accent.z, 0.34f);
-    style.Colors[ImGuiCol_Header] = ImVec4(accent.x, accent.y, accent.z, 0.16f);
-    style.Colors[ImGuiCol_HeaderHovered] = ImVec4(accent.x, accent.y, accent.z, 0.24f);
-    style.Colors[ImGuiCol_HeaderActive] = ImVec4(accent.x, accent.y, accent.z, 0.34f);
-    style.Colors[ImGuiCol_CheckMark] = accent;
-    style.Colors[ImGuiCol_SliderGrab] = ImVec4(accent.x, accent.y, accent.z, 0.72f);
-    style.Colors[ImGuiCol_SliderGrabActive] = accent;
-    style.Colors[ImGuiCol_Separator] = ImVec4(0.14f, 0.17f, 0.23f, 1.0f);
-    style.Colors[ImGuiCol_ResizeGrip] = ImVec4(accent.x, accent.y, accent.z, 0.20f);
-    style.Colors[ImGuiCol_ResizeGripHovered] = ImVec4(accent.x, accent.y, accent.z, 0.55f);
-    style.Colors[ImGuiCol_ResizeGripActive] = accent;
+    // Exact palette ported from pavetr1337/fatalImguiMenu (vars::colors).
+    const ImVec4 fatal_window_bg(0.066f, 0.059f, 0.141f, 1.0f);
+    const ImVec4 fatal_child_bg(0.098f, 0.086f, 0.208f, 1.0f);
+    const ImVec4 fatal_text_inactive(1.0f, 1.0f, 1.0f, 0.5f);
+    const ImVec4 fatal_selection(0.761f, 0.09f, 0.314f, 1.0f);
+    const ImVec4 fatal_selection_high(0.82f, 0.106f, 0.345f, 1.0f);
+    const ImVec4 fatal_border(1.0f, 1.0f, 1.0f, 0.10f);
+    const ImVec4 fatal_button(0.118f, 0.098f, 0.243f, 1.0f);
+    const ImVec4 fatal_button_hover(0.145f, 0.122f, 0.302f, 1.0f);
+    const ImVec4 fatal_button_clicked(0.169f, 0.141f, 0.349f, 1.0f);
+    const ImVec4 fatal_frame_bg_hover(fatal_window_bg.x * 1.1f, fatal_window_bg.y * 1.1f, fatal_window_bg.z * 1.1f, 1.0f);
+    const ImVec4 fatal_frame_bg_active(fatal_frame_bg_hover.x * 1.5f, fatal_frame_bg_hover.y * 1.5f, fatal_frame_bg_hover.z * 1.5f, 1.0f);
+    const ImVec4 accent = fatal_selection;
 
-    ImGui::SetNextWindowSize(ImVec2(820.0f, 550.0f), ImGuiCond_FirstUseEver);
+    style.Colors[ImGuiCol_Text] = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+    style.Colors[ImGuiCol_TextDisabled] = fatal_text_inactive;
+    style.Colors[ImGuiCol_WindowBg] = fatal_window_bg;
+    style.Colors[ImGuiCol_ChildBg] = fatal_child_bg;
+    style.Colors[ImGuiCol_PopupBg] = fatal_window_bg;
+    style.Colors[ImGuiCol_Border] = fatal_border;
+    style.Colors[ImGuiCol_FrameBg] = fatal_window_bg;
+    style.Colors[ImGuiCol_FrameBgHovered] = fatal_frame_bg_hover;
+    style.Colors[ImGuiCol_FrameBgActive] = fatal_frame_bg_active;
+    style.Colors[ImGuiCol_Button] = fatal_button;
+    style.Colors[ImGuiCol_ButtonHovered] = fatal_button_hover;
+    style.Colors[ImGuiCol_ButtonActive] = fatal_button_clicked;
+    style.Colors[ImGuiCol_Header] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    style.Colors[ImGuiCol_HeaderHovered] = fatal_selection;
+    style.Colors[ImGuiCol_HeaderActive] = fatal_selection_high;
+    style.Colors[ImGuiCol_CheckMark] = fatal_selection;
+    style.Colors[ImGuiCol_SliderGrab] = fatal_selection;
+    style.Colors[ImGuiCol_SliderGrabActive] = fatal_selection_high;
+    style.Colors[ImGuiCol_Separator] = fatal_border;
+    style.Colors[ImGuiCol_ScrollbarBg] = fatal_window_bg;
+    style.Colors[ImGuiCol_ScrollbarGrab] = fatal_button;
+    style.Colors[ImGuiCol_ScrollbarGrabHovered] = fatal_button_hover;
+    style.Colors[ImGuiCol_ScrollbarGrabActive] = fatal_button_clicked;
+    style.Colors[ImGuiCol_ResizeGrip] = ImVec4(fatal_selection.x, fatal_selection.y, fatal_selection.z, 0.20f);
+    style.Colors[ImGuiCol_ResizeGripHovered] = ImVec4(fatal_selection.x, fatal_selection.y, fatal_selection.z, 0.55f);
+    style.Colors[ImGuiCol_ResizeGripActive] = fatal_selection_high;
+
+    ImGui::SetNextWindowSize(ImVec2(848.0f, 588.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("ze0nware", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
     // Custom background
@@ -1653,35 +1670,77 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
 
 
-    // Ported from pavetr1337/fatalImguiMenu: fixed header/footer, flat children, active tab underline.
-    ImGui::BeginChild("fatal_header", ImVec2(0.0f, 58.0f), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    ImGui::TextColored(ImVec4(0.95f, 0.22f, 0.42f, 1.0f), "FATALITY");
-    ImGui::SameLine();
-    ImGui::TextDisabled("  /  ZE0NWARE");
-    ImGui::SameLine(ImGui::GetWindowWidth() - 190.0f);
-    ImGui::TextDisabled("release  |  online");
+    // Real fatalImguiMenu render structure (header/footer/main rows) ported 1:1 in layout math.
+    const float maintab_h = ImGui::GetFontSize() * 2.75f;
+    const float endtab_h = ImGui::GetFontSize() * 1.5f;
+    const ImVec2 winSize = ImGui::GetWindowSize();
+    const ImVec2 winPos = ImGui::GetWindowPos();
 
-    ImGui::Separator();
+    static std::vector<std::pair<std::string, ImVec2>> sectionLabels;
+    sectionLabels.clear();
+    auto AddSectionLabel = [&](const char* label) {
+        sectionLabels.emplace_back(label, ImGui::GetCursorScreenPos());
+    };
+    auto DrawSectionLabels = [&]() {
+        for (const auto& item : sectionLabels) {
+            const ImVec2 textSize = ImGui::CalcTextSize(item.first.c_str());
+            ImGui::GetWindowDrawList()->AddText(ImVec2(item.second.x, item.second.y - textSize.y), ImGui::GetColorU32(ImGuiCol_Text), item.first.c_str());
+        }
+    };
+
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.098f, 0.086f, 0.208f, 1.0f));
+
+    // Header row: brand + tabs, exactly like fatal_shapka.
+    ImGui::SetCursorPos(ImVec2(0.0f, 0.0f));
+    ImGui::BeginChild("fatal_shapka", ImVec2(winSize.x, maintab_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::SetCursorPos(ImVec2(14.0f, maintab_h * 0.5f - ImGui::GetFontSize() * 0.6f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.761f, 0.09f, 0.314f, 1.0f));
+    ImGui::Text("FATALITY");
+    ImGui::PopStyleColor();
+    const float header_size = ImGui::CalcTextSize("FATALITY").x;
+
     const char* tabNames[] = { "MOVEMENT", "VISUALS", "WEAPONS" };
+    float prev_b_w = 0.0f;
     for (int tab = 0; tab < 3; ++tab) {
-        if (tab > 0) ImGui::SameLine();
+        const ImVec2 buttonSize(ImGui::CalcTextSize(tabNames[tab]).x + 20.0f, ImGui::CalcTextSize(tabNames[tab]).y + 10.0f);
+        ImGui::SetCursorPos(ImVec2(header_size + 28.0f + prev_b_w, maintab_h * 0.5f - buttonSize.y * 0.5f));
         const bool selected = currentTab == tab;
-        if (selected) {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.11f, 0.19f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.34f, 0.52f, 1.0f));
-        }
-        if (ImGui::Button(tabNames[tab], ImVec2(122.0f, 32.0f))) currentTab = tab;
-        if (selected) {
-            const ImVec2 mn = ImGui::GetItemRectMin();
-            const ImVec2 mx = ImGui::GetItemRectMax();
-            ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(mn.x, mx.y - 2.0f), mx, IM_COL32(242, 56, 107, 255));
-            ImGui::PopStyleColor(2);
-        }
+        if (!selected) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 0.5f));
+        if (ImGui::Button(tabNames[tab], buttonSize)) currentTab = tab;
+        if (!selected) ImGui::PopStyleColor();
+        prev_b_w += buttonSize.x + 10.0f;
     }
-    ImGui::SameLine(ImGui::GetWindowWidth() - 108.0f);
-    if (ImGui::Button("CONFIG", ImVec2(82.0f, 32.0f))) showConfigMenu = !showConfigMenu;
+    ImGui::SetCursorPos(ImVec2(winSize.x - 96.0f, maintab_h * 0.5f - 15.0f));
+    if (ImGui::Button("CONFIG", ImVec2(82.0f, 30.0f))) showConfigMenu = !showConfigMenu;
     ImGui::EndChild();
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
+    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(winPos.x, winPos.y + maintab_h - 1.0f), ImVec2(winPos.x + winSize.x, winPos.y + maintab_h + 1.0f), ImGui::GetColorU32(ImGuiCol_Border));
+
+    // Footer row: exactly like fatal_footer.
+    ImGui::SetCursorPos(ImVec2(0.0f, winSize.y - endtab_h));
+    ImGui::BeginChild("fatal_footer", ImVec2(winSize.x, endtab_h), ImGuiChildFlags_None);
+    ImGui::SetCursorPos(ImVec2(14.0f, endtab_h * 0.5f - ImGui::GetFontSize() * 0.5f));
+    ImGui::TextDisabled("INSERT menu  |  END unload");
+    ImGui::SetCursorPos(ImVec2(winSize.x - 100.0f, endtab_h * 0.5f - 16.0f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.58f, 0.12f, 0.16f, 0.72f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.78f, 0.16f, 0.20f, 0.90f));
+    if (ImGui::Button("UNLOAD", ImVec2(86.0f, 30.0f))) {
+        unloadRequested = true;
+        keyValidated = false;
+    }
+    ImGui::PopStyleColor(2);
+    ImGui::EndChild();
+    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(winPos.x, winPos.y + winSize.y - endtab_h - 1.0f), ImVec2(winPos.x + winSize.x, winPos.y + winSize.y - endtab_h + 1.0f), ImGui::GetColorU32(ImGuiCol_Border));
+
+    ImGui::PopStyleColor();
+
+    // Main row: exactly like fatal_main -> three bordered columns per tab, section labels floated on the border.
+    ImGui::SetCursorPos(ImVec2(10.0f, maintab_h + 1.0f + 10.0f));
+    ImGui::BeginChild("fatal_main", ImVec2(winSize.x - 20.0f, winSize.y - endtab_h - maintab_h - 22.0f), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    const float row_width = winSize.x / 3.0f - 13.0f;
+    const float row_height = winSize.y - endtab_h - maintab_h - 44.0f;
+
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.098f, 0.086f, 0.208f, 1.0f));
 
     auto FeatureBind = [&](const char* label, bool* value, BindConfig& bind, const char* id) {
         ImGui::Checkbox(label, value);
@@ -1692,90 +1751,89 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox((std::string("toggle##") + id).c_str(), &bind.toggleMode);
     };
 
-    ImGui::BeginChild("##fatality_sidebar", ImVec2(105.0f, -42.0f), false);
-    ImGui::TextDisabled(currentTab == 0 ? "movement" : (currentTab == 1 ? "visuals" : "weapons"));
-    ImGui::Dummy(ImVec2(0.0f, 8.0f));
-    ImGui::TextColored(ImVec4(0.95f, 0.34f, 0.52f, 1.0f), "General");
-    ImGui::TextDisabled("Keybinds");
-    ImGui::TextDisabled("Advanced");
-    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 28.0f);
-    ImGui::TextDisabled("Insert / close");
-    ImGui::EndChild();
-
-    ImGui::SameLine();
-    ImGui::BeginChild("##fatality_content", ImVec2(0.0f, -42.0f), false);
-    const float panelGap = 10.0f;
-    const float panelWidth = (ImGui::GetContentRegionAvail().x - panelGap * 2.0f) / 3.0f;
-
     if (currentTab == 0) {
-        ImGui::BeginChild("##move_general", ImVec2(panelWidth, 0.0f), true);
-        ImGui::TextDisabled("GENERAL"); ImGui::Separator();
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 10.0f));
+
+        ImGui::BeginChild("move_row_1", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        AddSectionLabel("GENERAL");
         FeatureBind("Pixel surf", &pixelSurf, psBind, "ps");
         FeatureBind("Jump bug", &jbActive, jbBind, "jb");
-        ImGui::EndChild();
-        ImGui::SameLine();
-        ImGui::BeginChild("##move_air", ImVec2(panelWidth, 0.0f), true);
-        ImGui::TextDisabled("AIR"); ImGui::Separator();
-        FeatureBind("Air jump", &airJump, airJumpBind, "aj");
         if (jbActive) ImGui::SliderFloat("Surf speed", &surfSpeed, 0.5f, 3.0f, "%.2f");
         ImGui::EndChild();
-        ImGui::SameLine();
-        ImGui::BeginChild("##move_info", ImVec2(0.0f, 0.0f), true);
-        ImGui::TextDisabled("STATUS"); ImGui::Separator();
-        ImGui::Text("Pixel surf"); ImGui::SameLine(); ImGui::TextColored(pixelSurf ? accent : ImVec4(0.45f,0.45f,0.48f,1.0f), pixelSurf ? "active" : "off");
-        ImGui::Text("Jump bug"); ImGui::SameLine(); ImGui::TextColored(jbActive ? accent : ImVec4(0.45f,0.45f,0.48f,1.0f), jbActive ? "active" : "off");
-        ImGui::Text("Air jump"); ImGui::SameLine(); ImGui::TextColored(airJump ? accent : ImVec4(0.45f,0.45f,0.48f,1.0f), airJump ? "active" : "off");
+
+        ImGui::SameLine(row_width + 10.0f);
+        ImGui::BeginChild("move_row_2", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        AddSectionLabel("AIR");
+        FeatureBind("Air jump", &airJump, airJumpBind, "aj");
         ImGui::EndChild();
+
+        ImGui::SameLine((row_width + 10.0f) * 2.0f);
+        ImGui::BeginChild("move_row_3", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        AddSectionLabel("STATUS");
+        ImGui::Text("Pixel surf"); ImGui::SameLine(); ImGui::TextColored(pixelSurf ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), pixelSurf ? "active" : "off");
+        ImGui::Text("Jump bug"); ImGui::SameLine(); ImGui::TextColored(jbActive ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), jbActive ? "active" : "off");
+        ImGui::Text("Air jump"); ImGui::SameLine(); ImGui::TextColored(airJump ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), airJump ? "active" : "off");
+        ImGui::EndChild();
+
+        ImGui::PopStyleVar();
     } else if (currentTab == 1) {
-        ImGui::BeginChild("##visual_general", ImVec2(panelWidth, 0.0f), true);
-        ImGui::TextDisabled("INDICATORS"); ImGui::Separator();
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 10.0f));
+
+        ImGui::BeginChild("visual_row_1", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        AddSectionLabel("INDICATORS");
         FeatureBind("Velocity", &showVelocity, velocityBind, "vel");
         FeatureBind("Movement trail", &showTrail, trailBind, "trail");
+        if (showTrail) {
+            ImGui::SliderInt("Trail length", &maxTrailPoints, 100, 1000);
+            ImGui::SliderFloat("Trail distance", &trailMinDistance, 1.0f, 20.0f, "%.1f");
+            ImGui::TextDisabled("points: %d", (int)trailPoints.size());
+        }
         ImGui::EndChild();
-        ImGui::SameLine();
-        ImGui::BeginChild("##visual_trail", ImVec2(panelWidth, 0.0f), true);
-        ImGui::TextDisabled("TRAIL"); ImGui::Separator();
-        ImGui::SliderInt("Length", &maxTrailPoints, 100, 1000);
-        ImGui::SliderFloat("Distance", &trailMinDistance, 1.0f, 20.0f, "%.1f");
-        ImGui::TextDisabled("points: %d", (int)trailPoints.size());
-        ImGui::EndChild();
-        ImGui::SameLine();
-        ImGui::BeginChild("##visual_esp", ImVec2(0.0f, 0.0f), true);
-        ImGui::TextDisabled("ESP"); ImGui::Separator();
+
+        ImGui::SameLine(row_width + 10.0f);
+        ImGui::BeginChild("visual_row_2", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        AddSectionLabel("ESP");
         FeatureBind("Box ESP", &boxEsp, espBind, "esp");
-        ImGui::SliderInt("Count", &espCount, 1, 20);
-        ImGui::SliderFloat("Distance", &espMaxDistance, 10.0f, 200.0f, "%.0f");
+        if (boxEsp) {
+            ImGui::SliderInt("Count", &espCount, 1, 20);
+            ImGui::SliderFloat("Distance", &espMaxDistance, 10.0f, 200.0f, "%.0f");
+        }
         ImGui::EndChild();
+
+        ImGui::SameLine((row_width + 10.0f) * 2.0f);
+        ImGui::BeginChild("visual_row_3", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        AddSectionLabel("STATUS");
+        ImGui::Text("Velocity"); ImGui::SameLine(); ImGui::TextColored(showVelocity ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), showVelocity ? "on" : "off");
+        ImGui::Text("Trail"); ImGui::SameLine(); ImGui::TextColored(showTrail ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), showTrail ? "on" : "off");
+        ImGui::Text("Box ESP"); ImGui::SameLine(); ImGui::TextColored(boxEsp ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), boxEsp ? "on" : "off");
+        ImGui::EndChild();
+
+        ImGui::PopStyleVar();
     } else {
-        ImGui::BeginChild("##weapon_general", ImVec2(panelWidth, 0.0f), true);
-        ImGui::TextDisabled("GENERAL"); ImGui::Separator();
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 10.0f));
+
+        ImGui::BeginChild("weapon_row_1", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        AddSectionLabel("GENERAL");
         FeatureBind("Infinite ammo", &infinityAmmo, ammoBind, "ammo");
         ImGui::EndChild();
-        ImGui::SameLine();
-        ImGui::BeginChild("##weapon_status", ImVec2(panelWidth, 0.0f), true);
-        ImGui::TextDisabled("STATUS"); ImGui::Separator();
-        ImGui::TextDisabled("current weapon");
-        ImGui::Text("ammo override"); ImGui::SameLine();
-        ImGui::TextColored(infinityAmmo ? accent : ImVec4(0.45f,0.45f,0.48f,1.0f), infinityAmmo ? "active" : "off");
-        ImGui::EndChild();
-        ImGui::SameLine();
-        ImGui::BeginChild("##weapon_info", ImVec2(0.0f, 0.0f), true);
-        ImGui::TextDisabled("INFORMATION"); ImGui::Separator();
-        ImGui::TextWrapped("Weapon controls and keybinds are grouped here in the same three-column layout.");
-        ImGui::EndChild();
-    }
-    ImGui::EndChild();
 
-    ImGui::BeginChild("fatal_footer", ImVec2(0.0f, 34.0f), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    ImGui::TextDisabled("INSERT  menu  |  END  unload");
-    ImGui::SameLine(ImGui::GetWindowWidth() - 122.0f);
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.58f, 0.12f, 0.16f, 0.72f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.78f, 0.16f, 0.20f, 0.90f));
-    if (ImGui::Button("UNLOAD", ImVec2(86.0f, 30.0f))) {
-        unloadRequested = true;
-        keyValidated = false;
+        ImGui::SameLine(row_width + 10.0f);
+        ImGui::BeginChild("weapon_row_2", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        AddSectionLabel("STATUS");
+        ImGui::Text("Infinite ammo"); ImGui::SameLine(); ImGui::TextColored(infinityAmmo ? accent : ImVec4(0.7f,0.7f,0.7f,1.0f), infinityAmmo ? "on" : "off");
+        ImGui::EndChild();
+
+        ImGui::SameLine((row_width + 10.0f) * 2.0f);
+        ImGui::BeginChild("weapon_row_3", ImVec2(row_width, row_height), ImGuiChildFlags_Border, ImGuiWindowFlags_AlwaysUseWindowPadding);
+        AddSectionLabel("INFO");
+        ImGui::TextWrapped("Weapon controls follow the same three-column layout as the other tabs.");
+        ImGui::EndChild();
+
+        ImGui::PopStyleVar();
     }
-    ImGui::PopStyleColor(2);
+
+    ImGui::PopStyleColor();
+    DrawSectionLabels();
     ImGui::EndChild();
 
     ImGui::End();
