@@ -1583,7 +1583,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     style.Colors[ImGuiCol_SliderGrabActive] = accent;
     style.Colors[ImGuiCol_Separator] = borderCol;
 
-    ImGui::SetNextWindowSize(ImVec2(760.0f, 480.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(800.0f, 500.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("ze0nware", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
     if (useCustomBackground && backgroundTexture) {
@@ -1596,111 +1596,92 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     const float headerH = 46.0f;
     const float footerH = 34.0f;
+    const float sidebarW = 140.0f;
     const ImVec2 winSize = ImGui::GetWindowSize();
 
-    // Header: brand, tabs, config button.
+    // Header.
     ImGui::BeginChild("menu_header", ImVec2(0.0f, headerH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::SetCursorPos(ImVec2(14.0f, headerH * 0.5f - ImGui::GetFontSize() * 0.5f));
     ImGui::TextColored(accent, "ZE0NWARE");
     ImGui::SameLine();
     ImGui::TextDisabled("| private build");
-
-    const char* tabNames[] = { "MOVEMENT", "VISUALS", "WEAPONS" };
-    const float tabW = 108.0f;
-    const float tabsTotal = tabW * 3.0f + 16.0f;
-    float tabX = (winSize.x - tabsTotal) * 0.5f;
-    for (int tab = 0; tab < 3; ++tab) {
-        ImGui::SetCursorPos(ImVec2(tabX, headerH * 0.5f - 15.0f));
-        const bool selected = currentTab == tab;
-        if (selected) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(accent.x, accent.y, accent.z, 0.24f));
-        if (ImGui::Button(tabNames[tab], ImVec2(tabW, 30.0f))) currentTab = tab;
-        if (selected) ImGui::PopStyleColor();
-        tabX += tabW + 8.0f;
-    }
-
     ImGui::SetCursorPos(ImVec2(winSize.x - 92.0f, headerH * 0.5f - 15.0f));
     if (ImGui::Button("CONFIG", ImVec2(78.0f, 30.0f))) showConfigMenu = !showConfigMenu;
     ImGui::EndChild();
 
-    // Body.
-    ImGui::SetCursorPos(ImVec2(10.0f, headerH + 8.0f));
-    ImGui::BeginChild("menu_body", ImVec2(winSize.x - 20.0f, winSize.y - headerH - footerH - 16.0f), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    // Left sidebar: tab buttons.
+    ImGui::SetCursorPos(ImVec2(0.0f, headerH));
+    ImGui::BeginChild("menu_sidebar", ImVec2(sidebarW, winSize.y - headerH - footerH), ImGuiChildFlags_Border, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::SetCursorPos(ImVec2(8.0f, 12.0f));
+    const char* tabNames[] = { "MOVEMENT", "VISUALS", "WEAPONS" };
+    for (int tab = 0; tab < 3; ++tab) {
+        const bool selected = currentTab == tab;
+        if (selected) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(accent.x, accent.y, accent.z, 0.32f));
+        if (ImGui::Button(tabNames[tab], ImVec2(sidebarW - 16.0f, 36.0f))) currentTab = tab;
+        if (selected) ImGui::PopStyleColor();
+        ImGui::Spacing();
+    }
+    ImGui::EndChild();
 
-    const float colGap = 10.0f;
-    const float colW = (ImGui::GetContentRegionAvail().x - colGap * 2.0f) / 3.0f;
-    const float colH = ImGui::GetContentRegionAvail().y;
-
-    auto BeginPanel = [&](const char* id, const char* title) {
-        ImGui::BeginChild(id, ImVec2(colW, colH), ImGuiChildFlags_Border, ImGuiWindowFlags_None);
-        ImGui::TextColored(accent, title);
-        ImGui::Separator();
-        ImGui::Dummy(ImVec2(0.0f, 2.0f));
-    };
+    // Right content area.
+    ImGui::SetCursorPos(ImVec2(sidebarW, headerH));
+    ImGui::BeginChild("menu_content", ImVec2(winSize.x - sidebarW, winSize.y - headerH - footerH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::SetCursorPos(ImVec2(12.0f, 12.0f));
 
     if (currentTab == 0) {
-        BeginPanel("panel_move_1", "GENERAL");
+        ImGui::TextColored(accent, "MOVEMENT");
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
         FeatureLine("pixx.c1", "##ps", &pixelSurf);
         FeatureLine("jb.c1", "##jb", &jbActive);
-        if (jbActive) ImGui::SliderFloat("speed", &surfSpeed, 0.5f, 3.0f, "%.2f");
-        ImGui::EndChild();
-
-        ImGui::SameLine(0.0f, colGap);
-        BeginPanel("panel_move_2", "AIR");
         FeatureLine("airj.c1", "##aj", &airJump);
-        ImGui::EndChild();
-
-        ImGui::SameLine(0.0f, colGap);
-        BeginPanel("panel_move_3", "KEYBINDS");
-        ImGui::Text("pixx.c1"); ImGui::SameLine(colW - 90.0f);
-        if (ImGui::Button(waitingForBind == &psBind.key ? "[...]##psb" : (psBind.key > 0 ? (GetKeyName(psBind.key) + "##psb").c_str() : "none##psb"), ImVec2(60.0f, 0.0f))) waitingForBind = &psBind.key;
-        ImGui::Text("jb.c1"); ImGui::SameLine(colW - 90.0f);
-        if (ImGui::Button(waitingForBind == &jbBind.key ? "[...]##jbb" : (jbBind.key > 0 ? (GetKeyName(jbBind.key) + "##jbb").c_str() : "none##jbb"), ImVec2(60.0f, 0.0f))) waitingForBind = &jbBind.key;
-        ImGui::Text("airj.c1"); ImGui::SameLine(colW - 90.0f);
-        if (ImGui::Button(waitingForBind == &airJumpBind.key ? "[...]##ajb" : (airJumpBind.key > 0 ? (GetKeyName(airJumpBind.key) + "##ajb").c_str() : "none##ajb"), ImVec2(60.0f, 0.0f))) waitingForBind = &airJumpBind.key;
-        ImGui::EndChild();
+        if (jbActive) ImGui::SliderFloat("speed", &surfSpeed, 0.5f, 3.0f, "%.2f");
+        ImGui::Dummy(ImVec2(0.0f, 8.0f));
+        ImGui::TextColored(accent, "KEYBINDS");
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+        ImGui::Text("pixx.c1"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 70.0f);
+        if (ImGui::Button(waitingForBind == &psBind.key ? "[...]##psb" : (psBind.key > 0 ? GetKeyName(psBind.key).c_str() : "none##psb"), ImVec2(60.0f, 0.0f))) waitingForBind = &psBind.key;
+        ImGui::Text("jb.c1"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 70.0f);
+        if (ImGui::Button(waitingForBind == &jbBind.key ? "[...]##jbb" : (jbBind.key > 0 ? GetKeyName(jbBind.key).c_str() : "none##jbb"), ImVec2(60.0f, 0.0f))) waitingForBind = &jbBind.key;
+        ImGui::Text("airj.c1"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 70.0f);
+        if (ImGui::Button(waitingForBind == &airJumpBind.key ? "[...]##ajb" : (airJumpBind.key > 0 ? GetKeyName(airJumpBind.key).c_str() : "none##ajb"), ImVec2(60.0f, 0.0f))) waitingForBind = &airJumpBind.key;
     } else if (currentTab == 1) {
-        BeginPanel("panel_vis_1", "INDICATORS");
+        ImGui::TextColored(accent, "VISUALS");
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
         FeatureLine("velo.c1", "##vel", &showVelocity);
         FeatureLine("trail.c1", "##trail", &showTrail);
-        if (showTrail) {
-            ImGui::SliderInt("length", &maxTrailPoints, 100, 1000);
-            ImGui::SliderFloat("distance", &trailMinDistance, 1.0f, 20.0f, "%.1f");
-        }
-        ImGui::EndChild();
-
-        ImGui::SameLine(0.0f, colGap);
-        BeginPanel("panel_vis_2", "ESP");
         FeatureLine("esp.c1", "##esp", &boxEsp);
-        if (boxEsp) {
-            ImGui::SliderInt("count", &espCount, 1, 20);
-            ImGui::SliderFloat("range", &espMaxDistance, 10.0f, 200.0f, "%.0f");
+        if (showTrail) {
+            ImGui::SliderInt("trail length", &maxTrailPoints, 100, 1000);
+            ImGui::SliderFloat("trail distance", &trailMinDistance, 1.0f, 20.0f, "%.1f");
         }
-        ImGui::EndChild();
-
-        ImGui::SameLine(0.0f, colGap);
-        BeginPanel("panel_vis_3", "KEYBINDS");
-        ImGui::Text("velo.c1"); ImGui::SameLine(colW - 90.0f);
-        if (ImGui::Button(waitingForBind == &velocityBind.key ? "[...]##velb" : (velocityBind.key > 0 ? (GetKeyName(velocityBind.key) + "##velb").c_str() : "none##velb"), ImVec2(60.0f, 0.0f))) waitingForBind = &velocityBind.key;
-        ImGui::Text("trail.c1"); ImGui::SameLine(colW - 90.0f);
-        if (ImGui::Button(waitingForBind == &trailBind.key ? "[...]##trb" : (trailBind.key > 0 ? (GetKeyName(trailBind.key) + "##trb").c_str() : "none##trb"), ImVec2(60.0f, 0.0f))) waitingForBind = &trailBind.key;
-        ImGui::Text("esp.c1"); ImGui::SameLine(colW - 90.0f);
-        if (ImGui::Button(waitingForBind == &espBind.key ? "[...]##espb" : (espBind.key > 0 ? (GetKeyName(espBind.key) + "##espb").c_str() : "none##espb"), ImVec2(60.0f, 0.0f))) waitingForBind = &espBind.key;
-        ImGui::EndChild();
+        if (boxEsp) {
+            ImGui::SliderInt("esp count", &espCount, 1, 20);
+            ImGui::SliderFloat("esp range", &espMaxDistance, 10.0f, 200.0f, "%.0f");
+        }
+        ImGui::Dummy(ImVec2(0.0f, 8.0f));
+        ImGui::TextColored(accent, "KEYBINDS");
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+        ImGui::Text("velo.c1"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 70.0f);
+        if (ImGui::Button(waitingForBind == &velocityBind.key ? "[...]##velb" : (velocityBind.key > 0 ? GetKeyName(velocityBind.key).c_str() : "none##velb"), ImVec2(60.0f, 0.0f))) waitingForBind = &velocityBind.key;
+        ImGui::Text("trail.c1"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 70.0f);
+        if (ImGui::Button(waitingForBind == &trailBind.key ? "[...]##trb" : (trailBind.key > 0 ? GetKeyName(trailBind.key).c_str() : "none##trb"), ImVec2(60.0f, 0.0f))) waitingForBind = &trailBind.key;
+        ImGui::Text("esp.c1"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 70.0f);
+        if (ImGui::Button(waitingForBind == &espBind.key ? "[...]##espb" : (espBind.key > 0 ? GetKeyName(espBind.key).c_str() : "none##espb"), ImVec2(60.0f, 0.0f))) waitingForBind = &espBind.key;
     } else {
-        BeginPanel("panel_wep_1", "GENERAL");
+        ImGui::TextColored(accent, "WEAPONS");
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
         FeatureLine("ammo.c1", "##ammo", &infinityAmmo);
-        ImGui::EndChild();
-
-        ImGui::SameLine(0.0f, colGap);
-        BeginPanel("panel_wep_2", "STATUS");
-        ImGui::Text("ammo.c1"); ImGui::SameLine(); ImGui::TextColored(infinityAmmo ? accent : textDim, infinityAmmo ? "on" : "off");
-        ImGui::EndChild();
-
-        ImGui::SameLine(0.0f, colGap);
-        BeginPanel("panel_wep_3", "KEYBINDS");
-        ImGui::Text("ammo.c1"); ImGui::SameLine(colW - 90.0f);
-        if (ImGui::Button(waitingForBind == &ammoBind.key ? "[...]##amb" : (ammoBind.key > 0 ? (GetKeyName(ammoBind.key) + "##amb").c_str() : "none##amb"), ImVec2(60.0f, 0.0f))) waitingForBind = &ammoBind.key;
-        ImGui::EndChild();
+        ImGui::Dummy(ImVec2(0.0f, 8.0f));
+        ImGui::TextColored(accent, "KEYBINDS");
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+        ImGui::Text("ammo.c1"); ImGui::SameLine(ImGui::GetContentRegionAvail().x - 70.0f);
+        if (ImGui::Button(waitingForBind == &ammoBind.key ? "[...]##amb" : (ammoBind.key > 0 ? GetKeyName(ammoBind.key).c_str() : "none##amb"), ImVec2(60.0f, 0.0f))) waitingForBind = &ammoBind.key;
     }
 
     ImGui::EndChild();
