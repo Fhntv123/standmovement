@@ -862,19 +862,27 @@ Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 
         if (jbActive) {
 
-            // Apply velocity limit BEFORE acceleration
-            vel = ApplyVelocityLimit(vel);
-
             float horSpeed = sqrt(vel.x * vel.x + vel.z * vel.z);
 
             if (horSpeed < 1.0f) horSpeed = surfSpeed * 5.0f;
 
-            if (vel.Length2D() < surfSpeed * 3.0f) {
+            // Set static speed instead of gradual acceleration
+            if (velocityLimiterEnabled && velocityLimit > 0.0f) {
+                // Static speed mode: maintain exact velocity limit
+                if (horSpeed > 0.1f) {
+                    float scale = velocityLimit / horSpeed;
+                    vel.x = (vel.x / horSpeed) * velocityLimit;
+                    vel.z = (vel.z / horSpeed) * velocityLimit;
+                }
+            } else {
+                // Original gradual acceleration
+                if (vel.Length2D() < surfSpeed * 3.0f) {
 
-                vel.x *= 1.05f;
+                    vel.x *= 1.05f;
 
-                vel.z *= 1.05f;
+                    vel.z *= 1.05f;
 
+                }
             }
 
             vel.y = 0;
