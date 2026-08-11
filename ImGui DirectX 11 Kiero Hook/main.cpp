@@ -1633,10 +1633,19 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         const ImU32 gradBottom = ImGui::GetColorU32(ImVec4(0.02f, 0.01f, 0.04f, 0.98f));
         gradList->AddRectFilledMultiColor(gp, ImVec2(gp.x + gs.x, gp.y + gs.y), gradTop, gradTop, gradBottom, gradBottom);
 
-        // Full accent border frame around the window.
-        const float borderW = 1.5f;
-        const ImU32 borderCol = ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.50f));
-        gradList->AddRect(gp, ImVec2(gp.x + gs.x, gp.y + gs.y), borderCol, 0.0f, 0, borderW);
+        // Gradient border frame: thick accent edges that fade to transparent.
+        const float borderW = 6.0f;
+        const ImU32 borderOuter = ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.60f));
+        const ImU32 borderInner = ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.0f));
+        
+        // Top border
+        gradList->AddRectFilledMultiColor(gp, ImVec2(gp.x + gs.x, gp.y + borderW), borderOuter, borderOuter, borderInner, borderInner);
+        // Bottom border
+        gradList->AddRectFilledMultiColor(ImVec2(gp.x, gp.y + gs.y - borderW), ImVec2(gp.x + gs.x, gp.y + gs.y), borderInner, borderInner, borderOuter, borderOuter);
+        // Left border
+        gradList->AddRectFilledMultiColor(gp, ImVec2(gp.x + borderW, gp.y + gs.y), borderOuter, borderInner, borderInner, borderOuter);
+        // Right border
+        gradList->AddRectFilledMultiColor(ImVec2(gp.x + gs.x - borderW, gp.y), ImVec2(gp.x + gs.x, gp.y + gs.y), borderInner, borderOuter, borderOuter, borderInner);
     }
 
     if (useCustomBackground && backgroundTexture) {
