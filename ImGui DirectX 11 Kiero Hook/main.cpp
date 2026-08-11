@@ -1411,7 +1411,7 @@ LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 
 
 static bool DrawSmallCheckbox(const char* strId, bool value) {
-    const float box = 14.0f;
+    const float box = 16.0f;
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton(strId, ImVec2(box, box));
     const bool hovered = ImGui::IsItemHovered();
@@ -1419,22 +1419,26 @@ static bool DrawSmallCheckbox(const char* strId, bool value) {
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec4 accentCol = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
+    const ImU32 accentU32 = ImGui::GetColorU32(accentCol);
 
     if (value) {
+        // Glow only when checked.
         for (int i = 3; i >= 1; --i) {
-            const float expand = (float)i * 2.0f;
-            const float alpha = 0.10f * (4 - i);
+            const float expand = (float)i * 2.2f;
+            const float alpha = 0.12f * (4 - i);
             dl->AddRectFilled(ImVec2(p.x - expand, p.y - expand), ImVec2(p.x + box + expand, p.y + box + expand),
-                ImGui::GetColorU32(ImVec4(accentCol.x, accentCol.y, accentCol.z, alpha)), 3.0f + expand);
+                ImGui::GetColorU32(ImVec4(accentCol.x, accentCol.y, accentCol.z, alpha)), 4.0f + expand);
         }
-        dl->AddRectFilled(p, ImVec2(p.x + box, p.y + box), ImGui::GetColorU32(accentCol), 3.0f);
+        dl->AddRectFilled(p, ImVec2(p.x + box, p.y + box), accentU32, 4.0f);
         const ImU32 markColor = ImGui::GetColorU32(ImVec4(0.06f, 0.06f, 0.09f, 1.0f));
-        const float pad = box * 0.24f;
-        dl->AddLine(ImVec2(p.x + pad, p.y + box * 0.55f), ImVec2(p.x + box * 0.42f, p.y + box - pad), markColor, 1.6f);
-        dl->AddLine(ImVec2(p.x + box * 0.42f, p.y + box - pad), ImVec2(p.x + box - pad, p.y + pad), markColor, 1.6f);
+        const float pad = box * 0.26f;
+        dl->AddLine(ImVec2(p.x + pad, p.y + box * 0.55f), ImVec2(p.x + box * 0.42f, p.y + box - pad), markColor, 1.8f);
+        dl->AddLine(ImVec2(p.x + box * 0.42f, p.y + box - pad), ImVec2(p.x + box - pad, p.y + pad), markColor, 1.8f);
     } else {
-        dl->AddRectFilled(p, ImVec2(p.x + box, p.y + box), ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), 3.0f);
-        dl->AddRect(p, ImVec2(p.x + box, p.y + box), ImGui::GetColorU32(ImGuiCol_Border), 3.0f, 0, 1.0f);
+        const ImVec4 fillCol = hovered ? ImVec4(accentCol.x, accentCol.y, accentCol.z, 0.18f) : ImVec4(1.0f, 1.0f, 1.0f, 0.05f);
+        dl->AddRectFilled(p, ImVec2(p.x + box, p.y + box), ImGui::GetColorU32(fillCol), 4.0f);
+        const ImVec4 borderCol = hovered ? accentCol : ImVec4(1.0f, 1.0f, 1.0f, 0.35f);
+        dl->AddRect(p, ImVec2(p.x + box, p.y + box), ImGui::GetColorU32(borderCol), 4.0f, 0, 1.5f);
     }
     return clicked;
 }
