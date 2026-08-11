@@ -27,6 +27,9 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 Present oPresent;
 
+using ResizeBuffersFn = HRESULT(__stdcall*)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
+ResizeBuffersFn oResizeBuffers = nullptr;
+
 HWND window = NULL;
 
 WNDPROC oWndProc;
@@ -46,6 +49,30 @@ bool keyValidated = true;
 bool unloadRequested = false;
 
 bool menuOpen = true;
+
+static void ReleaseRenderTarget() {
+    if (mainRenderTargetView) {
+        mainRenderTargetView->Release();
+        mainRenderTargetView = nullptr;
+    }
+}
+
+static bool CreateRenderTarget(IDXGISwapChain* swapChain) {
+    if (!swapChain || !pDevice) return false;
+    ID3D11Texture2D* backBuffer = nullptr;
+    const HRESULT getResult = swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&backBuffer));
+    if (FAILED(getResult) || !backBuffer) return false;
+    const HRESULT viewResult = pDevice->CreateRenderTargetView(backBuffer, nullptr, &mainRenderTargetView);
+    backBuffer->Release();
+    return SUCCEEDED(viewResult) && mainRenderTargetView != nullptr;
+}
+
+HRESULT __stdcall hkResizeBuffers(IDXGISwapChain* swapChain, UINT bufferCount, UINT width, UINT height, DXGI_FORMAT format, UINT flags) {
+    ReleaseRenderTarget();
+    const HRESULT result = oResizeBuffers(swapChain, bufferCount, width, height, format, flags);
+    if (SUCCEEDED(result)) CreateRenderTarget(swapChain);
+    return result;
+}
 
 
 
@@ -385,9 +412,9 @@ int currentTab = 0;
 
 bool showConfigMenu = false;
 
-float menuColor[3] = { 0.045f, 0.035f, 0.075f }; // Fatality-inspired dark violet
+float menuColor[3] = { 0.055f, 0.055f, 0.060f }; // Fatality flat charcoal
 
-float accentColor[3] = { 0.52f, 0.30f, 0.92f }; // Purple accent
+float accentColor[3] = { 0.95f, 0.22f, 0.42f }; // Fatality hot-pink accent
 
 bool useCustomBackground = false;
 
@@ -1415,17 +1442,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
             window = sd.OutputWindow;
 
-            ID3D11Texture2D* pBackBuffer = NULL;
-
-            pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (LPVOID*)&pBackBuffer);
-
-            if (pBackBuffer) {
-
-                pDevice->CreateRenderTargetView(pBackBuffer, NULL, &mainRenderTargetView);
-
-                pBackBuffer->Release();
-
-            }
+            CreateRenderTarget(pSwapChain);
 
             oWndProc = (WNDPROC)SetWindowLongPtr(window, GWLP_WNDPROC, (LONG_PTR)WndProc);
 
@@ -1440,6 +1457,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     }
 
 
+
+    if (!mainRenderTargetView && !CreateRenderTarget(pSwapChain))
+        return oPresent(pSwapChain, SyncInterval, Flags);
 
     ImGui_ImplDX11_NewFrame();
 
@@ -1560,9 +1580,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     style.FramePadding = ImVec2(10.0f, 7.0f);
     style.ItemSpacing = ImVec2(10.0f, 9.0f);
     style.ItemInnerSpacing = ImVec2(8.0f, 6.0f);
-    style.WindowRounding = 6.0f;
-    style.ChildRounding = 4.0f;
-    style.FrameRounding = 3.0f;
+    style.WindowRounding = 0.0f;
+    style.ChildRounding = 0.0f;
+    style.FrameRounding = 0.0f;
     style.PopupRounding = 8.0f;
     style.ScrollbarRounding = 9.0f;
     style.GrabRounding = 6.0f;
@@ -1573,10 +1593,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     const ImVec4 accent(accentColor[0], accentColor[1], accentColor[2], 1.0f);
     style.Colors[ImGuiCol_Text] = ImVec4(0.92f, 0.94f, 0.97f, 1.00f);
     style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.46f, 0.50f, 0.58f, 1.00f);
-    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.030f, 0.024f, 0.050f, 0.985f);
-    style.Colors[ImGuiCol_ChildBg] = ImVec4(0.050f, 0.040f, 0.078f, 0.97f);
+    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.055f, 0.055f, 0.060f, 0.985f);
+    style.Colors[ImGuiCol_ChildBg] = ImVec4(0.075f, 0.075f, 0.080f, 0.98f);
     style.Colors[ImGuiCol_PopupBg] = ImVec4(0.045f, 0.054f, 0.074f, 0.99f);
-    style.Colors[ImGuiCol_Border] = ImVec4(0.24f, 0.15f, 0.38f, 0.90f);
+    style.Colors[ImGuiCol_Border] = ImVec4(0.23f, 0.23f, 0.25f, 1.00f);
     style.Colors[ImGuiCol_FrameBg] = ImVec4(0.085f, 0.10f, 0.135f, 1.00f);
     style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(accent.x, accent.y, accent.z, 0.16f);
     style.Colors[ImGuiCol_FrameBgActive] = ImVec4(accent.x, accent.y, accent.z, 0.24f);
@@ -1595,7 +1615,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     style.Colors[ImGuiCol_ResizeGripActive] = accent;
 
     ImGui::SetNextWindowSize(ImVec2(820.0f, 550.0f), ImGuiCond_FirstUseEver);
-    ImGui::Begin("ze0nware", nullptr, ImGuiWindowFlags_NoCollapse);
+    ImGui::Begin("ze0nware", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
     // Custom background
 
@@ -1633,8 +1653,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
 
 
-    // Fatality-style top navigation, left sub-navigation and three group panels.
-    ImGui::TextColored(ImVec4(0.92f, 0.30f, 0.48f, 1.0f), "FATALITY");
+    // Ported from pavetr1337/fatalImguiMenu: fixed header/footer, flat children, active tab underline.
+    ImGui::BeginChild("fatal_header", ImVec2(0.0f, 58.0f), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::TextColored(ImVec4(0.95f, 0.22f, 0.42f, 1.0f), "FATALITY");
     ImGui::SameLine();
     ImGui::TextDisabled("  /  ZE0NWARE");
     ImGui::SameLine(ImGui::GetWindowWidth() - 190.0f);
@@ -1650,11 +1671,17 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.34f, 0.52f, 1.0f));
         }
         if (ImGui::Button(tabNames[tab], ImVec2(122.0f, 32.0f))) currentTab = tab;
-        if (selected) ImGui::PopStyleColor(2);
+        if (selected) {
+            const ImVec2 mn = ImGui::GetItemRectMin();
+            const ImVec2 mx = ImGui::GetItemRectMax();
+            ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(mn.x, mx.y - 2.0f), mx, IM_COL32(242, 56, 107, 255));
+            ImGui::PopStyleColor(2);
+        }
     }
     ImGui::SameLine(ImGui::GetWindowWidth() - 108.0f);
     if (ImGui::Button("CONFIG", ImVec2(82.0f, 32.0f))) showConfigMenu = !showConfigMenu;
-    ImGui::Separator();
+    ImGui::EndChild();
+    ImGui::Dummy(ImVec2(0.0f, 4.0f));
 
     auto FeatureBind = [&](const char* label, bool* value, BindConfig& bind, const char* id) {
         ImGui::Checkbox(label, value);
@@ -1739,6 +1766,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     }
     ImGui::EndChild();
 
+    ImGui::BeginChild("fatal_footer", ImVec2(0.0f, 34.0f), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::TextDisabled("INSERT  menu  |  END  unload");
     ImGui::SameLine(ImGui::GetWindowWidth() - 122.0f);
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.58f, 0.12f, 0.16f, 0.72f));
@@ -1748,6 +1776,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         keyValidated = false;
     }
     ImGui::PopStyleColor(2);
+    ImGui::EndChild();
 
     ImGui::End();
 
@@ -1902,6 +1931,7 @@ DWORD WINAPI MainThread(LPVOID lpReserved)
         if (kiero::init(kiero::RenderType::D3D11) == kiero::Status::Success) {
 
             kiero::bind(8, (void**)&oPresent, hkPresent);
+            kiero::bind(13, (void**)&oResizeBuffers, hkResizeBuffers);
 
             init_hook = true;
 
