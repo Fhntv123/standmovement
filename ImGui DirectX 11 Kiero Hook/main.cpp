@@ -851,91 +851,58 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
 
 
 Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
-
 {
-
     Vector3 vel = o_CC_get_velocity(instance);
-
     if (keyValidated) {
-
         lastSpeed = sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
-
         if (jbActive) {
-
             float horSpeed = sqrt(vel.x * vel.x + vel.z * vel.z);
-
             if (horSpeed < 1.0f) horSpeed = surfSpeed * 5.0f;
-
-            // Gate is solely on the enable flag so limit=0 is a valid static value
-            if (velocityLimiterEnabled) {
-
-                // Static speed mode: always force EXACT velocityLimit, never let it grow
-                if (horSpeed > 0.01f) {
-                    vel.x = (vel.x / horSpeed) * velocityLimit;
-                    vel.z = (vel.z / horSpeed) * velocityLimit;
-                } else {
-                    vel.x = velocityLimit;
-                    vel.z = 0.0f;
-                }
-
-            } else {
-
-                // Original gradual bhop acceleration
-                if (vel.Length2D() < surfSpeed * 3.0f) {
-
-                    vel.x *= 1.05f;
-
-                    vel.z *= 1.05f;
-
-                }
-
+            
+            // Original acceleration
+            if (vel.Length2D() < surfSpeed * 3.0f) {
+                vel.x *= 1.05f;
+                vel.z *= 1.05f;
             }
-
+            
+            // Apply our new velocity limiter clamp
+            vel = ApplyVelocityLimit(vel);
+            
             vel.y = 0;
-
         }
-
     }
-
     return vel;
-
 }
 
 
 
 int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
-
 {
-
     if (keyValidated && jbActive) {
-
         float speed = sqrt(motion.x * motion.x + motion.z * motion.z);
-
-        if (velocityLimiterEnabled) {
-
-            // Static speed mode: force EXACT velocityLimit on the actual applied motion too
-            if (speed > 0.01f) {
-                motion.x = (motion.x / speed) * velocityLimit;
-                motion.z = (motion.z / speed) * velocityLimit;
-            } else {
-                motion.x = velocityLimit;
-                motion.z = 0.0f;
-            }
-
-        } else if (speed > 0.1f) {
-
+        if (speed > 0.1f) {
             motion.x = (motion.x / speed) * surfSpeed * 10.0f;
-
             motion.z = (motion.z / speed) * surfSpeed * 10.0f;
-
         }
-
+        
+        // If limiter is enabled, we must also clamp the motion vector.
+        // Since motion is per-frame, we scale the limit by a factor (e.g. 0.016 for 60fps)
+        // But to be safe and match the user's slider (which is likely in velocity units),
+        // we can just clamp it using the same ApplyVelocityLimit but scaled for motion.
+        // Actually, the original code forces motion to surfSpeed * 10.0f.
+        // Let's just clamp motion directly if it exceeds the limit * 0.02f (approx frame time).
+        if (velocityLimiterEnabled && velocityLimit > 0.0f) {
+            float motionLimit = velocityLimit * 0.02f; // Approximate conversion to per-frame motion
+            float currentMotionSpeed = sqrt(motion.x * motion.x + motion.z * motion.z);
+            if (currentMotionSpeed > motionLimit) {
+                motion.x = (motion.x / currentMotionSpeed) * motionLimit;
+                motion.z = (motion.z / currentMotionSpeed) * motionLimit;
+            }
+        }
+        
         motion.y = 0;
-
     }
-
     return o_CC_Move(instance, motion);
-
 }
 
 
