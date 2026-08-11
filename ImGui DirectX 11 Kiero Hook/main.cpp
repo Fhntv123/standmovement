@@ -1858,27 +1858,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     ImGui::End();
 
-    return;
-
-    if (ImGui::Button("https://t.me/ze0ntap", ImVec2(-1, 0))) {
-
-        ShellExecuteA(NULL, "open", "https://t.me/ze0ntap", NULL, NULL, SW_SHOWNORMAL);
-
-    }
-
-
-
-    if (ImGui::Button("unload", ImVec2(-1, 35))) {
-
-        unloadRequested = true;
-
-        keyValidated = false;
-
-    }
-
-
-
-    ImGui::End();
 
 
 
