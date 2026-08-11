@@ -1,5 +1,6 @@
 ﻿#include "includes.h"
 #include "il2cpp.h"
+#include "velocity_limiter.h"
 
 #include <vector>
 #include <unordered_map>
@@ -264,6 +265,10 @@ float lastSpeed = 0.0f;
 bool wasSurfing = false;
 
 float surfSpeed = 1.5f;
+
+// Velocity limiter
+bool velocityLimiterEnabled = false;
+float velocityLimit = 500.0f;
 
 
 
@@ -875,6 +880,7 @@ Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 
     }
 
+    vel = ApplyVelocityLimit(vel);
     return vel;
 
 }
@@ -1709,6 +1715,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         FeatureLine("jb.c1", "##jb", &jbActive);
         FeatureLine("airj.c1", "##aj", &airJump);
         if (jbActive) ImGui::SliderFloat("speed", &surfSpeed, 0.5f, 3.0f, "%.2f");
+        FeatureLine("vel.limit.c1", "##vl", &velocityLimiterEnabled);
+        if (velocityLimiterEnabled) ImGui::SliderFloat("limit##vl", &velocityLimit, 0.0f, 1000.0f, "%.0f");
         ImGui::Dummy(ImVec2(0.0f, 12.0f));
         {
             ImDrawList* divDl = ImGui::GetWindowDrawList();
