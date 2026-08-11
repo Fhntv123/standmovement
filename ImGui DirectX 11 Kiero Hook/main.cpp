@@ -862,6 +862,9 @@ Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 
         if (jbActive) {
 
+            // Apply velocity limit BEFORE acceleration
+            vel = ApplyVelocityLimit(vel);
+
             float horSpeed = sqrt(vel.x * vel.x + vel.z * vel.z);
 
             if (horSpeed < 1.0f) horSpeed = surfSpeed * 5.0f;
@@ -880,7 +883,6 @@ Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 
     }
 
-    vel = ApplyVelocityLimit(vel);
     return vel;
 
 }
