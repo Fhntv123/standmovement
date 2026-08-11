@@ -1569,35 +1569,48 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
 
 
-    // Apply custom colors
-
+    // Modern dark theme
     ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowPadding = ImVec2(18.0f, 16.0f);
+    style.FramePadding = ImVec2(10.0f, 7.0f);
+    style.ItemSpacing = ImVec2(10.0f, 9.0f);
+    style.ItemInnerSpacing = ImVec2(8.0f, 6.0f);
+    style.WindowRounding = 12.0f;
+    style.ChildRounding = 9.0f;
+    style.FrameRounding = 6.0f;
+    style.PopupRounding = 8.0f;
+    style.ScrollbarRounding = 9.0f;
+    style.GrabRounding = 6.0f;
+    style.WindowBorderSize = 1.0f;
+    style.ChildBorderSize = 1.0f;
+    style.FrameBorderSize = 0.0f;
 
-    style.Colors[ImGuiCol_WindowBg] = ImVec4(menuColor[0], menuColor[1], menuColor[2], 0.95f);
+    const ImVec4 accent(accentColor[0], accentColor[1], accentColor[2], 1.0f);
+    style.Colors[ImGuiCol_Text] = ImVec4(0.92f, 0.94f, 0.97f, 1.00f);
+    style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.46f, 0.50f, 0.58f, 1.00f);
+    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.035f, 0.043f, 0.060f, 0.98f);
+    style.Colors[ImGuiCol_ChildBg] = ImVec4(0.055f, 0.065f, 0.088f, 0.96f);
+    style.Colors[ImGuiCol_PopupBg] = ImVec4(0.045f, 0.054f, 0.074f, 0.99f);
+    style.Colors[ImGuiCol_Border] = ImVec4(0.15f, 0.18f, 0.24f, 0.85f);
+    style.Colors[ImGuiCol_FrameBg] = ImVec4(0.085f, 0.10f, 0.135f, 1.00f);
+    style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(accent.x, accent.y, accent.z, 0.16f);
+    style.Colors[ImGuiCol_FrameBgActive] = ImVec4(accent.x, accent.y, accent.z, 0.24f);
+    style.Colors[ImGuiCol_Button] = ImVec4(0.085f, 0.10f, 0.135f, 1.00f);
+    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(accent.x, accent.y, accent.z, 0.22f);
+    style.Colors[ImGuiCol_ButtonActive] = ImVec4(accent.x, accent.y, accent.z, 0.34f);
+    style.Colors[ImGuiCol_Header] = ImVec4(accent.x, accent.y, accent.z, 0.16f);
+    style.Colors[ImGuiCol_HeaderHovered] = ImVec4(accent.x, accent.y, accent.z, 0.24f);
+    style.Colors[ImGuiCol_HeaderActive] = ImVec4(accent.x, accent.y, accent.z, 0.34f);
+    style.Colors[ImGuiCol_CheckMark] = accent;
+    style.Colors[ImGuiCol_SliderGrab] = ImVec4(accent.x, accent.y, accent.z, 0.72f);
+    style.Colors[ImGuiCol_SliderGrabActive] = accent;
+    style.Colors[ImGuiCol_Separator] = ImVec4(0.14f, 0.17f, 0.23f, 1.0f);
+    style.Colors[ImGuiCol_ResizeGrip] = ImVec4(accent.x, accent.y, accent.z, 0.20f);
+    style.Colors[ImGuiCol_ResizeGripHovered] = ImVec4(accent.x, accent.y, accent.z, 0.55f);
+    style.Colors[ImGuiCol_ResizeGripActive] = accent;
 
-    style.Colors[ImGuiCol_Button] = ImVec4(accentColor[0], accentColor[1], accentColor[2], 0.4f);
-
-    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(accentColor[0], accentColor[1], accentColor[2], 0.6f);
-
-    style.Colors[ImGuiCol_ButtonActive] = ImVec4(accentColor[0], accentColor[1], accentColor[2], 0.8f);
-
-    style.Colors[ImGuiCol_FrameBg] = ImVec4(accentColor[0] * 0.5f, accentColor[1] * 0.5f, accentColor[2] * 0.5f, 0.3f);
-
-    style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(accentColor[0] * 0.6f, accentColor[1] * 0.6f, accentColor[2] * 0.6f, 0.4f);
-
-    style.Colors[ImGuiCol_FrameBgActive] = ImVec4(accentColor[0] * 0.7f, accentColor[1] * 0.7f, accentColor[2] * 0.7f, 0.5f);
-
-    style.Colors[ImGuiCol_CheckMark] = ImVec4(accentColor[0], accentColor[1], accentColor[2], 1.0f);
-
-    style.Colors[ImGuiCol_SliderGrab] = ImVec4(accentColor[0], accentColor[1], accentColor[2], 0.7f);
-
-    style.Colors[ImGuiCol_SliderGrabActive] = ImVec4(accentColor[0], accentColor[1], accentColor[2], 1.0f);
-
-
-
-    ImGui::Begin("ze0nware");
-
-
+    ImGui::SetNextWindowSize(ImVec2(720.0f, 520.0f), ImGuiCond_FirstUseEver);
+    ImGui::Begin("ze0nware", nullptr, ImGuiWindowFlags_NoCollapse);
 
     // Custom background
 
@@ -1635,55 +1648,37 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
 
 
-    // Settings button (gear icon)
-
-    ImGui::SameLine(ImGui::GetWindowWidth() - 35);
-
-    if (ImGui::Button("##settings", ImVec2(25, 25))) {
-
+    // Header
+    ImGui::TextColored(accent, "ZE0NWARE");
+    ImGui::SameLine();
+    ImGui::TextDisabled("/ control center");
+    ImGui::SameLine(ImGui::GetWindowWidth() - 110.0f);
+    if (ImGui::Button("SETTINGS", ImVec2(84.0f, 30.0f)))
         showConfigMenu = !showConfigMenu;
 
-    }
-
-    if (ImGui::IsItemHovered()) {
-
-        ImGui::SetTooltip("Settings");
-
-    }
-
-    // Draw gear icon
-
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-
-    ImVec2 button_pos = ImGui::GetItemRectMin();
-
-    ImVec2 button_size = ImGui::GetItemRectSize();
-
-    ImVec2 center = ImVec2(button_pos.x + button_size.x * 0.5f, button_pos.y + button_size.y * 0.5f);
-
-    float radius = button_size.x * 0.3f;
-
-    draw_list->AddCircle(center, radius, IM_COL32(255, 255, 255, 200), 8, 2.0f);
-
-
-
-    // Tabs
-
-    if (ImGui::Button("Movement", ImVec2(ImGui::GetWindowWidth() / 3.0f - 10, 0))) currentTab = 0;
-
-    ImGui::SameLine();
-
-    if (ImGui::Button("Visuals", ImVec2(ImGui::GetWindowWidth() / 3.0f - 10, 0))) currentTab = 1;
-
-    ImGui::SameLine();
-
-    if (ImGui::Button("Weapons", ImVec2(ImGui::GetWindowWidth() / 3.0f - 10, 0))) currentTab = 2;
-
-
-
+    ImGui::Dummy(ImVec2(0.0f, 4.0f));
     ImGui::Separator();
+    ImGui::Dummy(ImVec2(0.0f, 5.0f));
 
+    const float tabWidth = (ImGui::GetContentRegionAvail().x - 20.0f) / 3.0f;
+    const char* tabNames[] = { "MOVEMENT", "VISUALS", "WEAPONS" };
+    for (int tab = 0; tab < 3; ++tab) {
+        if (tab > 0) ImGui::SameLine();
+        if (currentTab == tab) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(accent.x, accent.y, accent.z, 0.24f));
+            ImGui::PushStyleColor(ImGuiCol_Text, accent);
+        }
+        if (ImGui::Button(tabNames[tab], ImVec2(tabWidth, 36.0f)))
+            currentTab = tab;
+        if (currentTab == tab)
+            ImGui::PopStyleColor(2);
+    }
 
+    ImGui::Dummy(ImVec2(0.0f, 5.0f));
+    ImGui::BeginChild("##feature_panel", ImVec2(0.0f, -72.0f), true);
+    ImGui::TextColored(accent, currentTab == 0 ? "MOVEMENT FEATURES" : (currentTab == 1 ? "VISUAL FEATURES" : "WEAPON FEATURES"));
+    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0.0f, 3.0f));
 
     if (currentTab == 0) {
 
@@ -1849,9 +1844,21 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
 
 
-    ImGui::Separator();
+    ImGui::EndChild();
 
+    ImGui::TextDisabled("INSERT  menu  |  END  unload");
+    ImGui::SameLine(ImGui::GetWindowWidth() - 122.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.58f, 0.12f, 0.16f, 0.72f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.78f, 0.16f, 0.20f, 0.90f));
+    if (ImGui::Button("UNLOAD", ImVec2(86.0f, 30.0f))) {
+        unloadRequested = true;
+        keyValidated = false;
+    }
+    ImGui::PopStyleColor(2);
 
+    ImGui::End();
+
+    return;
 
     if (ImGui::Button("https://t.me/ze0ntap", ImVec2(-1, 0))) {
 
