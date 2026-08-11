@@ -1,5 +1,9 @@
 #include "velocity_limiter.h"
 
+// Global configuration (declared in main.cpp)
+extern bool velocityLimiterEnabled;
+extern float velocityLimit;
+
 // Forward declare Vector3 structure
 struct Vector3 {
     float x, y, z;
@@ -8,10 +12,6 @@ struct Vector3 {
         return sqrt(x * x + z * z);
     }
 };
-
-// Global configuration
-bool velocityLimiterEnabled = false;
-float velocityLimit = 500.0f;
 
 // Apply velocity limit to horizontal speed (x, z components)
 Vector3 ApplyVelocityLimit(const Vector3& velocity) {
@@ -39,4 +39,3 @@ float ClampHorizontalSpeed(float currentSpeed, float limit) {
     
     return currentSpeed > limit ? limit : currentSpeed;
 }
-
