@@ -2,6 +2,7 @@
 #include "il2cpp.h"
 
 #include <vector>
+#include <unordered_map>
 
 #include <string>
 
@@ -1411,33 +1412,46 @@ LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 
 
 static bool DrawSmallCheckbox(const char* strId, bool value) {
+    static std::unordered_map<ImGuiID, float> animState;
     const float box = 16.0f;
     const ImVec2 p = ImGui::GetCursorScreenPos();
+    const ImGuiID id = ImGui::GetID(strId);
     ImGui::InvisibleButton(strId, ImVec2(box, box));
     const bool hovered = ImGui::IsItemHovered();
     const bool clicked = ImGui::IsItemClicked();
+
+    // Smooth transition toward checked/unchecked state.
+    float& anim = animState[id];
+    const float target = value ? 1.0f : 0.0f;
+    const float speed = ImGui::GetIO().DeltaTime * 6.0f;
+    anim += (target - anim) * (speed > 1.0f ? 1.0f : speed);
+    if (fabsf(anim - target) < 0.01f) anim = target;
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec4 accentCol = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
     const ImU32 accentU32 = ImGui::GetColorU32(accentCol);
 
-    if (value) {
-        // Glow only when checked.
+    if (anim > 0.01f) {
         for (int i = 3; i >= 1; --i) {
             const float expand = (float)i * 2.2f;
-            const float alpha = 0.12f * (4 - i);
+            const float alpha = 0.12f * (4 - i) * anim;
             dl->AddRectFilled(ImVec2(p.x - expand, p.y - expand), ImVec2(p.x + box + expand, p.y + box + expand),
                 ImGui::GetColorU32(ImVec4(accentCol.x, accentCol.y, accentCol.z, alpha)), 4.0f + expand);
         }
-        dl->AddRectFilled(p, ImVec2(p.x + box, p.y + box), accentU32, 4.0f);
-        const ImU32 markColor = ImGui::GetColorU32(ImVec4(0.06f, 0.06f, 0.09f, 1.0f));
-        const float pad = box * 0.26f;
-        dl->AddLine(ImVec2(p.x + pad, p.y + box * 0.55f), ImVec2(p.x + box * 0.42f, p.y + box - pad), markColor, 1.8f);
-        dl->AddLine(ImVec2(p.x + box * 0.42f, p.y + box - pad), ImVec2(p.x + box - pad, p.y + pad), markColor, 1.8f);
-    } else {
-        const ImVec4 fillCol = hovered ? ImVec4(accentCol.x, accentCol.y, accentCol.z, 0.18f) : ImVec4(1.0f, 1.0f, 1.0f, 0.05f);
+        const ImVec4 fillCol = ImVec4(accentCol.x, accentCol.y, accentCol.z, anim);
         dl->AddRectFilled(p, ImVec2(p.x + box, p.y + box), ImGui::GetColorU32(fillCol), 4.0f);
-        const ImVec4 borderCol = hovered ? accentCol : ImVec4(1.0f, 1.0f, 1.0f, 0.35f);
+        if (anim > 0.4f) {
+            const ImU32 markColor = ImGui::GetColorU32(ImVec4(0.06f, 0.06f, 0.09f, anim));
+            const float pad = box * 0.26f;
+            dl->AddLine(ImVec2(p.x + pad, p.y + box * 0.55f), ImVec2(p.x + box * 0.42f, p.y + box - pad), markColor, 1.8f);
+            dl->AddLine(ImVec2(p.x + box * 0.42f, p.y + box - pad), ImVec2(p.x + box - pad, p.y + pad), markColor, 1.8f);
+        }
+    }
+    if (anim < 0.99f) {
+        const float inv = 1.0f - anim;
+        const ImVec4 fillCol = hovered ? ImVec4(accentCol.x, accentCol.y, accentCol.z, 0.18f * inv) : ImVec4(1.0f, 1.0f, 1.0f, 0.05f * inv);
+        dl->AddRectFilled(p, ImVec2(p.x + box, p.y + box), ImGui::GetColorU32(fillCol), 4.0f);
+        const ImVec4 borderCol = hovered ? ImVec4(accentCol.x, accentCol.y, accentCol.z, inv) : ImVec4(1.0f, 1.0f, 1.0f, 0.35f * inv);
         dl->AddRect(p, ImVec2(p.x + box, p.y + box), ImGui::GetColorU32(borderCol), 4.0f, 0, 1.5f);
     }
     return clicked;
@@ -1590,6 +1604,16 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     ImGui::SetNextWindowSize(ImVec2(800.0f, 500.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("ze0nware", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
+    {
+        // Diagonal gradient behind the whole window: dark violet -> deep charcoal.
+        ImDrawList* gradList = ImGui::GetWindowDrawList();
+        const ImVec2 gp = ImGui::GetWindowPos();
+        const ImVec2 gs = ImGui::GetWindowSize();
+        const ImU32 gradTop = ImGui::GetColorU32(ImVec4(0.11f, 0.07f, 0.19f, 1.0f));
+        const ImU32 gradBottom = ImGui::GetColorU32(ImVec4(0.045f, 0.04f, 0.09f, 1.0f));
+        gradList->AddRectFilledMultiColor(gp, ImVec2(gp.x + gs.x, gp.y + gs.y), gradTop, gradTop, gradBottom, gradBottom);
+    }
+
     if (useCustomBackground && backgroundTexture) {
         ImDrawList* bgList = ImGui::GetWindowDrawList();
         const ImVec2 wp = ImGui::GetWindowPos();
@@ -1616,6 +1640,14 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // Left sidebar: tab buttons.
     ImGui::SetCursorPos(ImVec2(0.0f, headerH));
     ImGui::BeginChild("menu_sidebar", ImVec2(sidebarW, winSize.y - headerH - footerH), ImGuiChildFlags_Border, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    {
+        ImDrawList* sideGrad = ImGui::GetWindowDrawList();
+        const ImVec2 sp = ImGui::GetWindowPos();
+        const ImVec2 ss = ImGui::GetWindowSize();
+        const ImU32 sideTop = ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.10f));
+        const ImU32 sideBottom = ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        sideGrad->AddRectFilledMultiColor(sp, ImVec2(sp.x + ss.x, sp.y + ss.y), sideTop, sideTop, sideBottom, sideBottom);
+    }
     ImGui::SetCursorPos(ImVec2(8.0f, 12.0f));
     const char* tabNames[] = { "MOVEMENT", "VISUALS", "WEAPONS" };
     for (int tab = 0; tab < 3; ++tab) {
