@@ -4,6 +4,7 @@
 #include "cat_skybox_bytes.h"
 
 #include <vector>
+#include <algorithm>
 #include <unordered_map>
 #include <fstream>
 #include <cstring>
@@ -184,6 +185,7 @@ struct Matrix16 {
 #define OFFSET_MATERIAL_SET_MAINTEXTURE            0x2ECF320
 #define OFFSET_RENDERSETTINGS_GET_SKYBOX            0x2ED8D60
 #define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x2ED8D90
+#define OFFSET_BULLET_TRACE_EMIT                    0xA33840
 
 #define OFFSET_WORLDTOSCREENPOINT                  0x2EC0950
 
@@ -307,6 +309,18 @@ uintptr_t originalSkyboxMaterial = 0;
 volatile LONG pendingSkyboxCommand = 0;
 
 bool infinityAmmo = false;
+bool bulletTracerEnabled = false;
+float bulletTracerColor[3] = { 1.0f, 0.25f, 0.05f };
+float bulletTracerDuration = 1.5f;
+float bulletTracerThickness = 2.5f;
+
+struct BulletTracerEntry {
+    Vector3 start;
+    Vector3 end;
+    ULONGLONG createdAt;
+};
+std::vector<BulletTracerEntry> bulletTracers;
+SRWLOCK bulletTracerLock = SRWLOCK_INIT;
 
 
 
@@ -625,6 +639,7 @@ Matrix16(__fastcall* o_Camera_get_worldToCameraMatrix)(uintptr_t) = nullptr;
 Matrix16(__fastcall* o_Camera_get_projectionMatrix)(uintptr_t) = nullptr;
 
 short(__fastcall* o_GunController_GetCurrentAmmo)(uintptr_t) = nullptr;
+void(__fastcall* o_BulletTraceEmit)(uintptr_t, Vector3, Vector3, unsigned char, bool, bool, int, const Il2CppMethod*) = nullptr;
 
 
 
@@ -926,6 +941,17 @@ uintptr_t GetPlayerController() {
 
 
 // Hook на GunController::gcloafhgkcb() - возвращает текущие патроны
+
+void __fastcall hk_BulletTraceEmit(uintptr_t instance, Vector3 start, Vector3 end, unsigned char weaponType, bool isLocal, bool isSilenced, int source, const Il2CppMethod* method)
+{
+    if (keyValidated && bulletTracerEnabled && source == 0) {
+        AcquireSRWLockExclusive(&bulletTracerLock);
+        bulletTracers.push_back({ start, end, GetTickCount64() });
+        if (bulletTracers.size() > 128) bulletTracers.erase(bulletTracers.begin(), bulletTracers.begin() + (bulletTracers.size() - 128));
+        ReleaseSRWLockExclusive(&bulletTracerLock);
+    }
+    o_BulletTraceEmit(instance, start, end, weaponType, isLocal, isSilenced, source, method);
+}
 
 short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
 
@@ -1420,6 +1446,30 @@ void BoxEsp() {
     }
 }
 
+
+void DrawBulletTracers() {
+    if (!keyValidated || !bulletTracerEnabled || !o_WorldToScreenPoint) return;
+
+    const ULONGLONG now = GetTickCount64();
+    std::vector<BulletTracerEntry> snapshot;
+    AcquireSRWLockExclusive(&bulletTracerLock);
+    bulletTracers.erase(std::remove_if(bulletTracers.begin(), bulletTracers.end(), [now](const BulletTracerEntry& tracer) {
+        return now - tracer.createdAt > static_cast<ULONGLONG>(bulletTracerDuration * 1000.0f);
+    }), bulletTracers.end());
+    snapshot = bulletTracers;
+    ReleaseSRWLockExclusive(&bulletTracerLock);
+
+    ImDrawList* drawList = ImGui::GetForegroundDrawList();
+    for (const BulletTracerEntry& tracer : snapshot) {
+        Vector2 startScreen, endScreen;
+        if (!UnityWorldToScreen(tracer.start, startScreen) || !UnityWorldToScreen(tracer.end, endScreen)) continue;
+        float age = static_cast<float>(now - tracer.createdAt) / (bulletTracerDuration * 1000.0f);
+        float alpha = 1.0f - (age < 0.0f ? 0.0f : (age > 1.0f ? 1.0f : age));
+        ImU32 color = ImGui::ColorConvertFloat4ToU32(ImVec4(bulletTracerColor[0], bulletTracerColor[1], bulletTracerColor[2], alpha));
+        drawList->AddLine(ImVec2(startScreen.x, startScreen.y), ImVec2(endScreen.x, endScreen.y), IM_COL32(0, 0, 0, static_cast<int>(170 * alpha)), bulletTracerThickness + 2.0f);
+        drawList->AddLine(ImVec2(startScreen.x, startScreen.y), ImVec2(endScreen.x, endScreen.y), color, bulletTracerThickness);
+    }
+}
 
 void DrawTrail() {
 
@@ -2199,6 +2249,12 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Spacing();
         
         ImGui::Checkbox("Infinity Ammo", &infinityAmmo);
+        ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
+        if (bulletTracerEnabled) {
+            ImGui::ColorEdit3("Tracer Color", bulletTracerColor);
+            ImGui::SliderFloat("Tracer Duration", &bulletTracerDuration, 0.1f, 5.0f, "%.1f s");
+            ImGui::SliderFloat("Tracer Thickness", &bulletTracerThickness, 1.0f, 8.0f, "%.1f");
+        }
         
         ImGui::EndChild();
     }
@@ -2253,6 +2309,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     }
 
     ImGui::PopFont();
+
+    DrawBulletTracers();
 
     ImGui::Render();
 
@@ -2349,6 +2407,10 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_CHARACTERCONTROLLER_GET_VELOCITY));
 
 
+
+    // Capture the game's exact bullet trace start/end points.
+    MH_CreateHook((LPVOID)(base + OFFSET_BULLET_TRACE_EMIT), hk_BulletTraceEmit, (LPVOID*)&o_BulletTraceEmit);
+    MH_EnableHook((LPVOID)(base + OFFSET_BULLET_TRACE_EMIT));
 
     // GunController hook for infinity ammo
 
