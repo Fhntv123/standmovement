@@ -168,6 +168,9 @@ struct Matrix16 {
 
 #define OFFSET_TRANSFORM_GET_POSITION              0x2F06CE0
 #define OFFSET_TRANSFORM_GET_FORWARD               0x2F06780
+#define OFFSET_TRANSFORM_GET_RIGHT                 0x2F06D30
+#define OFFSET_TRANSFORM_GET_UP                    0x2F06EA0
+#define OFFSET_TRANSFORM_SET_POSITION              0x2F07480
 
 #define OFFSET_COMPONENT_GET_TRANSFORM             0x2EF2D50
 
@@ -326,6 +329,12 @@ bool showTrail = false;
 
 bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
+bool thirdPersonEnabled = false;
+float thirdPersonDistance = 3.0f;
+float thirdPersonHeight = 0.35f;
+float thirdPersonShoulder = 0.45f;
+uintptr_t liveMainCameraTransform = 0;
+char thirdPersonStatus[96] = "Disabled";
 bool worldColorEnabled = false;
 float worldColor[3] = { 0.35f, 0.55f, 1.0f };
 float worldColorStrength = 0.35f;
@@ -738,6 +747,9 @@ float(__fastcall* o_Time_get_deltaTime)() = nullptr;
 
 Vector3(__fastcall* o_Transform_get_position)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_forward)(uintptr_t) = nullptr;
+Vector3(__fastcall* o_Transform_get_right)(uintptr_t) = nullptr;
+Vector3(__fastcall* o_Transform_get_up)(uintptr_t) = nullptr;
+void(__fastcall* o_Transform_set_position)(uintptr_t, Vector3) = nullptr;
 
 uintptr_t(__fastcall* o_Component_get_transform)(uintptr_t) = nullptr;
 
@@ -1014,6 +1026,24 @@ static bool CaptureWorldColorMaterials()
         return false;
     }
     return !worldColorRenderers.empty();
+}
+
+void __fastcall hk_Transform_set_position(uintptr_t instance, Vector3 position)
+{
+    if (keyValidated && thirdPersonEnabled && instance && instance == liveMainCameraTransform &&
+        o_Transform_get_forward && o_Transform_get_right && o_Transform_get_up) {
+        __try {
+            const Vector3 forward = o_Transform_get_forward(instance);
+            const Vector3 right = o_Transform_get_right(instance);
+            const Vector3 up = o_Transform_get_up(instance);
+            position.x += -forward.x * thirdPersonDistance + right.x * thirdPersonShoulder + up.x * thirdPersonHeight;
+            position.y += -forward.y * thirdPersonDistance + right.y * thirdPersonShoulder + up.y * thirdPersonHeight;
+            position.z += -forward.z * thirdPersonDistance + right.z * thirdPersonShoulder + up.z * thirdPersonHeight;
+            strcpy_s(thirdPersonStatus, "Active on local main camera");
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { strcpy_s(thirdPersonStatus, "Waiting for local camera"); }
+    }
+    o_Transform_set_position(instance, position);
 }
 
 uintptr_t GetCamera() {
@@ -1374,6 +1404,12 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
+    __try {
+        const uintptr_t mainCamera = GetCamera();
+        liveMainCameraTransform = mainCamera && o_Component_get_transform ? o_Component_get_transform(mainCamera) : 0;
+        if (thirdPersonEnabled && !liveMainCameraTransform) strcpy_s(thirdPersonStatus, "Waiting for local camera");
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { liveMainCameraTransform = 0; }
     ApplyScopeOverlayState();
 }
 
@@ -2268,6 +2304,8 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         activeLocalWeaponController = 0;
         armChamsArmsLodGroup = 0;
         gloveChamsArmsLodGroup = 0;
+        liveMainCameraTransform = 0;
+        if (thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Waiting for new match camera");
         if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
         if (armChamsEnabled) InterlockedExchange(&pendingArmChamsRefresh, 1);
         if (gloveChamsEnabled) InterlockedExchange(&pendingGloveChamsRefresh, 1);
@@ -3333,6 +3371,16 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 InterlockedExchange(&pendingWorldColorCommand, 1);
             ImGui::TextWrapped("World status: %s", worldColorStatus);
         }
+        if (ImGui::Checkbox("Third Person", &thirdPersonEnabled)) {
+            if (!thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Disabled; first person restored");
+            else strcpy_s(thirdPersonStatus, "Waiting for local camera");
+        }
+        if (thirdPersonEnabled) {
+            ImGui::SliderFloat("Third Person Distance", &thirdPersonDistance, 1.0f, 8.0f, "%.2f");
+            ImGui::SliderFloat("Third Person Height", &thirdPersonHeight, -1.0f, 3.0f, "%.2f");
+            ImGui::SliderFloat("Shoulder Offset", &thirdPersonShoulder, -2.0f, 2.0f, "%.2f");
+            ImGui::TextWrapped("Third person status: %s", thirdPersonStatus);
+        }
         ImGui::Checkbox("Camera FOV", &cameraFovEnabled);
         if (cameraFovEnabled) {
             ImGui::SliderFloat("Camera FOV Slider", &cameraFov, 30.0f, 150.0f, "%.1f");
@@ -3563,6 +3611,10 @@ DWORD WINAPI HackThread(LPVOID)
 
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
     o_Transform_get_forward = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_FORWARD);
+    o_Transform_get_right = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_RIGHT);
+    o_Transform_get_up = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_UP);
+    MH_CreateHook((LPVOID)(base + OFFSET_TRANSFORM_SET_POSITION), hk_Transform_set_position, (LPVOID*)&o_Transform_set_position);
+    MH_EnableHook((LPVOID)(base + OFFSET_TRANSFORM_SET_POSITION));
 
     o_Component_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_TRANSFORM);
 
