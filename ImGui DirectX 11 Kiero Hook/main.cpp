@@ -347,6 +347,7 @@ struct WeaponChamsRenderer {
 };
 std::vector<WeaponChamsRenderer> weaponChamsRenderers;
 uintptr_t weaponChamsController = 0;
+uintptr_t activeLocalGunController = 0;
 uintptr_t flatChamsMaterial = 0;
 uintptr_t glassChamsMaterial = 0;
 uint32_t flatChamsMaterialHandle = 0;
@@ -1051,7 +1052,6 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
     ApplyScopeOverlayState();
-    UpdateWeaponChams();
 }
 
 void DrawBorderlessScopeReticle()
@@ -1099,6 +1099,8 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
 
 void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, const Il2CppMethod* method)
 {
+    activeLocalGunController = instance;
+    UpdateWeaponChams(instance);
     insideLocalGunFire = true;
     o_GunController_Fire(instance, playSound, method);
     insideLocalGunFire = false;
@@ -1110,8 +1112,6 @@ short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
 
     short currentAmmo = o_GunController_GetCurrentAmmo(instance);
 
-    // Proven local-weapon path: this hook already drives the working Infinity Ammo feature.
-    UpdateWeaponChams(instance);
 
 
 
@@ -1511,7 +1511,7 @@ static void UpdateWeaponChams(uintptr_t knownWeaponController)
 {
     if (!keyValidated) { strcpy_s(weaponChamsStatus, "License validation inactive"); return; }
     if (!o_Renderer_set_material || !o_Material_set_color) { strcpy_s(weaponChamsStatus, "Material API unavailable"); return; }
-    uintptr_t weaponController = knownWeaponController;
+    uintptr_t weaponController = knownWeaponController ? knownWeaponController : activeLocalGunController;
     if (!weaponController) {
         __try {
             const uintptr_t localPlayer = GetPlayerController();
@@ -1521,8 +1521,13 @@ static void UpdateWeaponChams(uintptr_t knownWeaponController)
         __except (EXCEPTION_EXECUTE_HANDLER) { weaponController = 0; }
     }
 
-    if (!weaponChamsEnabled || !weaponController) {
+    if (!weaponChamsEnabled) {
         if (!weaponChamsRenderers.empty()) RestoreWeaponChams();
+        strcpy_s(weaponChamsStatus, "Disabled");
+        return;
+    }
+    if (!weaponController) {
+        strcpy_s(weaponChamsStatus, "Fire once to capture active weapon");
         return;
     }
     const uintptr_t replacement = EnsureSelectedWeaponChamsMaterial();
@@ -1544,7 +1549,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
     if (keyValidated && instance) lastCharacterController = instance;
 
-    UpdateWeaponChams();
+    if (activeLocalGunController) UpdateWeaponChams(activeLocalGunController);
 
     if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
 
@@ -2577,7 +2582,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Infinity Ammo", &infinityAmmo);
         ImGui::Checkbox("No Spread", &noSpreadEnabled);
         if (ImGui::Checkbox("Remove Scope Borders", &removeScopeBorders)) InterlockedExchange(&pendingScopeOverlayRefresh, 1);
-        ImGui::Checkbox("Weapon Chams", &weaponChamsEnabled);
+        if (ImGui::Checkbox("Weapon Chams", &weaponChamsEnabled))
+            strcpy_s(weaponChamsStatus, weaponChamsEnabled ? "Fire once to capture active weapon" : "Disabling...");
         if (weaponChamsEnabled) {
             const char* chamsModes[] = { "Flat", "Glass" };
             if (ImGui::Combo("Chams Material", &weaponChamsMode, chamsModes, IM_ARRAYSIZE(chamsModes))) weaponChamsController = 0;
