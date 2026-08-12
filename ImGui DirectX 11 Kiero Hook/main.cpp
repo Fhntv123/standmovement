@@ -312,6 +312,7 @@ volatile LONG pendingSkyboxCommand = 0;
 
 bool infinityAmmo = false;
 bool bulletTracerEnabled = false;
+bool noSpreadEnabled = false;
 float bulletTracerColor[3] = { 1.0f, 0.25f, 0.05f };
 float bulletTracerDuration = 1.5f;
 float bulletTracerThickness = 2.5f;
@@ -949,6 +950,16 @@ uintptr_t GetPlayerController() {
 
 uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float maxDistance, uintptr_t hitParameters, const Il2CppMethod* method)
 {
+    if (keyValidated && noSpreadEnabled && insideLocalGunFire) {
+        __try {
+            const uintptr_t camera = GetCamera();
+            const uintptr_t cameraTransform = camera && o_Component_get_transform ? o_Component_get_transform(camera) : 0;
+            if (cameraTransform && o_Transform_get_forward)
+                direction = o_Transform_get_forward(cameraTransform);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
     const uintptr_t result = o_HitCaster_Cast(origin, direction, maxDistance, hitParameters, method);
     if (keyValidated && bulletTracerEnabled && insideLocalGunFire && result) {
         __try {
@@ -2299,6 +2310,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Spacing();
         
         ImGui::Checkbox("Infinity Ammo", &infinityAmmo);
+        ImGui::Checkbox("No Spread", &noSpreadEnabled);
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
         if (bulletTracerEnabled) {
             ImGui::ColorEdit3("Tracer Color", bulletTracerColor);
