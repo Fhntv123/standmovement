@@ -1568,14 +1568,11 @@ static bool CaptureSilentAntiAimInput(uintptr_t player, uintptr_t command)
         silentAntiAimLatestInputValid = true;
         liveHudLocalPlayer = player;
 
-        if (!silentAntiAimLatestFiring) {
-            const float realYaw = NormalizeAngle360(
-                silentAntiAimLatestRealAimAngle.y);
-            const float fakeYaw = NormalizeAngle360(realYaw + 180.0f);
-            FixAntiAimMovement(command, realYaw, fakeYaw);
-        }
+        // Detached snapshots never enter local MovementController, so command
+        // movement is already correct relative to the real camera. Rotating it
+        // here by 180 degrees reverses W/S and A/D.
         strcpy_s(silentAntiAimStatus,
-            "Input captured; waiting for detached aim snapshot");
+            "Input captured; local movement untouched");
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -3625,7 +3622,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 InterlockedCompareExchange(&silentAntiAimAppliedCalls, 0, 0),
                 InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0));
         ImGui::Spacing();
-        ImGui::TextWrapped("Live AimingData and camera are read-only. Fake angles are written only to a native-cloned AimingData attached to the returned AimSnapshot.");
+        ImGui::TextWrapped("Live aim, camera, local model and movement stay untouched. Fake angles exist only in the detached AimSnapshot used by snapshot consumers.");
         ImGui::EndChild();
     }
     else if (currentTab == 2) { // VISUALS
