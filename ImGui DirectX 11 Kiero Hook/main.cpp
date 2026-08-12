@@ -110,7 +110,7 @@ struct Vector3 {
 
 };
 
-
+#include "edge_bug.h"
 
 struct Vector2 {
 
@@ -251,6 +251,9 @@ bool pixelSurf = false;
 bool jbActive = false;
 
 bool airJump = false;
+
+bool edgeBugEnabled = false;
+float edgeBugMinFallSpeed = 6.0f;
 
 bool showVelocity = false;
 
@@ -838,13 +841,14 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
 
 {
 
-    if (!keyValidated) return o_CC_get_isGrounded(instance);
+    const bool grounded = o_CC_get_isGrounded(instance);
+    if (!keyValidated) return grounded;
 
     if (airJump && instance) return true;
 
     if (jbActive) return false;
 
-    return o_CC_get_isGrounded(instance);
+    return EdgeBug::FilterGrounded(grounded, edgeBugEnabled);
 
 }
 
@@ -853,6 +857,7 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
 Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 {
     Vector3 vel = o_CC_get_velocity(instance);
+    EdgeBug::ObserveVelocity(vel, edgeBugEnabled, edgeBugMinFallSpeed);
     if (keyValidated) {
         lastSpeed = sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
         if (jbActive) {
@@ -878,6 +883,10 @@ Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 
 int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
+    if (keyValidated) {
+        motion = EdgeBug::ClampLandingMotion(motion, edgeBugEnabled);
+    }
+
     if (keyValidated && jbActive) {
         float speed = sqrt(motion.x * motion.x + motion.z * motion.z);
         if (speed > 0.1f) {
@@ -1713,6 +1722,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
         
         ImGui::Checkbox("Air Jump", &airJump);
+        ImGui::Checkbox("Edge Bug", &edgeBugEnabled);
+        if (edgeBugEnabled) {
+            ImGui::SliderFloat("Edge Bug Fall Speed", &edgeBugMinFallSpeed, 1.0f, 30.0f, "%.1f");
+        }
         ImGui::Checkbox("Pixel Surf", &pixelSurf);
         
         ImGui::EndChild();
