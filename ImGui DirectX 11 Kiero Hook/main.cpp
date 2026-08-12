@@ -180,7 +180,6 @@ struct Matrix16 {
 #define OFFSET_CAMERA_SET_BACKGROUNDCOLOR          0x2EC1890
 
 #define OFFSET_CAMERA_SET_CLEARFLAGS               0x2EC1920
-#define OFFSET_OTHER_CHEAT_THIRDPERSON_GET         0x7CE8E0
 
 #define OFFSET_TEXTURE2D_CTOR                      0x2EDB780
 #define OFFSET_IMAGECONVERSION_LOADIMAGE           0x2F2B980
@@ -741,7 +740,6 @@ float(__fastcall* o_Time_get_deltaTime)() = nullptr;
 
 Vector3(__fastcall* o_Transform_get_position)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_forward)(uintptr_t) = nullptr;
-bool(__fastcall* o_OtherCheat_GetThirdPerson)(uintptr_t) = nullptr;
 
 uintptr_t(__fastcall* o_Component_get_transform)(uintptr_t) = nullptr;
 
@@ -1020,13 +1018,22 @@ static bool CaptureWorldColorMaterials()
     return !worldColorRenderers.empty();
 }
 
-bool __fastcall hk_OtherCheat_GetThirdPerson(uintptr_t instance)
+static void ApplyNativeThirdPersonState(uintptr_t localPlayer)
 {
-    if (keyValidated && thirdPersonEnabled) {
-        strcpy_s(thirdPersonStatus, "Active via native game TPS mode");
-        return true;
+    if (!localPlayer) {
+        if (thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Waiting for local PlayerController");
+        return;
     }
-    return o_OtherCheat_GetThirdPerson(instance);
+    __try {
+        // PlayerController: current TPS offset is at +0x6C and the private native
+        // FPS/TPS state flag (bzwm) immediately follows at +0x78.
+        *reinterpret_cast<bool*>(localPlayer + 0x78) = thirdPersonEnabled;
+        strcpy_s(thirdPersonStatus, thirdPersonEnabled ?
+            "Active via PlayerController native TPS state" : "Disabled; native FPS restored");
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        strcpy_s(thirdPersonStatus, "Waiting for local PlayerController");
+    }
 }
 
 uintptr_t GetCamera() {
@@ -1383,6 +1390,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     __try {
         liveAimView = instance ? *(uintptr_t*)(instance + 0x38) : 0;
         liveHudLocalPlayer = instance ? *(uintptr_t*)(instance + 0xD0) : 0;
+        ApplyNativeThirdPersonState(liveHudLocalPlayer);
         sniperSightObject = liveAimView ? *(uintptr_t*)(liveAimView + 0x48) : 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
@@ -3347,7 +3355,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::TextWrapped("World status: %s", worldColorStatus);
         }
         if (ImGui::Checkbox("Third Person", &thirdPersonEnabled))
-            strcpy_s(thirdPersonStatus, thirdPersonEnabled ? "Native TPS requested" : "Disabled; native FPS restored");
+            strcpy_s(thirdPersonStatus, thirdPersonEnabled ? "Waiting for local PlayerController" : "Disabled; native FPS restored");
         if (thirdPersonEnabled) ImGui::TextWrapped("Third person status: %s", thirdPersonStatus);
         ImGui::Checkbox("Camera FOV", &cameraFovEnabled);
         if (cameraFovEnabled) {
@@ -3579,8 +3587,6 @@ DWORD WINAPI HackThread(LPVOID)
 
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
     o_Transform_get_forward = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_FORWARD);
-    MH_CreateHook((LPVOID)(base + OFFSET_OTHER_CHEAT_THIRDPERSON_GET), hk_OtherCheat_GetThirdPerson, (LPVOID*)&o_OtherCheat_GetThirdPerson);
-    MH_EnableHook((LPVOID)(base + OFFSET_OTHER_CHEAT_THIRDPERSON_GET));
 
     o_Component_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_TRANSFORM);
 
