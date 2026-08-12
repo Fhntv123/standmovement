@@ -1633,25 +1633,21 @@ void __fastcall hk_PlayerSnapshot_Serialize(uintptr_t snapshot, uintptr_t writer
 static void ApplyLocalAntiAimPreview()
 {
     if (!liveHudLocalPlayer || !o_Component_get_transform ||
-        !o_Transform_get_eulerAngles || !o_Transform_set_eulerAngles ||
-        !o_Transform_get_localEulerAngles || !o_Transform_set_localEulerAngles)
+        !o_Transform_get_eulerAngles || !o_Transform_set_eulerAngles)
         return;
 
     __try {
-        // _characterBiped is the rendered third-person model. Camera and shot
-        // transforms are read only as an orientation reference, never changed.
+        // Rendered character and AimController's dedicated upper-body director.
+        // Do not edit individual animated bones: additive bone edits accumulate
+        // and produce sideways/crouched poses while moving.
         const uintptr_t characterBiped =
             *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0x30);
         const uintptr_t modelRoot = characterBiped ?
             o_Component_get_transform(characterBiped) : 0;
-        const uintptr_t spine2 = characterBiped ?
-            *reinterpret_cast<uintptr_t*>(characterBiped + 0x40) : 0;
-        const uintptr_t neck = characterBiped ?
-            *reinterpret_cast<uintptr_t*>(characterBiped + 0x28) : 0;
-        const uintptr_t head = characterBiped ?
-            *reinterpret_cast<uintptr_t*>(characterBiped + 0x20) : 0;
         const uintptr_t aimController =
             *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
+        const uintptr_t spineDirector = aimController ?
+            *reinterpret_cast<uintptr_t*>(aimController + 0x68) : 0;
         uintptr_t cameraTransform = aimController ?
             *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
         if (!cameraTransform) {
@@ -1659,35 +1655,33 @@ static void ApplyLocalAntiAimPreview()
             cameraTransform = camera && o_Component_get_transform ?
                 o_Component_get_transform(camera) : 0;
         }
-        if (!modelRoot || !spine2 || !neck || !head || !cameraTransform) return;
+        if (!modelRoot || !spineDirector || !cameraTransform) return;
 
-        Vector3 bodyEuler = o_Transform_get_eulerAngles(modelRoot);
         const Vector3 cameraEuler = o_Transform_get_eulerAngles(cameraTransform);
-        Vector3 spineEuler = o_Transform_get_localEulerAngles(spine2);
-        Vector3 neckEuler = o_Transform_get_localEulerAngles(neck);
-        Vector3 headEuler = o_Transform_get_localEulerAngles(head);
-
         if (silentAntiAimEnabled && silentAntiAimLocalPreview) {
-            // Always backward relative to the current view. Reading the camera
-            // yaw fixes the previous world-locked direction without moving it.
+            // Absolute rotations only. Root roll/pitch are zeroed so running,
+            // jumping and strafing cannot leave a diagonal anti-aim pose.
+            Vector3 bodyEuler;
+            bodyEuler.x = 0.0f;
             bodyEuler.y = NormalizeAngle360(cameraEuler.y + 180.0f);
+            bodyEuler.z = 0.0f;
 
-            // The rig does not use Head.local X as a universal pitch axis.
-            // Distribute a strong downward bend over the upper-body chain so
-            // it remains visible with this avatar's animated bone basis.
-            spineEuler.x = NormalizeAngle360(spineEuler.x + 35.0f);
-            neckEuler.x = NormalizeAngle360(neckEuler.x + 35.0f);
-            headEuler.x = NormalizeAngle360(headEuler.x + 55.0f);
+            // spineDirector is the rig's intended aim target. Point it straight
+            // down and backward in world space instead of bending bones by hand.
+            Vector3 directorEuler;
+            directorEuler.x = 89.0f;
+            directorEuler.y = bodyEuler.y;
+            directorEuler.z = 0.0f;
             o_Transform_set_eulerAngles(modelRoot, bodyEuler);
-            o_Transform_set_localEulerAngles(spine2, spineEuler);
-            o_Transform_set_localEulerAngles(neck, neckEuler);
-            o_Transform_set_localEulerAngles(head, headEuler);
+            o_Transform_set_eulerAngles(spineDirector, directorEuler);
+
             silentAntiAimPreviewApplied = true;
             if (InterlockedCompareExchange(&silentAntiAimLocalPacketCalls, 0, 0) == 0)
-                strcpy_s(silentAntiAimStatus, "Local backward/down preview active");
+                strcpy_s(silentAntiAimStatus, "Local absolute backward/down pose active");
         }
         else if (silentAntiAimPreviewApplied) {
-            // Animator owns the normal pose again as soon as preview is off.
+            // No cached bone restoration is needed: Animator/AimController own
+            // the normal pose again on their next update.
             silentAntiAimPreviewApplied = false;
             strcpy_s(silentAntiAimStatus, silentAntiAimEnabled ?
                 "Network anti-aim enabled; local preview off" : "Disabled");
@@ -1695,7 +1689,7 @@ static void ApplyLocalAntiAimPreview()
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         silentAntiAimPreviewApplied = false;
-        strcpy_s(silentAntiAimStatus, "Waiting for local character rig");
+        strcpy_s(silentAntiAimStatus, "Waiting for local aim director");
     }
 }
 
