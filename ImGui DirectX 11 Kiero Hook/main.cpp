@@ -214,11 +214,6 @@ struct Matrix16 {
 #define OFFSET_HUDVIEW_UPDATE                       0xA68C60
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xA5D6C0
 #define OFFSET_PLAYERSNAPSHOT_SERIALIZE             0x8431A0
-#define OFFSET_TRANSFORM_GET_EULERANGLES            0x2F066B0
-#define OFFSET_TRANSFORM_SET_EULERANGLES            0x2F07020
-#define OFFSET_TRANSFORM_GET_LOCALEULERANGLES       0x2F06890
-#define OFFSET_TRANSFORM_SET_LOCALEULERANGLES       0x2F07100
-#define OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT         0x86C060
 #define OFFSET_COMPONENT_GET_GAMEOBJECT             0x2EF2CA0
 #define OFFSET_GAMEOBJECT_SETACTIVE                 0x2EF6620
 #define OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY     0x2EF6A20
@@ -334,11 +329,7 @@ bool showTrail = false;
 bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool silentAntiAimEnabled = false;
-bool silentAntiAimLocalPreview = true;
 bool silentAntiAimHookReady = false;
-bool silentAntiAimPreviewApplied = false;
-uintptr_t silentAntiAimPreviewRoot = 0;
-Vector3 silentAntiAimPreviewBaseEuler;
 volatile LONG silentAntiAimHookCalls = 0;
 volatile LONG silentAntiAimLocalPacketCalls = 0;
 char silentAntiAimStatus[96] = "Disabled";
@@ -767,11 +758,6 @@ float(__fastcall* o_Time_get_deltaTime)() = nullptr;
 
 Vector3(__fastcall* o_Transform_get_position)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_forward)(uintptr_t) = nullptr;
-Vector3(__fastcall* o_Transform_get_eulerAngles)(uintptr_t) = nullptr;
-void(__fastcall* o_Transform_set_eulerAngles)(uintptr_t, Vector3) = nullptr;
-Vector3(__fastcall* o_Transform_get_localEulerAngles)(uintptr_t) = nullptr;
-void(__fastcall* o_Transform_set_localEulerAngles)(uintptr_t, Vector3) = nullptr;
-void(__fastcall* o_AimController_ApplySnapshot)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 
 uintptr_t(__fastcall* o_Component_get_transform)(uintptr_t) = nullptr;
 
@@ -1634,115 +1620,6 @@ void __fastcall hk_PlayerSnapshot_Serialize(uintptr_t snapshot, uintptr_t writer
     }
 }
 
-static void RestoreLocalAntiAimPreview()
-{
-    if (!silentAntiAimPreviewApplied || !silentAntiAimPreviewRoot ||
-        !o_Transform_set_eulerAngles) return;
-    __try {
-        // Restore exactly the untouched pose captured after the previous
-        // Animator/IK pass. This happens before the next pass, so no fake angle
-        // can feed back into animation, jumping or strafing.
-        o_Transform_set_eulerAngles(
-            silentAntiAimPreviewRoot, silentAntiAimPreviewBaseEuler);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-    silentAntiAimPreviewApplied = false;
-    silentAntiAimPreviewRoot = 0;
-}
-
-static void ApplyLocalAntiAimPreview()
-{
-    if (!silentAntiAimEnabled || !silentAntiAimLocalPreview ||
-        !liveHudLocalPlayer || !o_Component_get_transform ||
-        !o_Transform_get_eulerAngles || !o_Transform_set_eulerAngles ||
-        !o_AimController_ApplySnapshot)
-        return;
-
-    uintptr_t aimSnapshot = 0;
-    uintptr_t aimingData = 0;
-    float savedAimX = 0.0f, savedAimY = 0.0f;
-    Vector3 savedAimAngle, savedAimEuler;
-    bool snapshotPatched = false;
-    __try {
-        const uintptr_t characterBiped =
-            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0x30);
-        const uintptr_t modelRoot = characterBiped ?
-            o_Component_get_transform(characterBiped) : 0;
-        const uintptr_t aimController =
-            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
-        aimSnapshot = aimController ?
-            *reinterpret_cast<uintptr_t*>(aimController + 0x168) : 0;
-        if (!modelRoot || !aimController || !aimSnapshot) return;
-
-        // Capture the fresh, completely normal Animator/IK result. The fake
-        // body yaw is a delta from this pose, not from camera/world axes.
-        const Vector3 normalRootEuler =
-            o_Transform_get_eulerAngles(modelRoot);
-
-        savedAimX = *reinterpret_cast<float*>(aimSnapshot + 0x54);
-        savedAimY = *reinterpret_cast<float*>(aimSnapshot + 0x58);
-        aimingData = *reinterpret_cast<uintptr_t*>(aimSnapshot + 0x18);
-        if (aimingData) {
-            savedAimAngle = *reinterpret_cast<Vector3*>(aimingData + 0x18);
-            savedAimEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
-        }
-
-        // Feed a fake pitch through the game's own AimController apply path.
-        // That path updates the complete upper-body/weapon IK consistently.
-        *reinterpret_cast<float*>(aimSnapshot + 0x54) = 0.0f;
-        *reinterpret_cast<float*>(aimSnapshot + 0x58) = 89.0f;
-        if (aimingData) {
-            Vector3 fakeAimAngle = savedAimAngle;
-            Vector3 fakeAimEuler = savedAimEuler;
-            fakeAimAngle.x = 89.0f;
-            fakeAimAngle.y = 0.0f;
-            fakeAimEuler.x = 89.0f;
-            fakeAimEuler.y = 0.0f;
-            *reinterpret_cast<Vector3*>(aimingData + 0x18) = fakeAimAngle;
-            *reinterpret_cast<Vector3*>(aimingData + 0x24) = fakeAimEuler;
-        }
-        snapshotPatched = true;
-        o_AimController_ApplySnapshot(aimController, aimSnapshot, nullptr);
-
-        // Restore all gameplay data immediately. Only the already-calculated
-        // rendered pose remains until the next frame.
-        *reinterpret_cast<float*>(aimSnapshot + 0x54) = savedAimX;
-        *reinterpret_cast<float*>(aimSnapshot + 0x58) = savedAimY;
-        if (aimingData) {
-            *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAimAngle;
-            *reinterpret_cast<Vector3*>(aimingData + 0x24) = savedAimEuler;
-        }
-        snapshotPatched = false;
-
-        // Reverse the whole freshly animated model exactly 180 degrees while
-        // preserving its legitimate pitch/roll from movement and animation.
-        Vector3 fakeRootEuler = normalRootEuler;
-        fakeRootEuler.y = NormalizeAngle360(normalRootEuler.y + 180.0f);
-        o_Transform_set_eulerAngles(modelRoot, fakeRootEuler);
-        silentAntiAimPreviewRoot = modelRoot;
-        silentAntiAimPreviewBaseEuler = normalRootEuler;
-        silentAntiAimPreviewApplied = true;
-        if (InterlockedCompareExchange(&silentAntiAimLocalPacketCalls, 0, 0) == 0)
-            strcpy_s(silentAntiAimStatus, "Native backward/down preview active");
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        __try {
-            if (snapshotPatched && aimSnapshot) {
-                *reinterpret_cast<float*>(aimSnapshot + 0x54) = savedAimX;
-                *reinterpret_cast<float*>(aimSnapshot + 0x58) = savedAimY;
-                if (aimingData) {
-                    *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAimAngle;
-                    *reinterpret_cast<Vector3*>(aimingData + 0x24) = savedAimEuler;
-                }
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-        silentAntiAimPreviewApplied = false;
-        silentAntiAimPreviewRoot = 0;
-        strcpy_s(silentAntiAimStatus, "Waiting for native aim snapshot");
-    }
-}
-
 static uintptr_t GetAuthoritativeLocalWeaponController();
 static uintptr_t GetCurrentLocalWeaponController();
 static void UpdateWeaponChams(uintptr_t knownWeaponController = 0);
@@ -1751,7 +1628,6 @@ static void UpdateGloveChams(uintptr_t knownArmsLodGroup = 0);
 
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
-    RestoreLocalAntiAimPreview();
     __try {
         liveAimView = instance ? *(uintptr_t*)(instance + 0x38) : 0;
         liveHudLocalPlayer = instance ? *(uintptr_t*)(instance + 0xD0) : 0;
@@ -1763,7 +1639,6 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
         ApplyCustomizedThirdPersonOffsets();
     if (InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0) && ApplyNativeThirdPersonState())
         InterlockedExchange(&pendingThirdPersonCommand, 0);
-    ApplyLocalAntiAimPreview();
     ApplyScopeOverlayState();
 }
 
@@ -3699,14 +3574,13 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             strcpy_s(silentAntiAimStatus, !silentAntiAimEnabled ? "Disabled" :
                 (silentAntiAimHookReady ? "Final packet hook installed; waiting for first call" : "Player packet hook failed to install"));
         }
-        ImGui::Checkbox("Local Third-Person Preview", &silentAntiAimLocalPreview);
         ImGui::TextWrapped("Status: %s", silentAntiAimStatus);
         if (silentAntiAimEnabled)
             ImGui::Text("Hook calls: %ld | Local packets: %ld",
                 InterlockedCompareExchange(&silentAntiAimHookCalls, 0, 0),
                 InterlockedCompareExchange(&silentAntiAimLocalPacketCalls, 0, 0));
         ImGui::Spacing();
-        ImGui::TextWrapped("Preview uses native AimController pose application, then reverses the fresh rendered model by exactly 180 degrees. Snapshot data, camera and shot direction stay untouched.");
+        ImGui::TextWrapped("Changes only the outgoing player snapshot. Local camera, crosshair and shot direction stay untouched.");
         ImGui::EndChild();
     }
     else if (currentTab == 2) { // VISUALS
@@ -3988,11 +3862,6 @@ DWORD WINAPI HackThread(LPVOID)
 
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
     o_Transform_get_forward = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_FORWARD);
-    o_Transform_get_eulerAngles = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_EULERANGLES);
-    o_Transform_set_eulerAngles = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_EULERANGLES);
-    o_Transform_get_localEulerAngles = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_LOCALEULERANGLES);
-    o_Transform_set_localEulerAngles = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_LOCALEULERANGLES);
-    o_AimController_ApplySnapshot = (void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT);
 
     o_Component_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_TRANSFORM);
 
