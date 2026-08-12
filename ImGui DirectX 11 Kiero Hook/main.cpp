@@ -213,6 +213,9 @@ struct Matrix16 {
 #define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
 #define OFFSET_HUDVIEW_UPDATE                       0xA68C60
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xA5D6C0
+#define OFFSET_NETWORKCONTROLLER_WRITE_SNAPSHOT    0x839CB0
+#define OFFSET_MOVEMENTSNAPSHOT_SERIALIZE           0x859240
+#define OFFSET_AIMSNAPSHOT_SERIALIZE                0x881A90
 #define OFFSET_COMPONENT_GET_GAMEOBJECT             0x2EF2CA0
 #define OFFSET_GAMEOBJECT_SETACTIVE                 0x2EF6620
 #define OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY     0x2EF6A20
@@ -327,6 +330,8 @@ bool showTrail = false;
 
 bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
+bool silentAntiAimEnabled = false;
+char silentAntiAimStatus[96] = "Disabled";
 bool thirdPersonEnabled = false;
 uintptr_t customizedThirdPersonPlayer = 0;
 Vector3 originalDefaultTpsOffset;
@@ -811,6 +816,9 @@ void(__fastcall* o_GameObject_SetActive)(uintptr_t, bool) = nullptr;
 bool(__fastcall* o_GameObject_get_activeInHierarchy)(uintptr_t) = nullptr;
 void(__fastcall* o_CanvasGroup_set_alpha)(uintptr_t, float) = nullptr;
 void(__fastcall* o_HUDView_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_NetworkController_WriteSnapshot)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_MovementSnapshot_Serialize)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_AimSnapshot_Serialize)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 
 
 
@@ -1477,6 +1485,121 @@ static void ApplyScopeOverlayState()
         if (scopeCanvasGroup) o_CanvasGroup_set_alpha(scopeCanvasGroup, removeScopeBorders && scoped ? 0.0f : 1.0f);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { customScopeReticleVisible = false; }
+}
+
+thread_local bool insideLocalSilentSnapshotWrite = false;
+
+static float NormalizeAngle360(float angle)
+{
+    while (angle >= 360.0f) angle -= 360.0f;
+    while (angle < 0.0f) angle += 360.0f;
+    return angle;
+}
+
+void __fastcall hk_NetworkController_WriteSnapshot(uintptr_t instance, uintptr_t writer, const Il2CppMethod* method)
+{
+    bool isLocal = false;
+    __try {
+        // NetworkController.bzvz (+0x70) is the owning PlayerController.
+        isLocal = silentAntiAimEnabled && instance && liveHudLocalPlayer &&
+            *reinterpret_cast<uintptr_t*>(instance + 0x70) == liveHudLocalPlayer;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { isLocal = false; }
+    const bool previous = insideLocalSilentSnapshotWrite;
+    insideLocalSilentSnapshotWrite = isLocal;
+    o_NetworkController_WriteSnapshot(instance, writer, method);
+    insideLocalSilentSnapshotWrite = previous;
+}
+
+void __fastcall hk_MovementSnapshot_Serialize(uintptr_t snapshot, uintptr_t writer, const Il2CppMethod* method)
+{
+    if (!insideLocalSilentSnapshotWrite || !snapshot) {
+        o_MovementSnapshot_Serialize(snapshot, writer, method);
+        return;
+    }
+    Vector3 savedCharacterRotation;
+    Vector3 savedEulerAngles;
+    bool patched = false;
+    __try {
+        savedCharacterRotation = *reinterpret_cast<Vector3*>(snapshot + 0x58);
+        savedEulerAngles = *reinterpret_cast<Vector3*>(snapshot + 0x98);
+        Vector3 fakeCharacterRotation = savedCharacterRotation;
+        Vector3 fakeEulerAngles = savedEulerAngles;
+        fakeCharacterRotation.y = NormalizeAngle360(fakeCharacterRotation.y + 180.0f);
+        fakeEulerAngles.y = NormalizeAngle360(fakeEulerAngles.y + 180.0f);
+        *reinterpret_cast<Vector3*>(snapshot + 0x58) = fakeCharacterRotation;
+        *reinterpret_cast<Vector3*>(snapshot + 0x98) = fakeEulerAngles;
+        patched = true;
+        o_MovementSnapshot_Serialize(snapshot, writer, method);
+        *reinterpret_cast<Vector3*>(snapshot + 0x58) = savedCharacterRotation;
+        *reinterpret_cast<Vector3*>(snapshot + 0x98) = savedEulerAngles;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try {
+            if (patched) {
+                *reinterpret_cast<Vector3*>(snapshot + 0x58) = savedCharacterRotation;
+                *reinterpret_cast<Vector3*>(snapshot + 0x98) = savedEulerAngles;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        strcpy_s(silentAntiAimStatus, "Waiting for movement snapshot");
+    }
+}
+
+void __fastcall hk_AimSnapshot_Serialize(uintptr_t snapshot, uintptr_t writer, const Il2CppMethod* method)
+{
+    if (!insideLocalSilentSnapshotWrite || !snapshot) {
+        o_AimSnapshot_Serialize(snapshot, writer, method);
+        return;
+    }
+    uintptr_t aimingData = 0;
+    float savedAimX = 0.0f, savedAimY = 0.0f;
+    Vector3 savedAimAngle, savedAimEuler;
+    bool patched = false;
+    __try {
+        savedAimX = *reinterpret_cast<float*>(snapshot + 0x54);
+        savedAimY = *reinterpret_cast<float*>(snapshot + 0x58);
+        aimingData = *reinterpret_cast<uintptr_t*>(snapshot + 0x18);
+        if (aimingData) {
+            savedAimAngle = *reinterpret_cast<Vector3*>(aimingData + 0x18);
+            savedAimEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
+        }
+        *reinterpret_cast<float*>(snapshot + 0x54) = 0.0f;
+        *reinterpret_cast<float*>(snapshot + 0x58) = 89.0f;
+        if (aimingData) {
+            Vector3 fakeAimAngle = savedAimAngle;
+            Vector3 fakeAimEuler = savedAimEuler;
+            fakeAimAngle.x = 89.0f;
+            fakeAimAngle.y = 0.0f;
+            fakeAimEuler.x = 89.0f;
+            fakeAimEuler.y = 0.0f;
+            *reinterpret_cast<Vector3*>(aimingData + 0x18) = fakeAimAngle;
+            *reinterpret_cast<Vector3*>(aimingData + 0x24) = fakeAimEuler;
+        }
+        patched = true;
+        o_AimSnapshot_Serialize(snapshot, writer, method);
+        *reinterpret_cast<float*>(snapshot + 0x54) = savedAimX;
+        *reinterpret_cast<float*>(snapshot + 0x58) = savedAimY;
+        if (aimingData) {
+            *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAimAngle;
+            *reinterpret_cast<Vector3*>(aimingData + 0x24) = savedAimEuler;
+        }
+        strcpy_s(silentAntiAimStatus, "Active: backward + down (network only)");
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        __try {
+            if (patched) {
+                *reinterpret_cast<float*>(snapshot + 0x54) = savedAimX;
+                *reinterpret_cast<float*>(snapshot + 0x58) = savedAimY;
+                if (aimingData) {
+                    *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAimAngle;
+                    *reinterpret_cast<Vector3*>(aimingData + 0x24) = savedAimEuler;
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        strcpy_s(silentAntiAimStatus, "Waiting for aim snapshot");
+    }
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -3427,7 +3550,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::TextColored(accent, "Anti-Aim");
         ImGui::Separator();
         ImGui::Spacing();
-        ImGui::Text("Not implemented yet.");
+        if (ImGui::Checkbox("Silent Backward + Down", &silentAntiAimEnabled))
+            strcpy_s(silentAntiAimStatus, silentAntiAimEnabled ? "Waiting for local network snapshot" : "Disabled");
+        ImGui::TextWrapped("Status: %s", silentAntiAimStatus);
+        ImGui::Spacing();
+        ImGui::TextWrapped("Changes only the outgoing player snapshot. Local camera, crosshair and shot direction stay untouched.");
         ImGui::EndChild();
     }
     else if (currentTab == 2) { // VISUALS
@@ -3782,6 +3909,12 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS));
     MH_CreateHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE), hk_HUDView_Update, (LPVOID*)&o_HUDView_Update);
     MH_EnableHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE));
+    MH_CreateHook((LPVOID)(base + OFFSET_NETWORKCONTROLLER_WRITE_SNAPSHOT), hk_NetworkController_WriteSnapshot, (LPVOID*)&o_NetworkController_WriteSnapshot);
+    MH_EnableHook((LPVOID)(base + OFFSET_NETWORKCONTROLLER_WRITE_SNAPSHOT));
+    MH_CreateHook((LPVOID)(base + OFFSET_MOVEMENTSNAPSHOT_SERIALIZE), hk_MovementSnapshot_Serialize, (LPVOID*)&o_MovementSnapshot_Serialize);
+    MH_EnableHook((LPVOID)(base + OFFSET_MOVEMENTSNAPSHOT_SERIALIZE));
+    MH_CreateHook((LPVOID)(base + OFFSET_AIMSNAPSHOT_SERIALIZE), hk_AimSnapshot_Serialize, (LPVOID*)&o_AimSnapshot_Serialize);
+    MH_EnableHook((LPVOID)(base + OFFSET_AIMSNAPSHOT_SERIALIZE));
 
     // Capture the live ArmsLodGroup directly whenever its first-person visibility is enabled.
     MH_CreateHook((LPVOID)(base + OFFSET_ARMSLOD_SET_VISIBLE), hk_ArmsLod_SetVisible, (LPVOID*)&o_ArmsLod_SetVisible);
