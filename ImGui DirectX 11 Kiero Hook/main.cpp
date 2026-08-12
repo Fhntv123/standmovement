@@ -330,6 +330,8 @@ bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool silentAntiAimEnabled = false;
 bool silentAntiAimHookReady = false;
+volatile LONG silentAntiAimHookCalls = 0;
+volatile LONG silentAntiAimLocalPacketCalls = 0;
 char silentAntiAimStatus[96] = "Disabled";
 bool thirdPersonEnabled = false;
 uintptr_t customizedThirdPersonPlayer = 0;
@@ -1488,15 +1490,29 @@ static bool IsLocalPlayerSnapshot(uintptr_t snapshot)
 {
     if (!silentAntiAimEnabled || !snapshot || !liveHudLocalPlayer) return false;
     __try {
+        // Authoritative chain from the local HUD player:
+        // PlayerController.bzxf NetworkController +0x108
+        // NetworkController.bzwa outgoing PlayerSnapshot +0x78.
+        const uintptr_t networkController =
+            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0x108);
+        const uintptr_t outgoingPlayerSnapshot = networkController ?
+            *reinterpret_cast<uintptr_t*>(networkController + 0x78) : 0;
+        if (outgoingPlayerSnapshot == snapshot) return true;
+
+        // Some modes can rebuild the PlayerSnapshot wrapper while retaining the
+        // controller-owned child snapshots. Keep this only as a mode fallback.
         const uintptr_t movement = *reinterpret_cast<uintptr_t*>(snapshot + 0x18);
         const uintptr_t aim = *reinterpret_cast<uintptr_t*>(snapshot + 0x28);
-        const uintptr_t movementController = *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xE0);
-        const uintptr_t aimController = *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
+        const uintptr_t movementController =
+            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xE0);
+        const uintptr_t aimController =
+            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
         const uintptr_t localMovement = movementController ?
             *reinterpret_cast<uintptr_t*>(movementController + 0x90) : 0;
         const uintptr_t localAim = aimController ?
             *reinterpret_cast<uintptr_t*>(aimController + 0x168) : 0;
-        return (movement && movement == localMovement) || (aim && aim == localAim);
+        return (movement && movement == localMovement) ||
+            (aim && aim == localAim);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
@@ -1510,10 +1526,14 @@ static float NormalizeAngle360(float angle)
 
 void __fastcall hk_PlayerSnapshot_Serialize(uintptr_t snapshot, uintptr_t writer, const Il2CppMethod* method)
 {
+    InterlockedIncrement(&silentAntiAimHookCalls);
     if (!IsLocalPlayerSnapshot(snapshot)) {
+        if (silentAntiAimEnabled)
+            strcpy_s(silentAntiAimStatus, "Packet hook active; waiting for local outgoing packet");
         o_PlayerSnapshot_Serialize(snapshot, writer, method);
         return;
     }
+    InterlockedIncrement(&silentAntiAimLocalPacketCalls);
 
     uintptr_t movement = 0;
     uintptr_t aim = 0;
@@ -3548,10 +3568,17 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::TextColored(accent, "Anti-Aim");
         ImGui::Separator();
         ImGui::Spacing();
-        if (ImGui::Checkbox("Silent Backward + Down", &silentAntiAimEnabled))
+        if (ImGui::Checkbox("Silent Backward + Down", &silentAntiAimEnabled)) {
+            InterlockedExchange(&silentAntiAimHookCalls, 0);
+            InterlockedExchange(&silentAntiAimLocalPacketCalls, 0);
             strcpy_s(silentAntiAimStatus, !silentAntiAimEnabled ? "Disabled" :
-                (silentAntiAimHookReady ? "Final packet hook installed; waiting for first send" : "Player packet hook failed to install"));
+                (silentAntiAimHookReady ? "Final packet hook installed; waiting for first call" : "Player packet hook failed to install"));
+        }
         ImGui::TextWrapped("Status: %s", silentAntiAimStatus);
+        if (silentAntiAimEnabled)
+            ImGui::Text("Hook calls: %ld | Local packets: %ld",
+                InterlockedCompareExchange(&silentAntiAimHookCalls, 0, 0),
+                InterlockedCompareExchange(&silentAntiAimLocalPacketCalls, 0, 0));
         ImGui::Spacing();
         ImGui::TextWrapped("Changes only the outgoing player snapshot. Local camera, crosshair and shot direction stay untouched.");
         ImGui::EndChild();
