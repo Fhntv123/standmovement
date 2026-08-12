@@ -414,7 +414,7 @@ struct Vector3d {
 
 int maxTrailPoints = 600;
 
-float trailMinDistance = 5.0f; // Уменьшил для более плавного trail
+float trailMinDistance = 0.05f; // Unity units are meters; sample every 5 cm
 
 
 
@@ -981,17 +981,18 @@ void UpdateTrail() {
 
     
 
-    Vector3 pos = GetPlayerPosition();
+    Vector3 pos;
+    bool hasPosition = false;
 
-    
+    void* localPC = GetLocalPC();
+    if (localPC) hasPosition = GetPCPosition(localPC, pos);
 
-    // Проверяем что позиция валидная
-
-    if (pos.x == 0 && pos.y == 0 && pos.z == 0) {
-
-        return;
-
+    if (!hasPosition) {
+        pos = GetPlayerPosition();
+        hasPosition = !(pos.x == 0.0f && pos.y == 0.0f && pos.z == 0.0f);
     }
+
+    if (!hasPosition) return;
 
     
 
@@ -1378,8 +1379,6 @@ DWORD WINAPI TrailThread(LPVOID) {
 
     while (!unloadRequested) {
 
-        UpdateTrail();
-
         InfinityAmmoLoop();
         Sleep(16);
 
@@ -1608,6 +1607,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
 
 
+    UpdateTrail();
     DrawTrail();
 
     
