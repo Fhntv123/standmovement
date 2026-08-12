@@ -801,7 +801,7 @@ static void ApplyWorldColorToCache()
         __try { o_Material_set_color(entry.material, tinted); }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
-    sprintf_s(worldColorStatus, "Active on %zu static map material(s)", worldColorMaterials.size());
+    sprintf_s(worldColorStatus, "Active on %zu map material(s)", worldColorMaterials.size());
 }
 
 static void CaptureWorldColorMaterialsUnsafe()
@@ -817,7 +817,7 @@ static void CaptureWorldColorMaterialsUnsafe()
     std::unordered_map<uintptr_t, bool> seenMaterials;
     for (size_t i = 0; i < rendererCount; ++i) {
         const uintptr_t renderer = *(uintptr_t*)(rendererArray + 0x20 + i * sizeof(uintptr_t));
-        if (!renderer || !o_Renderer_get_isPartOfStaticBatch(renderer)) continue;
+        if (!renderer) continue;
         Il2CppArray* materials = o_Renderer_get_materials(renderer);
         const uintptr_t materialArray = reinterpret_cast<uintptr_t>(materials);
         const size_t materialCount = materialArray ? *(size_t*)(materialArray + 0x18) : 0;
@@ -836,7 +836,7 @@ static void CaptureWorldColorMaterials()
 {
     worldColorMaterials.clear();
     if (!g_il2cpp.class_get_type || !g_il2cpp.type_get_object || !o_Object_FindObjectsOfType ||
-        !o_Renderer_get_materials || !o_Renderer_get_isPartOfStaticBatch || !o_Material_get_color) {
+        !o_Renderer_get_materials || !o_Material_get_color) {
         strcpy_s(worldColorStatus, "World Color API unavailable");
         return;
     }
