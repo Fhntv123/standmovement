@@ -150,6 +150,8 @@ struct Matrix16 {
 
 #define OFFSET_TRANSFORM_GET_POSITION              0x2F06CE0
 
+#define OFFSET_COMPONENT_GET_TRANSFORM             0x2EF2D50
+
 #define OFFSET_GET_PLAYERCONTROLLER                0x83F820  // PlayerManager.qjm() -> dcvh (current player controller)
 
 #define OFFSET_CAMERA_MAIN                         0x2EC1090
@@ -556,6 +558,10 @@ Vector3(__fastcall* o_CC_get_velocity)(uintptr_t) = nullptr;
 
 Vector3(__fastcall* o_Transform_get_position)(uintptr_t) = nullptr;
 
+uintptr_t(__fastcall* o_Component_get_transform)(uintptr_t) = nullptr;
+
+uintptr_t lastCharacterController = 0;
+
 uintptr_t(__fastcall* o_GetPlayerController)() = nullptr;
 
 uintptr_t(__fastcall* o_Camera_get_main)() = nullptr;
@@ -941,6 +947,8 @@ Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 
 int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
+    if (keyValidated && instance) lastCharacterController = instance;
+
     if (keyValidated && jbActive) {
         float speed = sqrt(motion.x * motion.x + motion.z * motion.z);
         if (speed > 0.1f) {
@@ -1008,12 +1016,22 @@ void UpdateTrail() {
     Vector3 pos;
     bool hasPosition = false;
 
-    void* localPC = GetLocalPC();
-    if (localPC) hasPosition = GetPCPosition(localPC, pos);
+    if (lastCharacterController && o_Component_get_transform && o_Transform_get_position) {
+        __try {
+            const uintptr_t transform = o_Component_get_transform(lastCharacterController);
+            if (transform) {
+                pos = o_Transform_get_position(transform);
+                hasPosition = true;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            lastCharacterController = 0;
+        }
+    }
 
     if (!hasPosition) {
-        pos = GetPlayerPosition();
-        hasPosition = !(pos.x == 0.0f && pos.y == 0.0f && pos.z == 0.0f);
+        void* localPC = GetLocalPC();
+        if (localPC) hasPosition = GetPCPosition(localPC, pos);
     }
 
     if (!hasPosition) return;
@@ -1103,7 +1121,7 @@ void BoxEsp() {
 
 void DrawTrail() {
 
-    if (!keyValidated || !showTrail || trailPoints.size() < 2) return;
+    if (!keyValidated || !showTrail || trailPoints.empty()) return;
 
     if (!unityPlayerBase || !o_WorldToScreenPoint) return;
 
@@ -1113,7 +1131,7 @@ void DrawTrail() {
 
     
 
-    for (size_t i = 0; i < trailPoints.size() - 1; i++) {
+    for (size_t i = 0; i + 1 < trailPoints.size(); i++) {
 
         Vector2 screen1, screen2;
 
@@ -1966,6 +1984,8 @@ DWORD WINAPI HackThread(LPVOID)
     o_GetPlayerController = (uintptr_t(__fastcall*)())(base + OFFSET_GET_PLAYERCONTROLLER);
 
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
+
+    o_Component_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_TRANSFORM);
 
     o_Camera_get_main = (uintptr_t(__fastcall*)())(base + OFFSET_CAMERA_MAIN);
 
