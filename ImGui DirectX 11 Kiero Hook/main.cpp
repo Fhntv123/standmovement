@@ -1598,7 +1598,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     const ImVec4 bgDark(0.04f, 0.02f, 0.08f, 1.0f);
     const ImVec4 bgPanel(0.06f, 0.03f, 0.12f, 1.0f);
     const ImVec4 borderCol(1.0f, 1.0f, 1.0f, 0.12f);
-    const ImVec4 accent(accentColor[0], accentColor[1], accentColor[2], 1.0f);
+    ImVec4 accent(accentColor[0], accentColor[1], accentColor[2], 1.0f);
     const ImVec4 textDim(1.0f, 1.0f, 1.0f, 0.45f);
 
     style.Colors[ImGuiCol_Text] = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
@@ -1625,7 +1625,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     ImGui::Begin("STANDMOVEMENT", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize);
 
     // Setup ImGui style to match the "gui" folder (classic dark/orange cheat menu style)
-    ImGuiStyle& style = ImGui::GetStyle();
+    // ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 0.0f;
     style.ChildRounding = 0.0f;
     style.FrameRounding = 0.0f;
@@ -1647,7 +1647,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     colors[ImGuiCol_FrameBgActive] = ImVec4(0.18f, 0.18f, 0.18f, 1.0f);
     
     // Orange accent color from gui.hpp (255, 139, 61)
-    ImVec4 accent = ImVec4(1.0f, 0.545f, 0.239f, 1.0f);
+    accent = ImVec4(1.0f, 0.545f, 0.239f, 1.0f);
     colors[ImGuiCol_CheckMark] = accent;
     colors[ImGuiCol_SliderGrab] = accent;
     colors[ImGuiCol_SliderGrabActive] = ImVec4(1.0f, 0.6f, 0.3f, 1.0f);
@@ -1762,7 +1762,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     }
     
     ImGui::EndChild(); // ContentPanel
-    ImGui::End()
+    ImGui::End();
 
     } // menuOpen
 
