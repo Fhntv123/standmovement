@@ -463,11 +463,20 @@ extern Vector3(__fastcall* o_Transform_get_position)(uintptr_t);
 
 Il2CppClass* g_PlayerManagerClass = nullptr;
 Il2CppField* g_PlayerManagerInstanceField = nullptr;
+Il2CppClass* g_GlovesManagerClass = nullptr;
+Il2CppField* g_GlovesManagerInstanceField = nullptr;
 
 static void* GetPlayerManagerInstance() {
     if (!g_il2cpp.field_static_get_value || !g_PlayerManagerInstanceField) return nullptr;
     void* inst = nullptr;
     g_il2cpp.field_static_get_value(g_PlayerManagerInstanceField, &inst);
+    return inst;
+}
+
+static void* GetGlovesManagerInstance() {
+    if (!g_il2cpp.field_static_get_value || !g_GlovesManagerInstanceField) return nullptr;
+    void* inst = nullptr;
+    g_il2cpp.field_static_get_value(g_GlovesManagerInstanceField, &inst);
     return inst;
 }
 
@@ -1639,12 +1648,20 @@ static void AnimateArmChamsColor()
 static uintptr_t GetCurrentLocalArmsLodGroup()
 {
     __try {
+        // GlovesManager owns the current local first-person ArmsLodGroup at +0x38.
+        // This exists independently of PlayerManager/GetPlayerController and is the
+        // authoritative immediate source after injecting into an active match.
+        const uintptr_t glovesManager = reinterpret_cast<uintptr_t>(GetGlovesManagerInstance());
+        const uintptr_t managerArms = glovesManager ? *(uintptr_t*)(glovesManager + 0x38) : 0;
+        if (managerArms) return managerArms;
+
+        const uintptr_t cachedArms = armChamsArmsLodGroup ? armChamsArmsLodGroup : gloveChamsArmsLodGroup;
+        if (cachedArms) return cachedArms;
+
+        // Last-resort fallback for builds/states where GlovesManager is not created yet.
         uintptr_t localPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
         if (!localPlayer) localPlayer = GetPlayerController();
-        const uintptr_t cachedArms = armChamsArmsLodGroup ? armChamsArmsLodGroup : gloveChamsArmsLodGroup;
-        if (!localPlayer) return cachedArms;
-        const uintptr_t liveArms = *(uintptr_t*)(localPlayer + 0x138);
-        return liveArms ? liveArms : cachedArms;
+        return localPlayer ? *(uintptr_t*)(localPlayer + 0x138) : 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
@@ -3136,6 +3153,15 @@ DWORD WINAPI HackThread(LPVOID)
                 // fallback: try on class itself
                 g_PlayerManagerInstanceField = g_il2cpp.class_get_field_from_name(g_PlayerManagerClass, "cgxr");
             }
+        }
+        g_GlovesManagerClass = g_il2cpp.find_class("Axlebolt.Standoff.Main.Inventory.Gloves", "GlovesManager");
+        LINDY_LOG("[init] GlovesManagerClass=%p", (void*)g_GlovesManagerClass);
+        if (g_GlovesManagerClass) {
+            // Singleton<GlovesManager> stores the active instance in parent field cgyg.
+            Il2CppClass* parent = g_il2cpp.class_get_parent ? g_il2cpp.class_get_parent(g_GlovesManagerClass) : nullptr;
+            if (parent) g_GlovesManagerInstanceField = g_il2cpp.class_get_field_from_name(parent, "cgyg");
+            if (!g_GlovesManagerInstanceField)
+                g_GlovesManagerInstanceField = g_il2cpp.class_get_field_from_name(g_GlovesManagerClass, "cgyg");
         }
     }
     base = (uintptr_t)GetModuleHandleA("GameAssembly.dll");
