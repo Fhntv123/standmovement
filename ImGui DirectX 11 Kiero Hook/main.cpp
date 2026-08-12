@@ -584,6 +584,16 @@ uintptr_t GetCamera() {
 
 
 
+void __fastcall hk_Camera_set_fieldOfView(uintptr_t camera, float value) {
+
+    if (keyValidated && cameraFovEnabled) value = cameraFov;
+
+    o_Camera_set_fieldOfView(camera, value);
+
+}
+
+
+
 void ApplyCameraFov() {
 
     if (!cameraFovEnabled || !o_Camera_set_fieldOfView) return;
@@ -1943,7 +1953,9 @@ DWORD WINAPI HackThread(LPVOID)
 
     o_Camera_get_main = (uintptr_t(__fastcall*)())(base + OFFSET_CAMERA_MAIN);
 
-    o_Camera_set_fieldOfView = (void(__fastcall*)(uintptr_t, float))(base + OFFSET_CAMERA_SET_FIELDOFVIEW);
+    MH_CreateHook((LPVOID)(base + OFFSET_CAMERA_SET_FIELDOFVIEW), hk_Camera_set_fieldOfView, (LPVOID*)&o_Camera_set_fieldOfView);
+
+    MH_EnableHook((LPVOID)(base + OFFSET_CAMERA_SET_FIELDOFVIEW));
 
     o_WorldToScreenPoint = (Vector3(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_WORLDTOSCREENPOINT);
 
