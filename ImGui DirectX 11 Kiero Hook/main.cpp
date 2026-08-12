@@ -1622,7 +1622,9 @@ static uintptr_t GetCurrentLocalArmsLodGroup()
     __try {
         uintptr_t localPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
         if (!localPlayer) localPlayer = GetPlayerController();
-        return localPlayer ? *(uintptr_t*)(localPlayer + 0x138) : 0;
+        if (!localPlayer) return handChamsArmsLodGroup;
+        const uintptr_t liveArms = *(uintptr_t*)(localPlayer + 0x138);
+        return liveArms ? liveArms : handChamsArmsLodGroup;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
@@ -2839,7 +2841,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (handChamsEnabled) {
             const char* handModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse" };
             if (ImGui::Combo("Hand Material", &handChamsMode, handModes, IM_ARRAYSIZE(handModes))) {
-                RestoreHandChams();
+                // Keep the captured ArmsLodGroup and original materials. The game-thread
+                // refresh below swaps only the replacement material on the same renderers.
+                strcpy_s(handChamsStatus, "Switching hand material");
                 InterlockedExchange(&pendingHandChamsRefresh, 1);
             }
             if (ImGui::ColorEdit3("Hand Color", handChamsColor)) InterlockedExchange(&pendingHandChamsRefresh, 1);
