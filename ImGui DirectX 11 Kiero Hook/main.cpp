@@ -714,9 +714,7 @@ bool BuildInternetSkyboxUnityObjects(uintptr_t texture, uintptr_t data) {
     void* ctorArgs[] = { &width, &height, &textureFormat, &mipCount, &linear };
     if (!InvokeVoid(textureCtor, reinterpret_cast<void*>(texture), ctorArgs, "Texture2D constructor failed")) return false;
 
-    void* textureArg = reinterpret_cast<void*>(texture);
-    void* dataArg = reinterpret_cast<void*>(data);
-    void* imageArgs[] = { &textureArg, &dataArg };
+    void* imageArgs[] = { reinterpret_cast<void*>(texture), reinterpret_cast<void*>(data) };
     Il2CppObject* exception = nullptr;
     Il2CppObject* loadResult = g_il2cpp.runtime_invoke(loadImage, nullptr, imageArgs, &exception);
     if (exception || !loadResult || !*reinterpret_cast<bool*>(g_il2cpp.object_unbox(loadResult))) {
@@ -725,8 +723,7 @@ bool BuildInternetSkyboxUnityObjects(uintptr_t texture, uintptr_t data) {
     }
 
     Il2CppString* shaderName = g_il2cpp.string_new("Skybox/Panoramic");
-    void* shaderNameArg = shaderName;
-    void* shaderArgs[] = { &shaderNameArg };
+    void* shaderArgs[] = { shaderName };
     exception = nullptr;
     Il2CppObject* shaderObject = g_il2cpp.runtime_invoke(shaderFind, nullptr, shaderArgs, &exception);
     if (exception || !shaderObject) {
@@ -740,12 +737,10 @@ bool BuildInternetSkyboxUnityObjects(uintptr_t texture, uintptr_t data) {
         return false;
     }
 
-    void* shaderArg = shaderObject;
-    void* materialArgs[] = { &shaderArg };
+    void* materialArgs[] = { shaderObject };
     if (!InvokeVoid(materialCtor, reinterpret_cast<void*>(material), materialArgs, "Material constructor failed")) return false;
 
-    void* mainTextureArg = reinterpret_cast<void*>(texture);
-    void* textureArgs[] = { &mainTextureArg };
+    void* textureArgs[] = { reinterpret_cast<void*>(texture) };
     if (!InvokeVoid(setMainTexture, reinterpret_cast<void*>(material), textureArgs, "Material texture assignment failed")) return false;
 
     if (!originalSkyboxMaterial) {
@@ -753,8 +748,7 @@ bool BuildInternetSkyboxUnityObjects(uintptr_t texture, uintptr_t data) {
         originalSkyboxMaterial = reinterpret_cast<uintptr_t>(g_il2cpp.runtime_invoke(getSkybox, nullptr, nullptr, &exception));
     }
 
-    void* materialArg = reinterpret_cast<void*>(material);
-    void* skyboxArgs[] = { &materialArg };
+    void* skyboxArgs[] = { reinterpret_cast<void*>(material) };
     if (!InvokeVoid(setSkybox, nullptr, skyboxArgs, "RenderSettings.set_skybox failed")) return false;
 
     imageSkyboxTexture = texture;
