@@ -165,6 +165,7 @@ struct Matrix16 {
 #define OFFSET_CHARACTERCONTROLLER_GET_VELOCITY    0x2F4DF80
 
 #define OFFSET_TRANSFORM_GET_POSITION              0x2F06CE0
+#define OFFSET_TRANSFORM_GET_FORWARD               0x2F06780
 
 #define OFFSET_COMPONENT_GET_TRANSFORM             0x2EF2D50
 
@@ -185,7 +186,7 @@ struct Matrix16 {
 #define OFFSET_MATERIAL_SET_MAINTEXTURE            0x2ECF320
 #define OFFSET_RENDERSETTINGS_GET_SKYBOX            0x2ED8D60
 #define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x2ED8D90
-#define OFFSET_BULLET_TRACE_EMIT                    0xA33840
+#define OFFSET_GUNCONTROLLER_FIRE                  0x996BE0
 
 #define OFFSET_WORLDTOSCREENPOINT                  0x2EC0950
 
@@ -609,6 +610,7 @@ int(__fastcall* o_CC_Move)(uintptr_t, Vector3) = nullptr;
 Vector3(__fastcall* o_CC_get_velocity)(uintptr_t) = nullptr;
 
 Vector3(__fastcall* o_Transform_get_position)(uintptr_t) = nullptr;
+Vector3(__fastcall* o_Transform_get_forward)(uintptr_t) = nullptr;
 
 uintptr_t(__fastcall* o_Component_get_transform)(uintptr_t) = nullptr;
 
@@ -639,7 +641,7 @@ Matrix16(__fastcall* o_Camera_get_worldToCameraMatrix)(uintptr_t) = nullptr;
 Matrix16(__fastcall* o_Camera_get_projectionMatrix)(uintptr_t) = nullptr;
 
 short(__fastcall* o_GunController_GetCurrentAmmo)(uintptr_t) = nullptr;
-void(__fastcall* o_BulletTraceEmit)(uintptr_t, Vector3, Vector3, unsigned char, bool, bool, int, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 
 
 
@@ -942,15 +944,28 @@ uintptr_t GetPlayerController() {
 
 // Hook на GunController::gcloafhgkcb() - возвращает текущие патроны
 
-void __fastcall hk_BulletTraceEmit(uintptr_t instance, Vector3 start, Vector3 end, unsigned char weaponType, bool isLocal, bool isSilenced, int source, const Il2CppMethod* method)
+void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 shotOrigin, const Il2CppMethod* method)
 {
-    if (keyValidated && bulletTracerEnabled && source == 0) {
+    if (keyValidated && bulletTracerEnabled) {
+        Vector3 start = shotOrigin;
+        Vector3 direction(0.0f, 0.0f, 1.0f);
+        __try {
+            const uintptr_t camera = GetCamera();
+            const uintptr_t cameraTransform = camera && o_Component_get_transform ? o_Component_get_transform(camera) : 0;
+            if (cameraTransform && o_Transform_get_position && o_Transform_get_forward) {
+                start = o_Transform_get_position(cameraTransform);
+                direction = o_Transform_get_forward(cameraTransform);
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+        const Vector3 end(start.x + direction.x * 500.0f, start.y + direction.y * 500.0f, start.z + direction.z * 500.0f);
         AcquireSRWLockExclusive(&bulletTracerLock);
         bulletTracers.push_back({ start, end, GetTickCount64() });
         if (bulletTracers.size() > 128) bulletTracers.erase(bulletTracers.begin(), bulletTracers.begin() + (bulletTracers.size() - 128));
         ReleaseSRWLockExclusive(&bulletTracerLock);
     }
-    o_BulletTraceEmit(instance, start, end, weaponType, isLocal, isSilenced, source, method);
+    o_GunController_Fire(instance, shotOrigin, method);
 }
 
 short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
@@ -2363,6 +2378,7 @@ DWORD WINAPI HackThread(LPVOID)
     o_GetPlayerController = (uintptr_t(__fastcall*)())(base + OFFSET_GET_PLAYERCONTROLLER);
 
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
+    o_Transform_get_forward = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_FORWARD);
 
     o_Component_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_TRANSFORM);
 
@@ -2408,9 +2424,9 @@ DWORD WINAPI HackThread(LPVOID)
 
 
 
-    // Capture the game's exact bullet trace start/end points.
-    MH_CreateHook((LPVOID)(base + OFFSET_BULLET_TRACE_EMIT), hk_BulletTraceEmit, (LPVOID*)&o_BulletTraceEmit);
-    MH_EnableHook((LPVOID)(base + OFFSET_BULLET_TRACE_EMIT));
+    // Create one custom tracer for every local GunController.Fire call.
+    MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
+    MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE));
 
     // GunController hook for infinity ammo
 
