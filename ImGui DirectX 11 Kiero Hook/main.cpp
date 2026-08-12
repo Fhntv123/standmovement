@@ -1462,6 +1462,20 @@ void BoxEsp() {
 }
 
 
+static bool ProjectTracerEnd(const Vector3& pos, ImVec2& screen) {
+    if (!o_WorldToScreenPoint) return false;
+    const uintptr_t camera = GetCamera();
+    if (!camera) return false;
+    __try {
+        const Vector3 projected = o_WorldToScreenPoint(camera, pos);
+        if (projected.z <= 0.01f) return false;
+        const ImVec2 display = ImGui::GetIO().DisplaySize;
+        screen = ImVec2(projected.x, display.y - projected.y);
+        return true; // Keep off-screen coordinates; ImGui clips the line to the viewport.
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
 void DrawBulletTracers() {
     if (!keyValidated || !bulletTracerEnabled || !o_WorldToScreenPoint) return;
 
@@ -1474,16 +1488,20 @@ void DrawBulletTracers() {
     snapshot = bulletTracers;
     ReleaseSRWLockExclusive(&bulletTracerLock);
 
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const ImVec2 startScreen(display.x * 0.5f, display.y * 0.5f);
     ImDrawList* drawList = ImGui::GetForegroundDrawList();
+    drawList->PushClipRect(ImVec2(0.0f, 0.0f), display, true);
     for (const BulletTracerEntry& tracer : snapshot) {
-        Vector2 startScreen, endScreen;
-        if (!UnityWorldToScreen(tracer.start, startScreen) || !UnityWorldToScreen(tracer.end, endScreen)) continue;
+        ImVec2 endScreen;
+        if (!ProjectTracerEnd(tracer.end, endScreen)) continue;
         float age = static_cast<float>(now - tracer.createdAt) / (bulletTracerDuration * 1000.0f);
         float alpha = 1.0f - (age < 0.0f ? 0.0f : (age > 1.0f ? 1.0f : age));
         ImU32 color = ImGui::ColorConvertFloat4ToU32(ImVec4(bulletTracerColor[0], bulletTracerColor[1], bulletTracerColor[2], alpha));
-        drawList->AddLine(ImVec2(startScreen.x, startScreen.y), ImVec2(endScreen.x, endScreen.y), IM_COL32(0, 0, 0, static_cast<int>(170 * alpha)), bulletTracerThickness + 2.0f);
-        drawList->AddLine(ImVec2(startScreen.x, startScreen.y), ImVec2(endScreen.x, endScreen.y), color, bulletTracerThickness);
+        drawList->AddLine(startScreen, endScreen, IM_COL32(0, 0, 0, static_cast<int>(170 * alpha)), bulletTracerThickness + 2.0f);
+        drawList->AddLine(startScreen, endScreen, color, bulletTracerThickness);
     }
+    drawList->PopClipRect();
 }
 
 void DrawTrail() {
