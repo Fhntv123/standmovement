@@ -304,6 +304,7 @@ uintptr_t imageSkyboxMaterial = 0;
 uint32_t imageSkyboxTextureHandle = 0;
 uint32_t imageSkyboxMaterialHandle = 0;
 uintptr_t originalSkyboxMaterial = 0;
+volatile LONG pendingSkyboxCommand = 0;
 
 bool infinityAmmo = false;
 
@@ -1245,6 +1246,11 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
     if (keyValidated && instance) lastCharacterController = instance;
 
+    const LONG skyboxCommand = InterlockedExchange(&pendingSkyboxCommand, 0);
+    if (keyValidated && skyboxCommand == 1) LoadEmbeddedCatSkybox();
+    else if (keyValidated && skyboxCommand == 2) LoadInternetSkybox();
+    else if (keyValidated && skyboxCommand == 3) RestoreDefaultSkybox();
+
     if (keyValidated && jbActive) {
         float speed = sqrt(motion.x * motion.x + motion.z * motion.z);
         if (speed > 0.1f) {
@@ -2171,7 +2177,18 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (customSkyboxEnabled) {
             ImGui::ColorEdit3("Skybox Color", customSkyboxColor);
         }
-        ImGui::TextDisabled("Image skybox disabled: unstable Unity renderer path");
+        if (ImGui::Button("Load Embedded Cat Skybox")) {
+            strcpy_s(imageSkyboxStatus, "Queued on Unity game thread...");
+            InterlockedExchange(&pendingSkyboxCommand, 1);
+        }
+        ImGui::InputText("Skybox Image URL", imageSkyboxUrl, sizeof(imageSkyboxUrl));
+        if (ImGui::Button("Load Image Skybox")) {
+            strcpy_s(imageSkyboxStatus, "Queued on Unity game thread...");
+            InterlockedExchange(&pendingSkyboxCommand, 2);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Restore Skybox")) InterlockedExchange(&pendingSkyboxCommand, 3);
+        ImGui::TextWrapped("%s", imageSkyboxStatus);
         
         ImGui::EndChild();
     }
