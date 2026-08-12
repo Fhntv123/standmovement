@@ -328,6 +328,10 @@ bool showTrail = false;
 bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool thirdPersonEnabled = false;
+uintptr_t centeredThirdPersonPlayer = 0;
+float originalDefaultTpsLateralOffset = 0.0f;
+float originalCrouchingTpsLateralOffset = 0.0f;
+bool originalTpsLateralOffsetsCaptured = false;
 volatile LONG pendingThirdPersonCommand = 0;
 Il2CppClass* g_GameControllerClass = nullptr;
 Il2CppField* g_GameControllerInstanceField = nullptr;
@@ -1059,12 +1063,43 @@ static uintptr_t GetNativeCheatRuntime()
     return 0;
 }
 
+static bool ApplyCenteredThirdPersonOffsets()
+{
+    const uintptr_t player = liveHudLocalPlayer;
+    if (!player) {
+        if (thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Waiting for local player camera offsets");
+        return !thirdPersonEnabled;
+    }
+    __try {
+        if (centeredThirdPersonPlayer != player) {
+            centeredThirdPersonPlayer = player;
+            originalTpsLateralOffsetsCaptured = false;
+        }
+        if (!originalTpsLateralOffsetsCaptured) {
+            // PlayerController._defaultTpsOffset (+0x48) and _crouchingTpsOffset
+            // (+0x54) are Vector3 values. X is the unwanted shoulder/lateral shift.
+            originalDefaultTpsLateralOffset = *reinterpret_cast<float*>(player + 0x48);
+            originalCrouchingTpsLateralOffset = *reinterpret_cast<float*>(player + 0x54);
+            originalTpsLateralOffsetsCaptured = true;
+        }
+        *reinterpret_cast<float*>(player + 0x48) = thirdPersonEnabled ? 0.0f : originalDefaultTpsLateralOffset;
+        *reinterpret_cast<float*>(player + 0x54) = thirdPersonEnabled ? 0.0f : originalCrouchingTpsLateralOffset;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        originalTpsLateralOffsetsCaptured = false;
+        if (thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Waiting for local player camera offsets");
+        return !thirdPersonEnabled;
+    }
+}
+
 static bool ApplyNativeThirdPersonState()
 {
     if (!o_CheatRuntime_SetThirdPerson) {
         strcpy_s(thirdPersonStatus, "Native TPS handler unavailable");
         return false;
     }
+    if (!ApplyCenteredThirdPersonOffsets()) return false;
     const uintptr_t runtime = GetNativeCheatRuntime();
     if (!runtime) {
         strcpy_s(thirdPersonStatus, "Waiting for native cheat runtime");
@@ -1073,7 +1108,7 @@ static bool ApplyNativeThirdPersonState()
     __try {
         o_CheatRuntime_SetThirdPerson(runtime, thirdPersonEnabled);
         strcpy_s(thirdPersonStatus, thirdPersonEnabled ?
-            "Active through built-in TPS handler" : "Disabled; built-in FPS restored");
+            "Active; centered built-in TPS camera" : "Disabled; original offsets restored");
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -1440,6 +1475,8 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
+    if (thirdPersonEnabled && !InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0))
+        ApplyCenteredThirdPersonOffsets();
     if (InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0) && ApplyNativeThirdPersonState())
         InterlockedExchange(&pendingThirdPersonCommand, 0);
     ApplyScopeOverlayState();
@@ -2329,6 +2366,8 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         // Old Unity renderer pointers may already be destroyed, so abandon them
         // without attempting Restore* on stale objects and rediscover everything.
         chamsObservedLocalPlayer = currentLocalPlayer;
+        centeredThirdPersonPlayer = 0;
+        originalTpsLateralOffsetsCaptured = false;
         weaponChamsRenderers.clear();
         armChamsRenderers.clear();
         gloveChamsRenderers.clear();
