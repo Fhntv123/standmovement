@@ -342,6 +342,9 @@ std::vector<WorldColorTintMaterial> worldColorTintMaterials;
 uintptr_t worldColorMaterials[7] = {};
 uint32_t worldColorMaterialHandles[7] = {};
 volatile LONG pendingWorldColorCommand = 0;
+ULONGLONG worldColorNextRetryTick = 0;
+int worldColorRetryCount = 0;
+const int worldColorMaxRetries = 12;
 char worldColorStatus[128] = "Disabled";
 bool customSkyboxEnabled = false;
 float customSkyboxColor[3] = { 0.15f, 0.25f, 0.55f };
@@ -995,19 +998,22 @@ static void CaptureWorldColorMaterialsUnsafe()
     ApplyWorldColorToCache();
 }
 
-static void CaptureWorldColorMaterials()
+static bool CaptureWorldColorMaterials()
 {
     if (!g_il2cpp.class_get_type || !g_il2cpp.type_get_object || !o_Object_FindObjectsOfType ||
         !o_Renderer_get_materials || !o_Renderer_set_materials || !o_Material_set_color ||
         !o_Material_get_color || !o_Material_copy_ctor || !o_Material_set_shader || !g_il2cpp.array_new) {
         strcpy_s(worldColorStatus, "World Color API unavailable");
-        return;
+        return false;
     }
     __try { CaptureWorldColorMaterialsUnsafe(); }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         worldColorRenderers.clear();
-        strcpy_s(worldColorStatus, "Map renderer capture failed");
+        worldColorTintMaterials.clear();
+        strcpy_s(worldColorStatus, "Map loading; retry scheduled");
+        return false;
     }
+    return !worldColorRenderers.empty();
 }
 
 uintptr_t GetCamera() {
@@ -2266,7 +2272,10 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         if (armChamsEnabled) InterlockedExchange(&pendingArmChamsRefresh, 1);
         if (gloveChamsEnabled) InterlockedExchange(&pendingGloveChamsRefresh, 1);
         worldColorRenderers.clear();
-        if (worldColorEnabled) InterlockedExchange(&pendingWorldColorCommand, 1);
+        worldColorTintMaterials.clear();
+        worldColorRetryCount = 0;
+        worldColorNextRetryTick = GetTickCount64() + 1500;
+        if (worldColorEnabled) strcpy_s(worldColorStatus, "Waiting for new map to stabilize...");
     }
 
     const bool weaponRefreshRequested = InterlockedExchange(&pendingWeaponChamsRefresh, 0) != 0;
@@ -2291,11 +2300,28 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
 
     const LONG worldColorCommand = InterlockedExchange(&pendingWorldColorCommand, 0);
-    if (keyValidated && worldColorCommand == 1) {
-        if (worldColorRenderers.empty()) CaptureWorldColorMaterials();
-        else ApplyWorldColorToCache();
-    } else if (worldColorCommand == 2) {
+    if (worldColorCommand == 2) {
+        worldColorNextRetryTick = 0;
+        worldColorRetryCount = 0;
         RestoreWorldColor();
+    } else if (keyValidated && worldColorEnabled && worldColorCommand == 1) {
+        if (!worldColorRenderers.empty()) ApplyWorldColorToCache();
+        else { worldColorRetryCount = 0; worldColorNextRetryTick = chamsNow; }
+    }
+
+    if (keyValidated && worldColorEnabled && worldColorRenderers.empty() &&
+        worldColorNextRetryTick && chamsNow >= worldColorNextRetryTick) {
+        ++worldColorRetryCount;
+        if (CaptureWorldColorMaterials()) {
+            worldColorRetryCount = 0;
+            worldColorNextRetryTick = 0;
+        } else if (worldColorRetryCount < worldColorMaxRetries) {
+            worldColorNextRetryTick = chamsNow + 1000;
+            sprintf_s(worldColorStatus, "Map loading; retry %d/%d", worldColorRetryCount, worldColorMaxRetries);
+        } else {
+            worldColorNextRetryTick = 0;
+            strcpy_s(worldColorStatus, "Map not ready; toggle World Color to retry");
+        }
     }
 
     const LONG skyboxCommand = InterlockedExchange(&pendingSkyboxCommand, 0);
