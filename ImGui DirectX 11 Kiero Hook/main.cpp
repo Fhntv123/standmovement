@@ -190,6 +190,7 @@ struct Matrix16 {
 #define OFFSET_RENDERER_SET_MATERIAL                0x2ED9230
 #define OFFSET_RENDERER_GET_MATERIALS                0x2ED8E20
 #define OFFSET_RENDERER_IS_STATIC_BATCH              0x2ED9370
+#define OFFSET_RENDERER_SET_MATERIALS                0x2ED91C0
 #define OFFSET_OBJECT_FIND_OBJECTS_OF_TYPE            0x2EF9B30
 #define OFFSET_MATERIAL_GET_COLOR                   0x2ECEBB0
 #define OFFSET_MATERIAL_SET_COLOR                   0x2ECF040
@@ -326,10 +327,10 @@ float cameraFov = 90.0f;
 bool worldColorEnabled = false;
 float worldColor[3] = { 0.35f, 0.55f, 1.0f };
 float worldColorStrength = 1.0f;
-struct WorldColorProperty { int id; Color originalColor; };
-struct WorldColorMaterial { uintptr_t material; WorldColorProperty properties[4]; int propertyCount; };
-int worldColorPropertyIds[4] = {};
-std::vector<WorldColorMaterial> worldColorMaterials;
+struct WorldColorRenderer { uintptr_t renderer; std::vector<uintptr_t> originalMaterials; };
+std::vector<WorldColorRenderer> worldColorRenderers;
+uintptr_t worldColorMaterial = 0;
+uint32_t worldColorMaterialHandle = 0;
 volatile LONG pendingWorldColorCommand = 0;
 char worldColorStatus[128] = "Disabled";
 bool customSkyboxEnabled = false;
@@ -748,6 +749,7 @@ uintptr_t(__fastcall* o_Renderer_get_material)(uintptr_t) = nullptr;
 void(__fastcall* o_Renderer_set_material)(uintptr_t, uintptr_t) = nullptr;
 Il2CppArray*(__fastcall* o_Renderer_get_materials)(uintptr_t) = nullptr;
 bool(__fastcall* o_Renderer_get_isPartOfStaticBatch)(uintptr_t) = nullptr;
+void(__fastcall* o_Renderer_set_materials)(uintptr_t, Il2CppArray*) = nullptr;
 Il2CppArray*(__fastcall* o_Object_FindObjectsOfType)(Il2CppObject*, bool, const Il2CppMethod*) = nullptr;
 Color(__fastcall* o_Material_get_color)(uintptr_t) = nullptr;
 void(__fastcall* o_Material_set_color)(uintptr_t, Color) = nullptr;
@@ -783,98 +785,135 @@ void(__fastcall* o_HUDView_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 
 
 
-static Color BlendWorldColor(const Color& original)
+static void SetRendererMaterialArray(uintptr_t renderer, const std::vector<uintptr_t>& materials)
 {
-    const float strength = (std::max)(0.0f, (std::min)(worldColorStrength, 1.0f));
-    return Color(
-        original.r + (worldColor[0] - original.r) * strength,
-        original.g + (worldColor[1] - original.g) * strength,
-        original.b + (worldColor[2] - original.b) * strength,
-        original.a);
+    if (!renderer || materials.empty() || !o_Renderer_set_materials || !g_il2cpp.array_new) return;
+    Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
+    if (!materialClass) return;
+    Il2CppArray* array = g_il2cpp.array_new(materialClass, materials.size());
+    const uintptr_t arrayAddress = reinterpret_cast<uintptr_t>(array);
+    if (!arrayAddress) return;
+    for (size_t i = 0; i < materials.size(); ++i)
+        *reinterpret_cast<uintptr_t*>(arrayAddress + 0x20 + i * sizeof(uintptr_t)) = materials[i];
+    o_Renderer_set_materials(renderer, array);
+}
+
+static uintptr_t GetCurrentLocalWeaponController();
+
+static void RestoreWorldColorUnsafe()
+{
+    for (const WorldColorRenderer& entry : worldColorRenderers)
+        SetRendererMaterialArray(entry.renderer, entry.originalMaterials);
+    worldColorRenderers.clear();
+    strcpy_s(worldColorStatus, "Disabled; original map materials restored");
 }
 
 static void RestoreWorldColor()
 {
-    if (o_Material_SetColorId) {
-        for (const WorldColorMaterial& entry : worldColorMaterials) {
-            if (!entry.material) continue;
-            for (int i = 0; i < entry.propertyCount; ++i) {
-                __try { o_Material_SetColorId(entry.material, entry.properties[i].id, entry.properties[i].originalColor); }
-                __except (EXCEPTION_EXECUTE_HANDLER) {}
-            }
-        }
+    __try { RestoreWorldColorUnsafe(); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        worldColorRenderers.clear();
+        strcpy_s(worldColorStatus, "Restore stopped on a destroyed renderer");
     }
-    worldColorMaterials.clear();
-    strcpy_s(worldColorStatus, "Disabled; map materials restored");
+}
+
+static uintptr_t EnsureWorldColorMaterial()
+{
+    if (worldColorMaterial) return worldColorMaterial;
+    if (!o_Shader_Find || !o_Material_ctor || !g_il2cpp.object_new || !g_il2cpp.string_new) return 0;
+    static const char* shaders[] = { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default" };
+    Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
+    if (!materialClass) return 0;
+    uintptr_t shader = 0;
+    for (const char* name : shaders) {
+        shader = o_Shader_Find(g_il2cpp.string_new(name), nullptr);
+        if (shader) break;
+    }
+    if (!shader) return 0;
+    worldColorMaterial = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
+    if (!worldColorMaterial) return 0;
+    o_Material_ctor(worldColorMaterial, shader, nullptr);
+    if (g_il2cpp.gchandle_new)
+        worldColorMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(worldColorMaterial), false);
+    return worldColorMaterial;
 }
 
 static void ApplyWorldColorToCache()
 {
-    if (!o_Material_SetColorId) return;
-    size_t propertyCount = 0;
-    for (const WorldColorMaterial& entry : worldColorMaterials) {
-        if (!entry.material) continue;
-        for (int i = 0; i < entry.propertyCount; ++i) {
-            __try { o_Material_SetColorId(entry.material, entry.properties[i].id, BlendWorldColor(entry.properties[i].originalColor)); }
-            __except (EXCEPTION_EXECUTE_HANDLER) {}
-            ++propertyCount;
-        }
+    const uintptr_t replacement = EnsureWorldColorMaterial();
+    if (!replacement || !o_Material_set_color) { strcpy_s(worldColorStatus, "Unlit world material unavailable"); return; }
+    const float strength = (std::max)(0.0f, (std::min)(worldColorStrength, 1.0f));
+    const float neutral = 0.5f * (1.0f - strength);
+    o_Material_set_color(replacement, Color(
+        neutral + worldColor[0] * strength,
+        neutral + worldColor[1] * strength,
+        neutral + worldColor[2] * strength, 1.0f));
+    for (const WorldColorRenderer& entry : worldColorRenderers) {
+        std::vector<uintptr_t> replacements(entry.originalMaterials.size(), replacement);
+        SetRendererMaterialArray(entry.renderer, replacements);
     }
-    sprintf_s(worldColorStatus, "Active: %zu materials, %zu color properties", worldColorMaterials.size(), propertyCount);
+    sprintf_s(worldColorStatus, "Active on %zu map renderer(s)", worldColorRenderers.size());
 }
 
 static void CaptureWorldColorMaterialsUnsafe()
 {
-    const Il2CppClass* meshRendererClass = g_il2cpp.find_class("UnityEngine", "MeshRenderer");
+    RestoreWorldColorUnsafe();
+    const uintptr_t replacement = EnsureWorldColorMaterial();
+    if (!replacement) { strcpy_s(worldColorStatus, "Could not create world material"); return; }
+    Il2CppClass* meshRendererClass = g_il2cpp.find_class("UnityEngine", "MeshRenderer");
     if (!meshRendererClass) { strcpy_s(worldColorStatus, "MeshRenderer class unavailable"); return; }
-    const Il2CppType* meshType = g_il2cpp.class_get_type(const_cast<Il2CppClass*>(meshRendererClass));
+    const Il2CppType* meshType = g_il2cpp.class_get_type(meshRendererClass);
     Il2CppObject* reflectionType = meshType ? g_il2cpp.type_get_object(meshType) : nullptr;
     Il2CppArray* renderers = reflectionType ? o_Object_FindObjectsOfType(reflectionType, false, nullptr) : nullptr;
     const uintptr_t rendererArray = reinterpret_cast<uintptr_t>(renderers);
-    const size_t rendererCount = rendererArray ? *(size_t*)(rendererArray + 0x18) : 0;
+    const size_t rendererCount = rendererArray ? *reinterpret_cast<size_t*>(rendererArray + 0x18) : 0;
     if (!rendererCount || rendererCount > 20000) { strcpy_s(worldColorStatus, "No active map renderers found"); return; }
-    const char* names[4] = { "_Color", "_BaseColor", "_TintColor", "_MainColor" };
-    for (int i = 0; i < 4; ++i) {
-        if (!worldColorPropertyIds[i]) worldColorPropertyIds[i] = o_Shader_PropertyToID(g_il2cpp.string_new(names[i]), nullptr);
+
+    std::unordered_map<uintptr_t, bool> excluded;
+    for (const WeaponChamsRenderer& entry : weaponChamsRenderers) if (entry.renderer) excluded[entry.renderer] = true;
+    for (const ArmChamsRenderer& entry : armChamsRenderers) if (entry.renderer) excluded[entry.renderer] = true;
+    for (const GloveChamsRenderer& entry : gloveChamsRenderers) if (entry.renderer) excluded[entry.renderer] = true;
+    const uintptr_t localWeapon = GetCurrentLocalWeaponController();
+    if (localWeapon) {
+        const uintptr_t lodGroup = *reinterpret_cast<uintptr_t*>(localWeapon + 0x80);
+        const uintptr_t localRenderers = lodGroup ? *reinterpret_cast<uintptr_t*>(lodGroup + 0x40) : 0;
+        const size_t localCount = localRenderers ? *reinterpret_cast<size_t*>(localRenderers + 0x18) : 0;
+        if (localCount <= 64) for (size_t i = 0; i < localCount; ++i) {
+            const uintptr_t renderer = *reinterpret_cast<uintptr_t*>(localRenderers + 0x20 + i * sizeof(uintptr_t));
+            if (renderer) excluded[renderer] = true;
+        }
     }
-    std::unordered_map<uintptr_t, bool> seenMaterials;
+
     for (size_t i = 0; i < rendererCount; ++i) {
-        const uintptr_t renderer = *(uintptr_t*)(rendererArray + 0x20 + i * sizeof(uintptr_t));
-        if (!renderer) continue;
+        const uintptr_t renderer = *reinterpret_cast<uintptr_t*>(rendererArray + 0x20 + i * sizeof(uintptr_t));
+        if (!renderer || excluded.find(renderer) != excluded.end()) continue;
         Il2CppArray* materials = o_Renderer_get_materials(renderer);
         const uintptr_t materialArray = reinterpret_cast<uintptr_t>(materials);
-        const size_t materialCount = materialArray ? *(size_t*)(materialArray + 0x18) : 0;
+        const size_t materialCount = materialArray ? *reinterpret_cast<size_t*>(materialArray + 0x18) : 0;
         if (!materialCount || materialCount > 64) continue;
+        WorldColorRenderer entry{};
+        entry.renderer = renderer;
+        entry.originalMaterials.reserve(materialCount);
         for (size_t j = 0; j < materialCount; ++j) {
-            const uintptr_t material = *(uintptr_t*)(materialArray + 0x20 + j * sizeof(uintptr_t));
-            if (!material || seenMaterials.find(material) != seenMaterials.end()) continue;
-            seenMaterials[material] = true;
-            WorldColorMaterial entry{};
-            entry.material = material;
-            for (int k = 0; k < 4; ++k) {
-                const int propertyId = worldColorPropertyIds[k];
-                if (!propertyId || !o_Material_HasProperty(material, propertyId)) continue;
-                entry.properties[entry.propertyCount++] = { propertyId, o_Material_GetColorId(material, propertyId) };
-            }
-            if (entry.propertyCount > 0) worldColorMaterials.push_back(entry);
+            const uintptr_t material = *reinterpret_cast<uintptr_t*>(materialArray + 0x20 + j * sizeof(uintptr_t));
+            entry.originalMaterials.push_back(material);
         }
+        worldColorRenderers.push_back(std::move(entry));
     }
     ApplyWorldColorToCache();
 }
 
 static void CaptureWorldColorMaterials()
 {
-    worldColorMaterials.clear();
     if (!g_il2cpp.class_get_type || !g_il2cpp.type_get_object || !o_Object_FindObjectsOfType ||
-        !o_Renderer_get_materials || !o_Material_HasProperty || !o_Material_GetColorId ||
-        !o_Material_SetColorId || !o_Shader_PropertyToID || !g_il2cpp.string_new) {
+        !o_Renderer_get_materials || !o_Renderer_set_materials || !o_Material_set_color || !g_il2cpp.array_new) {
         strcpy_s(worldColorStatus, "World Color API unavailable");
         return;
     }
     __try { CaptureWorldColorMaterialsUnsafe(); }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        worldColorMaterials.clear();
-        strcpy_s(worldColorStatus, "Map material capture failed");
+        worldColorRenderers.clear();
+        strcpy_s(worldColorStatus, "Map renderer capture failed");
     }
 }
 
@@ -2133,7 +2172,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
         if (armChamsEnabled) InterlockedExchange(&pendingArmChamsRefresh, 1);
         if (gloveChamsEnabled) InterlockedExchange(&pendingGloveChamsRefresh, 1);
-        worldColorMaterials.clear();
+        worldColorRenderers.clear();
         if (worldColorEnabled) InterlockedExchange(&pendingWorldColorCommand, 1);
     }
 
@@ -2159,7 +2198,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 
     const LONG worldColorCommand = InterlockedExchange(&pendingWorldColorCommand, 0);
     if (keyValidated && worldColorCommand == 1) {
-        if (worldColorMaterials.empty()) CaptureWorldColorMaterials();
+        if (worldColorRenderers.empty()) CaptureWorldColorMaterials();
         else ApplyWorldColorToCache();
     } else if (worldColorCommand == 2) {
         RestoreWorldColor();
@@ -3157,7 +3196,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&pendingWorldColorCommand, worldColorEnabled ? 1 : 2);
         if (worldColorEnabled) {
             if (ImGui::ColorEdit3("Map Material Color", worldColor)) InterlockedExchange(&pendingWorldColorCommand, 1);
-            if (ImGui::SliderFloat("Map Color Strength", &worldColorStrength, 0.0f, 1.0f, "%.2f"))
+            if (ImGui::SliderFloat("World Color Strength", &worldColorStrength, 0.0f, 1.0f, "%.2f"))
                 InterlockedExchange(&pendingWorldColorCommand, 1);
             ImGui::TextWrapped("World status: %s", worldColorStatus);
         }
@@ -3414,6 +3453,7 @@ DWORD WINAPI HackThread(LPVOID)
     o_Renderer_set_material = (void(__fastcall*)(uintptr_t, uintptr_t))(base + OFFSET_RENDERER_SET_MATERIAL);
     o_Renderer_get_materials = (Il2CppArray*(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_GET_MATERIALS);
     o_Renderer_get_isPartOfStaticBatch = (bool(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_IS_STATIC_BATCH);
+    o_Renderer_set_materials = (void(__fastcall*)(uintptr_t, Il2CppArray*))(base + OFFSET_RENDERER_SET_MATERIALS);
     o_Object_FindObjectsOfType = (Il2CppArray*(__fastcall*)(Il2CppObject*, bool, const Il2CppMethod*))(base + OFFSET_OBJECT_FIND_OBJECTS_OF_TYPE);
     o_Material_get_color = (Color(__fastcall*)(uintptr_t))(base + OFFSET_MATERIAL_GET_COLOR);
     o_Material_set_color = (void(__fastcall*)(uintptr_t, Color))(base + OFFSET_MATERIAL_SET_COLOR);
