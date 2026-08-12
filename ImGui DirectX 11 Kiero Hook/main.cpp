@@ -678,8 +678,14 @@ static bool InvokeVoid(const Il2CppMethod* method, void* object, void** args, co
 }
 
 bool BuildInternetSkyboxUnityObjects(uintptr_t texture, uintptr_t data) {
-    if (!g_il2cpp.class_get_method_from_name || !g_il2cpp.runtime_invoke || !g_il2cpp.object_unbox) {
+    if (!g_il2cpp.class_get_method_from_name || !g_il2cpp.runtime_invoke || !g_il2cpp.object_unbox || !g_il2cpp.thread_attach) {
         strcpy_s(imageSkyboxStatus, "IL2CPP invoke API unavailable");
+        return false;
+    }
+
+    Il2CppDomain domain = g_il2cpp.domain_get();
+    if (!domain || !g_il2cpp.thread_attach(domain)) {
+        strcpy_s(imageSkyboxStatus, "Could not attach render thread to IL2CPP");
         return false;
     }
 
@@ -693,7 +699,7 @@ bool BuildInternetSkyboxUnityObjects(uintptr_t texture, uintptr_t data) {
         return false;
     }
 
-    const Il2CppMethod* textureCtor = g_il2cpp.class_get_method_from_name(textureClass, ".ctor", 2);
+    const Il2CppMethod* textureCtor = g_il2cpp.class_get_method_from_name(textureClass, ".ctor", 5);
     const Il2CppMethod* loadImage = g_il2cpp.class_get_method_from_name(imageClass, "LoadImage", 2);
     const Il2CppMethod* shaderFind = g_il2cpp.class_get_method_from_name(shaderClass, "Find", 1);
     const Il2CppMethod* materialCtor = g_il2cpp.class_get_method_from_name(materialClass, ".ctor", 1);
@@ -702,7 +708,10 @@ bool BuildInternetSkyboxUnityObjects(uintptr_t texture, uintptr_t data) {
     const Il2CppMethod* setSkybox = g_il2cpp.class_get_method_from_name(renderSettingsClass, "set_skybox", 1);
 
     int width = 2, height = 2;
-    void* ctorArgs[] = { &width, &height };
+    int textureFormat = 4; // TextureFormat.RGBA32
+    int mipCount = 1;
+    bool linear = false;
+    void* ctorArgs[] = { &width, &height, &textureFormat, &mipCount, &linear };
     if (!InvokeVoid(textureCtor, reinterpret_cast<void*>(texture), ctorArgs, "Texture2D constructor failed")) return false;
 
     void* textureArg = reinterpret_cast<void*>(texture);
@@ -762,6 +771,11 @@ bool BuildInternetSkyboxUnityObjects(uintptr_t texture, uintptr_t data) {
 
 bool LoadEmbeddedCatSkybox() {
 
+    if (!g_il2cpp.thread_attach || !g_il2cpp.domain_get || !g_il2cpp.thread_attach(g_il2cpp.domain_get())) {
+        strcpy_s(imageSkyboxStatus, "Could not attach render thread to IL2CPP");
+        return false;
+    }
+
     if (!g_il2cpp.object_new || !g_il2cpp.array_new) {
         strcpy_s(imageSkyboxStatus, "IL2CPP allocator unavailable");
         return false;
@@ -786,6 +800,11 @@ bool LoadEmbeddedCatSkybox() {
 }
 
 bool LoadInternetSkybox() {
+
+    if (!g_il2cpp.thread_attach || !g_il2cpp.domain_get || !g_il2cpp.thread_attach(g_il2cpp.domain_get())) {
+        strcpy_s(imageSkyboxStatus, "Could not attach render thread to IL2CPP");
+        return false;
+    }
 
     if (!imageSkyboxUrl[0] || !g_il2cpp.object_new || !g_il2cpp.array_new || !g_il2cpp.string_new) {
         strcpy_s(imageSkyboxStatus, "Enter a direct JPG/PNG URL");
@@ -1862,7 +1881,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (keyValidated) {
         ApplyCameraFov();
         ApplyCustomSkybox();
-        ApplyImageSkybox();
     }
 
 
