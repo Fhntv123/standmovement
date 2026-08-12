@@ -190,6 +190,7 @@ struct Matrix16 {
 #define OFFSET_MATERIAL_GET_COLOR                   0x2ECEBB0
 #define OFFSET_MATERIAL_SET_COLOR                   0x2ECF040
 #define OFFSET_MATERIAL_SET_RENDERQUEUE             0x2ECF3F0
+#define OFFSET_MATERIAL_SET_FLOAT                   0x2ECE360
 #define OFFSET_RENDERSETTINGS_GET_SKYBOX            0x2ED8D60
 #define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x2ED8D90
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0x8491C0
@@ -338,9 +339,13 @@ float bulletTracerDuration = 1.5f;
 float bulletTracerThickness = 2.5f;
 
 bool weaponChamsEnabled = false;
-int weaponChamsMode = 0; // 0 = Flat, 1 = Glass
+int weaponChamsMode = 0; // Flat, Glass, Lit, Metallic, Transparent Lit, Rainbow, Pulse
 float weaponChamsColor[3] = { 0.05f, 0.75f, 1.0f };
 float weaponChamsGlassAlpha = 0.35f;
+float weaponChamsMetallic = 0.9f;
+float weaponChamsSmoothness = 0.8f;
+float weaponChamsAnimationSpeed = 1.0f;
+ULONGLONG weaponChamsLastAnimationTick = 0;
 
 struct WeaponChamsRenderer {
     uintptr_t renderer;
@@ -349,10 +354,8 @@ struct WeaponChamsRenderer {
 std::vector<WeaponChamsRenderer> weaponChamsRenderers;
 uintptr_t weaponChamsController = 0;
 uintptr_t activeLocalWeaponController = 0;
-uintptr_t flatChamsMaterial = 0;
-uintptr_t glassChamsMaterial = 0;
-uint32_t flatChamsMaterialHandle = 0;
-uint32_t glassChamsMaterialHandle = 0;
+uintptr_t weaponChamsMaterials[7] = {};
+uint32_t weaponChamsMaterialHandles[7] = {};
 char weaponChamsStatus[128] = "Select Flat or Glass";
 volatile LONG pendingWeaponChamsRefresh = 0;
 
@@ -677,6 +680,7 @@ void(__fastcall* o_Renderer_set_material)(uintptr_t, uintptr_t) = nullptr;
 Color(__fastcall* o_Material_get_color)(uintptr_t) = nullptr;
 void(__fastcall* o_Material_set_color)(uintptr_t, Color) = nullptr;
 void(__fastcall* o_Material_set_renderQueue)(uintptr_t, int) = nullptr;
+void(__fastcall* o_Material_SetFloat)(uintptr_t, Il2CppString*, float) = nullptr;
 uintptr_t(__fastcall* o_RenderSettings_get_skybox)(const Il2CppMethod*) = nullptr;
 void(__fastcall* o_RenderSettings_set_skybox)(uintptr_t, const Il2CppMethod*) = nullptr;
 
@@ -1469,31 +1473,67 @@ static uintptr_t CreateWeaponChamsMaterial(const char* shaderName, bool glass)
 
 static uintptr_t EnsureSelectedWeaponChamsMaterial()
 {
-    if (weaponChamsMode == 0) {
-        if (!flatChamsMaterial) {
-            const char* flatShaders[] = { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default" };
-            for (const char* shaderName : flatShaders) {
-                flatChamsMaterial = CreateWeaponChamsMaterial(shaderName, false);
-                if (flatChamsMaterial) break;
-            }
-            if (flatChamsMaterial && g_il2cpp.gchandle_new)
-                flatChamsMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(flatChamsMaterial), false);
-        }
-        if (!flatChamsMaterial) strcpy_s(weaponChamsStatus, "Flat shader not found in this build");
-        return flatChamsMaterial;
-    }
+    const int mode = (weaponChamsMode >= 0 && weaponChamsMode < 7) ? weaponChamsMode : 0;
+    if (weaponChamsMaterials[mode]) return weaponChamsMaterials[mode];
 
-    if (!glassChamsMaterial) {
-        const char* glassShaders[] = { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", "UI/Default" };
-        for (const char* shaderName : glassShaders) {
-            glassChamsMaterial = CreateWeaponChamsMaterial(shaderName, true);
-            if (glassChamsMaterial) break;
-        }
-        if (glassChamsMaterial && g_il2cpp.gchandle_new)
-            glassChamsMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(glassChamsMaterial), false);
+    static const char* shaderCandidates[7][5] = {
+        { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
+        { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", "UI/Default", nullptr },
+        { "Legacy Shaders/Diffuse", "Standard", "Legacy Shaders/VertexLit", "Diffuse", nullptr },
+        { "Standard", "Legacy Shaders/Specular", "Legacy Shaders/Reflective/Diffuse", "Legacy Shaders/Diffuse", nullptr },
+        { "Legacy Shaders/Transparent/Diffuse", "Legacy Shaders/Transparent/VertexLit", "Legacy Shaders/Transparent/Specular", "Unlit/Transparent", nullptr },
+        { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
+        { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr }
+    };
+    const bool transparent = mode == 1 || mode == 4;
+    for (const char* shaderName : shaderCandidates[mode]) {
+        if (!shaderName) break;
+        weaponChamsMaterials[mode] = CreateWeaponChamsMaterial(shaderName, transparent);
+        if (weaponChamsMaterials[mode]) break;
     }
-    if (!glassChamsMaterial) strcpy_s(weaponChamsStatus, "Glass shader not found in this build");
-    return glassChamsMaterial;
+    const uintptr_t material = weaponChamsMaterials[mode];
+    if (!material) {
+        static const char* names[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse" };
+        sprintf_s(weaponChamsStatus, "%s shader not found in this build", names[mode]);
+        return 0;
+    }
+    if (g_il2cpp.gchandle_new)
+        weaponChamsMaterialHandles[mode] = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(material), false);
+    if (mode == 3 && o_Material_SetFloat && g_il2cpp.string_new) {
+        o_Material_SetFloat(material, g_il2cpp.string_new("_Metallic"), weaponChamsMetallic);
+        o_Material_SetFloat(material, g_il2cpp.string_new("_Glossiness"), weaponChamsSmoothness);
+    }
+    return material;
+}
+
+static Color GetWeaponChamsDisplayColor()
+{
+    if (weaponChamsMode == 5) {
+        const float t = static_cast<float>(GetTickCount64() % 60000) * 0.001f * weaponChamsAnimationSpeed;
+        const float r = 0.5f + 0.5f * sinf(t);
+        const float g = 0.5f + 0.5f * sinf(t + 2.0943951f);
+        const float b = 0.5f + 0.5f * sinf(t + 4.1887902f);
+        return Color(r, g, b, 1.0f);
+    }
+    if (weaponChamsMode == 6) {
+        const float t = static_cast<float>(GetTickCount64() % 60000) * 0.001f * weaponChamsAnimationSpeed;
+        const float intensity = 0.2f + 0.8f * (0.5f + 0.5f * sinf(t));
+        return Color(weaponChamsColor[0] * intensity, weaponChamsColor[1] * intensity, weaponChamsColor[2] * intensity, 1.0f);
+    }
+    const float alpha = (weaponChamsMode == 1 || weaponChamsMode == 4) ? weaponChamsGlassAlpha : 1.0f;
+    return Color(weaponChamsColor[0], weaponChamsColor[1], weaponChamsColor[2], alpha);
+}
+
+static void AnimateWeaponChamsColor()
+{
+    if (!weaponChamsEnabled || (weaponChamsMode != 5 && weaponChamsMode != 6) || !o_Material_set_color) return;
+    const ULONGLONG now = GetTickCount64();
+    if (now - weaponChamsLastAnimationTick < 33) return;
+    weaponChamsLastAnimationTick = now;
+    const uintptr_t material = weaponChamsMaterials[weaponChamsMode];
+    if (!material) return;
+    __try { o_Material_set_color(material, GetWeaponChamsDisplayColor()); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 static void CaptureWeaponChamsRenderers(uintptr_t weaponController)
@@ -1558,8 +1598,11 @@ static void UpdateWeaponChams(uintptr_t knownWeaponController)
         CaptureWeaponChamsRenderers(weaponController);
     if (weaponChamsRenderers.empty()) return;
 
-    const float alpha = weaponChamsMode == 1 ? weaponChamsGlassAlpha : 1.0f;
-    o_Material_set_color(replacement, Color(weaponChamsColor[0], weaponChamsColor[1], weaponChamsColor[2], alpha));
+    if (weaponChamsMode == 3 && o_Material_SetFloat && g_il2cpp.string_new) {
+        o_Material_SetFloat(replacement, g_il2cpp.string_new("_Metallic"), weaponChamsMetallic);
+        o_Material_SetFloat(replacement, g_il2cpp.string_new("_Glossiness"), weaponChamsSmoothness);
+    }
+    o_Material_set_color(replacement, GetWeaponChamsDisplayColor());
     for (const WeaponChamsRenderer& entry : weaponChamsRenderers) {
         if (!entry.renderer) continue;
         __try { o_Renderer_set_material(entry.renderer, replacement); }
@@ -1576,6 +1619,8 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         if (currentWeapon) activeLocalWeaponController = currentWeapon;
         UpdateWeaponChams(currentWeapon ? currentWeapon : activeLocalWeaponController);
     }
+
+    AnimateWeaponChamsColor();
 
     if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
 
@@ -2613,14 +2658,20 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&pendingWeaponChamsRefresh, 1);
         }
         if (weaponChamsEnabled) {
-            const char* chamsModes[] = { "Flat", "Glass" };
+            const char* chamsModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse" };
             if (ImGui::Combo("Chams Material", &weaponChamsMode, chamsModes, IM_ARRAYSIZE(chamsModes))) {
                 weaponChamsController = 0;
                 InterlockedExchange(&pendingWeaponChamsRefresh, 1);
             }
             if (ImGui::ColorEdit3("Chams Color", weaponChamsColor)) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
-            if (weaponChamsMode == 1 && ImGui::SliderFloat("Glass Alpha", &weaponChamsGlassAlpha, 0.05f, 0.95f, "%.2f"))
+            if ((weaponChamsMode == 1 || weaponChamsMode == 4) && ImGui::SliderFloat("Transparency", &weaponChamsGlassAlpha, 0.05f, 0.95f, "%.2f"))
                 InterlockedExchange(&pendingWeaponChamsRefresh, 1);
+            if (weaponChamsMode == 3) {
+                if (ImGui::SliderFloat("Metallic", &weaponChamsMetallic, 0.0f, 1.0f, "%.2f")) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
+                if (ImGui::SliderFloat("Smoothness", &weaponChamsSmoothness, 0.0f, 1.0f, "%.2f")) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
+            }
+            if (weaponChamsMode == 5 || weaponChamsMode == 6)
+                ImGui::SliderFloat("Animation Speed", &weaponChamsAnimationSpeed, 0.2f, 5.0f, "%.1f");
             ImGui::TextWrapped("Status: %s", weaponChamsStatus);
         }
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
@@ -2763,6 +2814,7 @@ DWORD WINAPI HackThread(LPVOID)
     o_Material_get_color = (Color(__fastcall*)(uintptr_t))(base + OFFSET_MATERIAL_GET_COLOR);
     o_Material_set_color = (void(__fastcall*)(uintptr_t, Color))(base + OFFSET_MATERIAL_SET_COLOR);
     o_Material_set_renderQueue = (void(__fastcall*)(uintptr_t, int))(base + OFFSET_MATERIAL_SET_RENDERQUEUE);
+    o_Material_SetFloat = (void(__fastcall*)(uintptr_t, Il2CppString*, float))(base + OFFSET_MATERIAL_SET_FLOAT);
     o_RenderSettings_get_skybox = (uintptr_t(__fastcall*)(const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_GET_SKYBOX);
     o_RenderSettings_set_skybox = (void(__fastcall*)(uintptr_t, const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_SET_SKYBOX);
 
