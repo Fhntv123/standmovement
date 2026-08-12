@@ -212,6 +212,7 @@ struct Matrix16 {
 #define OFFSET_AIMVIEW_AWAKE                       0xA60AA0
 #define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
 #define OFFSET_HUDVIEW_UPDATE                       0xA68C60
+#define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xA5D6C0
 #define OFFSET_COMPONENT_GET_GAMEOBJECT             0x2EF2CA0
 #define OFFSET_GAMEOBJECT_SETACTIVE                 0x2EF6620
 #define OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY     0x2EF6A20
@@ -327,6 +328,10 @@ bool showTrail = false;
 bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool thirdPersonEnabled = false;
+volatile LONG pendingThirdPersonCommand = 0;
+Il2CppClass* g_GameControllerClass = nullptr;
+Il2CppField* g_GameControllerInstanceField = nullptr;
+void(__fastcall* o_CheatRuntime_SetThirdPerson)(uintptr_t, bool) = nullptr;
 char thirdPersonStatus[96] = "Disabled";
 bool worldColorEnabled = false;
 float worldColor[3] = { 0.35f, 0.55f, 1.0f };
@@ -1018,21 +1023,62 @@ static bool CaptureWorldColorMaterials()
     return !worldColorRenderers.empty();
 }
 
-static void ApplyNativeThirdPersonState(uintptr_t localPlayer)
+static uintptr_t GetActiveGameController()
 {
-    if (!localPlayer) {
-        if (thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Waiting for local PlayerController");
-        return;
+    if (!g_il2cpp.field_static_get_value || !g_GameControllerInstanceField) return 0;
+    Il2CppObject* controller = nullptr;
+    g_il2cpp.field_static_get_value(g_GameControllerInstanceField, &controller);
+    return reinterpret_cast<uintptr_t>(controller);
+}
+
+static uintptr_t GetNativeCheatRuntime()
+{
+    const uintptr_t controller = GetActiveGameController();
+    if (!controller || !g_il2cpp.class_get_name) return 0;
+    __try {
+        Il2CppClass* klass = *reinterpret_cast<Il2CppClass**>(controller);
+        const char* name = klass ? g_il2cpp.class_get_name(klass) : nullptr;
+        if (!name) return 0;
+        struct RuntimeField { const char* className; uintptr_t offset; };
+        static const RuntimeField fields[] = {
+            { "OfflineModeController", 0x290 },
+            { "GrenadeBattleWithBotsController", 0x2D8 },
+            { "FreeForAllWithBotsController", 0x2B0 },
+            { "DefuseWithBotsController", 0x2F0 },
+            { "EscalationWithBotsController", 0x348 },
+            { "DeathmatchWithBotsController", 0x2B8 },
+            { "ArmsRaceWithBotsController", 0x2E0 },
+            { "DuelV2WithBotsController", 0x290 },
+            { "RankedDefuseController", 0x320 }
+        };
+        for (const RuntimeField& field : fields)
+            if (strcmp(name, field.className) == 0)
+                return *reinterpret_cast<uintptr_t*>(controller + field.offset);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return 0;
+}
+
+static bool ApplyNativeThirdPersonState()
+{
+    if (!o_CheatRuntime_SetThirdPerson) {
+        strcpy_s(thirdPersonStatus, "Native TPS handler unavailable");
+        return false;
+    }
+    const uintptr_t runtime = GetNativeCheatRuntime();
+    if (!runtime) {
+        strcpy_s(thirdPersonStatus, "Waiting for native cheat runtime");
+        return false;
     }
     __try {
-        // PlayerController: current TPS offset is at +0x6C and the private native
-        // FPS/TPS state flag (bzwm) immediately follows at +0x78.
-        *reinterpret_cast<bool*>(localPlayer + 0x78) = thirdPersonEnabled;
+        o_CheatRuntime_SetThirdPerson(runtime, thirdPersonEnabled);
         strcpy_s(thirdPersonStatus, thirdPersonEnabled ?
-            "Active via PlayerController native TPS state" : "Disabled; native FPS restored");
+            "Active through built-in TPS handler" : "Disabled; built-in FPS restored");
+        return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        strcpy_s(thirdPersonStatus, "Waiting for local PlayerController");
+        strcpy_s(thirdPersonStatus, "Native TPS transition failed");
+        return false;
     }
 }
 
@@ -1390,11 +1436,12 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     __try {
         liveAimView = instance ? *(uintptr_t*)(instance + 0x38) : 0;
         liveHudLocalPlayer = instance ? *(uintptr_t*)(instance + 0xD0) : 0;
-        ApplyNativeThirdPersonState(liveHudLocalPlayer);
         sniperSightObject = liveAimView ? *(uintptr_t*)(liveAimView + 0x48) : 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
+    if (InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0) && ApplyNativeThirdPersonState())
+        InterlockedExchange(&pendingThirdPersonCommand, 0);
     ApplyScopeOverlayState();
 }
 
@@ -2292,6 +2339,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
         if (armChamsEnabled) InterlockedExchange(&pendingArmChamsRefresh, 1);
         if (gloveChamsEnabled) InterlockedExchange(&pendingGloveChamsRefresh, 1);
+        InterlockedExchange(&pendingThirdPersonCommand, 1);
         worldColorRenderers.clear();
         worldColorTintMaterials.clear();
         worldColorRetryCount = 0;
@@ -3354,8 +3402,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 InterlockedExchange(&pendingWorldColorCommand, 1);
             ImGui::TextWrapped("World status: %s", worldColorStatus);
         }
-        if (ImGui::Checkbox("Third Person", &thirdPersonEnabled))
-            strcpy_s(thirdPersonStatus, thirdPersonEnabled ? "Waiting for local PlayerController" : "Disabled; native FPS restored");
+        if (ImGui::Checkbox("Third Person", &thirdPersonEnabled)) {
+            strcpy_s(thirdPersonStatus, thirdPersonEnabled ? "TPS transition queued" : "FPS transition queued");
+            InterlockedExchange(&pendingThirdPersonCommand, 1);
+        }
         if (thirdPersonEnabled) ImGui::TextWrapped("Third person status: %s", thirdPersonStatus);
         ImGui::Checkbox("Camera FOV", &cameraFovEnabled);
         if (cameraFovEnabled) {
@@ -3548,6 +3598,9 @@ DWORD WINAPI HackThread(LPVOID)
         bool __ok_init = g_il2cpp.init();
     LINDY_LOG("[init] g_il2cpp.init=%d ga=%p", (int)__ok_init, (void*)g_il2cpp.ga);
     if (__ok_init) {
+        g_GameControllerClass = g_il2cpp.find_class("Axlebolt.Standoff.Game", "GameController");
+        if (g_GameControllerClass)
+            g_GameControllerInstanceField = g_il2cpp.class_get_field_from_name(g_GameControllerClass, "<ceva>k__BackingField");
         g_PlayerManagerClass = g_il2cpp.find_class("", "PlayerManager");
         LINDY_LOG("[init] PlayerManagerClass=%p", (void*)g_PlayerManagerClass);
         if (g_PlayerManagerClass) {
@@ -3583,6 +3636,7 @@ DWORD WINAPI HackThread(LPVOID)
 
 
 
+    o_CheatRuntime_SetThirdPerson = (void(__fastcall*)(uintptr_t, bool))(base + OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON);
     o_GetPlayerController = (uintptr_t(__fastcall*)())(base + OFFSET_GET_PLAYERCONTROLLER);
 
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
