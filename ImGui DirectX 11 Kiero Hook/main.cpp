@@ -226,6 +226,8 @@ BindConfig jbBind = { 0, false };
 
 BindConfig airJumpBind = { 0, false };
 
+BindConfig edgeBugBind = { 0, false };
+
 BindConfig velocityBind = { 0, false };
 
 BindConfig trailBind = { 0, false };
@@ -253,7 +255,7 @@ bool jbActive = false;
 bool airJump = false;
 
 bool edgeBugEnabled = false;
-float edgeBugMinFallSpeed = 6.0f;
+float edgeBugPullForce = 20.0f;
 
 bool showVelocity = false;
 
@@ -848,7 +850,7 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
 
     if (jbActive) return false;
 
-    return EdgeBug::FilterGrounded(grounded, edgeBugEnabled);
+    return grounded;
 
 }
 
@@ -857,7 +859,6 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
 Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 {
     Vector3 vel = o_CC_get_velocity(instance);
-    EdgeBug::ObserveVelocity(vel, edgeBugEnabled, edgeBugMinFallSpeed);
     if (keyValidated) {
         lastSpeed = sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
         if (jbActive) {
@@ -883,10 +884,6 @@ Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 
 int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
-    if (keyValidated) {
-        motion = EdgeBug::ClampLandingMotion(motion, edgeBugEnabled);
-    }
-
     if (keyValidated && jbActive) {
         float speed = sqrt(motion.x * motion.x + motion.z * motion.z);
         if (speed > 0.1f) {
@@ -911,6 +908,11 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         
         motion.y = 0;
     }
+
+    if (keyValidated) {
+        motion = EdgeBug::ApplyDownwardPull(motion, edgeBugEnabled, edgeBugPullForce);
+    }
+
     return o_CC_Move(instance, motion);
 }
 
@@ -1228,6 +1230,20 @@ DWORD WINAPI KeyListenerThread(LPVOID) {
                 else airJump = held;
 
                 ajLast = held;
+
+            }
+
+            if (edgeBugBind.key > 0) {
+
+                bool held = (GetAsyncKeyState(edgeBugBind.key) & 0x8000) != 0;
+
+                static bool edgeBugToggle = false, edgeBugLast = false;
+
+                if (edgeBugBind.toggleMode) { if (held && !edgeBugLast) edgeBugToggle = !edgeBugToggle; edgeBugEnabled = edgeBugToggle; }
+
+                else edgeBugEnabled = held;
+
+                edgeBugLast = held;
 
             }
 
@@ -1724,7 +1740,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Air Jump", &airJump);
         ImGui::Checkbox("Edge Bug", &edgeBugEnabled);
         if (edgeBugEnabled) {
-            ImGui::SliderFloat("Edge Bug Fall Speed", &edgeBugMinFallSpeed, 1.0f, 30.0f, "%.1f");
+            ImGui::SliderFloat("Edge Bug Pull Force", &edgeBugPullForce, 0.0f, 100.0f, "%.1f");
         }
         ImGui::Checkbox("Pixel Surf", &pixelSurf);
         
@@ -1742,6 +1758,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         
         ImGui::Text("Air Jump Key");
         if (ImGui::Button(waitingForBind == &airJumpBind.key ? "[...]" : (airJumpBind.key > 0 ? GetKeyName(airJumpBind.key).c_str() : "None##aj"), ImVec2(100, 0))) waitingForBind = &airJumpBind.key;
+
+        ImGui::Text("Edge Bug Key");
+        if (ImGui::Button(waitingForBind == &edgeBugBind.key ? "[...]" : (edgeBugBind.key > 0 ? GetKeyName(edgeBugBind.key).c_str() : "None##eb"), ImVec2(100, 0))) waitingForBind = &edgeBugBind.key;
+        ImGui::SameLine();
+        ImGui::Checkbox("Toggle##eb", &edgeBugBind.toggleMode);
         
         ImGui::EndChild();
         
