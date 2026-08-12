@@ -359,6 +359,8 @@ struct WeaponChamsRenderer {
 std::vector<WeaponChamsRenderer> weaponChamsRenderers;
 uintptr_t weaponChamsController = 0;
 uintptr_t activeLocalWeaponController = 0;
+uintptr_t chamsObservedLocalPlayer = 0;
+uintptr_t chamsObservedCharacterController = 0;
 uintptr_t weaponChamsMaterials[7] = {};
 uint32_t weaponChamsMaterialHandles[7] = {};
 char weaponChamsStatus[128] = "Select Flat or Glass";
@@ -1173,16 +1175,16 @@ void __fastcall hk_ArmsLod_SetVisible(uintptr_t instance, bool visible, const Il
     if (!instance || !visible) return;
     armChamsArmsLodGroup = instance;
     gloveChamsArmsLodGroup = instance;
-    if (armChamsEnabled) UpdateArmChams(instance);
-    if (gloveChamsEnabled) UpdateGloveChams(instance);
+    if (armChamsEnabled) InterlockedExchange(&pendingArmChamsRefresh, 1);
+    if (gloveChamsEnabled) InterlockedExchange(&pendingGloveChamsRefresh, 1);
 }
 
 void __fastcall hk_Gloves_SetArms(uintptr_t instance, uintptr_t armsLodGroup, const Il2CppMethod* method)
 {
     o_Gloves_SetArms(instance, armsLodGroup, method);
     if (armsLodGroup) { armChamsArmsLodGroup = armsLodGroup; gloveChamsArmsLodGroup = armsLodGroup; }
-    if (armChamsEnabled && armsLodGroup) UpdateArmChams(armsLodGroup);
-    if (gloveChamsEnabled && armsLodGroup) UpdateGloveChams(armsLodGroup);
+    if (armChamsEnabled && armsLodGroup) InterlockedExchange(&pendingArmChamsRefresh, 1);
+    if (gloveChamsEnabled && armsLodGroup) InterlockedExchange(&pendingGloveChamsRefresh, 1);
 }
 
 void __fastcall hk_Weaponry_TakeWeapon(uintptr_t instance, uint8_t slotIndex, const Il2CppMethod* method)
@@ -1193,19 +1195,21 @@ void __fastcall hk_Weaponry_TakeWeapon(uintptr_t instance, uint8_t slotIndex, co
     __except (EXCEPTION_EXECUTE_HANDLER) { weaponController = 0; }
     activeLocalWeaponController = weaponController;
     if (weaponChamsEnabled && weaponController) {
-        sprintf_s(weaponChamsStatus, "Slot %u equipped; applying", static_cast<unsigned>(slotIndex));
-        UpdateWeaponChams(weaponController);
+        sprintf_s(weaponChamsStatus, "Slot %u equipped; queued", static_cast<unsigned>(slotIndex));
+        InterlockedExchange(&pendingWeaponChamsRefresh, 1);
     }
 }
 
 void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, const Il2CppMethod* method)
 {
-    const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
-    activeLocalWeaponController = currentWeapon ? currentWeapon : instance;
-    UpdateWeaponChams(activeLocalWeaponController);
+    // Fire must remain latency-free: never create materials, inspect renderers,
+    // or call set_material from this hook. Only remember the live gun and queue
+    // maintenance for the normal movement/game loop after the shot.
+    if (instance) activeLocalWeaponController = instance;
     insideLocalGunFire = true;
     o_GunController_Fire(instance, playSound, method);
     insideLocalGunFire = false;
+    if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
 }
 
 short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
@@ -2026,6 +2030,28 @@ static void UpdateWeaponChams(uintptr_t knownWeaponController)
 int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
     if (keyValidated && instance) lastCharacterController = instance;
+
+    const uintptr_t currentLocalPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
+    const bool localPlayerChanged = currentLocalPlayer && currentLocalPlayer != chamsObservedLocalPlayer;
+    const bool characterControllerChanged = instance && instance != chamsObservedCharacterController;
+    if (localPlayerChanged || characterControllerChanged) {
+        // A different local PlayerController means a new match/respawn scene.
+        // Old Unity renderer pointers may already be destroyed, so abandon them
+        // without attempting Restore* on stale objects and rediscover everything.
+        chamsObservedLocalPlayer = currentLocalPlayer;
+        chamsObservedCharacterController = instance;
+        weaponChamsRenderers.clear();
+        armChamsRenderers.clear();
+        gloveChamsRenderers.clear();
+        weaponChamsController = 0;
+        activeLocalWeaponController = 0;
+        armChamsArmsLodGroup = 0;
+        gloveChamsArmsLodGroup = 0;
+        armsLodGroupLastScanTick = 0;
+        if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
+        if (armChamsEnabled) InterlockedExchange(&pendingArmChamsRefresh, 1);
+        if (gloveChamsEnabled) InterlockedExchange(&pendingGloveChamsRefresh, 1);
+    }
 
     const bool weaponRefreshRequested = InterlockedExchange(&pendingWeaponChamsRefresh, 0) != 0;
     const bool armRefreshRequested = InterlockedExchange(&pendingArmChamsRefresh, 0) != 0;
@@ -2974,8 +3000,14 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         
         ImGui::Checkbox("Velocity Limiter", &velocityLimiterEnabled);
         if (velocityLimiterEnabled) {
-            ImGui::SliderFloat("Max Horizontal Speed", &velocityLimit, 1.0f, 1000.0f, "%.0f units/s");
-            ImGui::Text("Current: %.1f units/s", velocityLimiterCurrentHorizontalSpeed);
+            ImGui::SliderFloat("Max Horizontal Speed", &velocityLimit, 0.01f, 1000.0f, "%.2f units/s");
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::InputFloat("Exact Speed", &velocityLimit, 0.01f, 1.0f, "%.3f")) {
+                if (!isfinite(velocityLimit)) velocityLimit = 1.0f;
+                if (velocityLimit < 0.001f) velocityLimit = 0.001f;
+                if (velocityLimit > 10000.0f) velocityLimit = 10000.0f;
+            }
+            ImGui::Text("Current: %.3f units/s", velocityLimiterCurrentHorizontalSpeed);
             ImGui::Text("Limiter: %s", velocityLimiterLastAppliedScale < 0.999f ? "CLAMPING" : "within limit");
         }
         
