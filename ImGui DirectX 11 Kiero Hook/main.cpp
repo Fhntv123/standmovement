@@ -1741,6 +1741,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Edge Bug", &edgeBugEnabled);
         if (edgeBugEnabled) {
             ImGui::SliderFloat("Edge Bug Pull Force", &edgeBugPullForce, 0.0f, 100.0f, "%.1f");
+            ImGui::SetNextItemWidth(120.0f);
+            if (ImGui::InputFloat("Pull Force Value", &edgeBugPullForce, 1.0f, 10.0f, "%.1f")) {
+                if (edgeBugPullForce < 0.0f) edgeBugPullForce = 0.0f;
+                if (edgeBugPullForce > 100.0f) edgeBugPullForce = 100.0f;
+            }
         }
         ImGui::Checkbox("Pixel Surf", &pixelSurf);
         
