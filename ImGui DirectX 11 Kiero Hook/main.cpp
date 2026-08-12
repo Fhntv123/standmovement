@@ -328,10 +328,13 @@ bool showTrail = false;
 bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool thirdPersonEnabled = false;
-uintptr_t centeredThirdPersonPlayer = 0;
-float originalDefaultTpsLateralOffset = 0.0f;
-float originalCrouchingTpsLateralOffset = 0.0f;
-bool originalTpsLateralOffsetsCaptured = false;
+uintptr_t customizedThirdPersonPlayer = 0;
+Vector3 originalDefaultTpsOffset;
+Vector3 originalCrouchingTpsOffset;
+bool originalTpsOffsetsCaptured = false;
+float thirdPersonHorizontalOffset = 0.0f;
+float thirdPersonHeightAdjustment = 0.0f;
+float thirdPersonDistanceAdjustment = 0.0f;
 volatile LONG pendingThirdPersonCommand = 0;
 Il2CppClass* g_GameControllerClass = nullptr;
 Il2CppField* g_GameControllerInstanceField = nullptr;
@@ -1063,7 +1066,7 @@ static uintptr_t GetNativeCheatRuntime()
     return 0;
 }
 
-static bool ApplyCenteredThirdPersonOffsets()
+static bool ApplyCustomizedThirdPersonOffsets()
 {
     const uintptr_t player = liveHudLocalPlayer;
     if (!player) {
@@ -1071,23 +1074,39 @@ static bool ApplyCenteredThirdPersonOffsets()
         return !thirdPersonEnabled;
     }
     __try {
-        if (centeredThirdPersonPlayer != player) {
-            centeredThirdPersonPlayer = player;
-            originalTpsLateralOffsetsCaptured = false;
+        if (customizedThirdPersonPlayer != player) {
+            customizedThirdPersonPlayer = player;
+            originalTpsOffsetsCaptured = false;
         }
-        if (!originalTpsLateralOffsetsCaptured) {
+        if (!originalTpsOffsetsCaptured) {
             // PlayerController._defaultTpsOffset (+0x48) and _crouchingTpsOffset
-            // (+0x54) are Vector3 values. X is the unwanted shoulder/lateral shift.
-            originalDefaultTpsLateralOffset = *reinterpret_cast<float*>(player + 0x48);
-            originalCrouchingTpsLateralOffset = *reinterpret_cast<float*>(player + 0x54);
-            originalTpsLateralOffsetsCaptured = true;
+            // (+0x54) are complete native Vector3 camera offsets.
+            originalDefaultTpsOffset = *reinterpret_cast<Vector3*>(player + 0x48);
+            originalCrouchingTpsOffset = *reinterpret_cast<Vector3*>(player + 0x54);
+            originalTpsOffsetsCaptured = true;
         }
-        *reinterpret_cast<float*>(player + 0x48) = thirdPersonEnabled ? 0.0f : originalDefaultTpsLateralOffset;
-        *reinterpret_cast<float*>(player + 0x54) = thirdPersonEnabled ? 0.0f : originalCrouchingTpsLateralOffset;
+        if (thirdPersonEnabled) {
+            Vector3 standing = originalDefaultTpsOffset;
+            Vector3 crouching = originalCrouchingTpsOffset;
+            // X is absolute so zero always means centered. Y/Z are adjustments
+            // from the game's tuned standing and crouching camera positions.
+            standing.x = thirdPersonHorizontalOffset;
+            crouching.x = thirdPersonHorizontalOffset;
+            standing.y += thirdPersonHeightAdjustment;
+            crouching.y += thirdPersonHeightAdjustment;
+            standing.z += thirdPersonDistanceAdjustment;
+            crouching.z += thirdPersonDistanceAdjustment;
+            *reinterpret_cast<Vector3*>(player + 0x48) = standing;
+            *reinterpret_cast<Vector3*>(player + 0x54) = crouching;
+        }
+        else {
+            *reinterpret_cast<Vector3*>(player + 0x48) = originalDefaultTpsOffset;
+            *reinterpret_cast<Vector3*>(player + 0x54) = originalCrouchingTpsOffset;
+        }
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        originalTpsLateralOffsetsCaptured = false;
+        originalTpsOffsetsCaptured = false;
         if (thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Waiting for local player camera offsets");
         return !thirdPersonEnabled;
     }
@@ -1099,7 +1118,7 @@ static bool ApplyNativeThirdPersonState()
         strcpy_s(thirdPersonStatus, "Native TPS handler unavailable");
         return false;
     }
-    if (!ApplyCenteredThirdPersonOffsets()) return false;
+    if (!ApplyCustomizedThirdPersonOffsets()) return false;
     const uintptr_t runtime = GetNativeCheatRuntime();
     if (!runtime) {
         strcpy_s(thirdPersonStatus, "Waiting for native cheat runtime");
@@ -1108,7 +1127,7 @@ static bool ApplyNativeThirdPersonState()
     __try {
         o_CheatRuntime_SetThirdPerson(runtime, thirdPersonEnabled);
         strcpy_s(thirdPersonStatus, thirdPersonEnabled ?
-            "Active; centered built-in TPS camera" : "Disabled; original offsets restored");
+            "Active; custom built-in TPS camera" : "Disabled; original offsets restored");
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -1476,7 +1495,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
     if (thirdPersonEnabled && !InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0))
-        ApplyCenteredThirdPersonOffsets();
+        ApplyCustomizedThirdPersonOffsets();
     if (InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0) && ApplyNativeThirdPersonState())
         InterlockedExchange(&pendingThirdPersonCommand, 0);
     ApplyScopeOverlayState();
@@ -2366,8 +2385,8 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         // Old Unity renderer pointers may already be destroyed, so abandon them
         // without attempting Restore* on stale objects and rediscover everything.
         chamsObservedLocalPlayer = currentLocalPlayer;
-        centeredThirdPersonPlayer = 0;
-        originalTpsLateralOffsetsCaptured = false;
+        customizedThirdPersonPlayer = 0;
+        originalTpsOffsetsCaptured = false;
         weaponChamsRenderers.clear();
         armChamsRenderers.clear();
         gloveChamsRenderers.clear();
@@ -3445,7 +3464,17 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             strcpy_s(thirdPersonStatus, thirdPersonEnabled ? "TPS transition queued" : "FPS transition queued");
             InterlockedExchange(&pendingThirdPersonCommand, 1);
         }
-        if (thirdPersonEnabled) ImGui::TextWrapped("Third person status: %s", thirdPersonStatus);
+        if (thirdPersonEnabled) {
+            ImGui::TextWrapped("Third person status: %s", thirdPersonStatus);
+            ImGui::SliderFloat("TPS Horizontal", &thirdPersonHorizontalOffset, -3.0f, 3.0f, "%.2f");
+            ImGui::SliderFloat("TPS Height", &thirdPersonHeightAdjustment, -3.0f, 3.0f, "%.2f");
+            ImGui::SliderFloat("TPS Distance", &thirdPersonDistanceAdjustment, -6.0f, 6.0f, "%.2f");
+            if (ImGui::Button("Reset TPS Camera")) {
+                thirdPersonHorizontalOffset = 0.0f;
+                thirdPersonHeightAdjustment = 0.0f;
+                thirdPersonDistanceAdjustment = 0.0f;
+            }
+        }
         ImGui::Checkbox("Camera FOV", &cameraFovEnabled);
         if (cameraFovEnabled) {
             ImGui::SliderFloat("Camera FOV Slider", &cameraFov, 30.0f, 150.0f, "%.1f");
