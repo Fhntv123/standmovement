@@ -188,6 +188,9 @@ struct Matrix16 {
 #define OFFSET_MATERIAL_SET_MAINTEXTURE            0x2ECF320
 #define OFFSET_RENDERER_GET_MATERIAL                0x2ED8EA0
 #define OFFSET_RENDERER_SET_MATERIAL                0x2ED9230
+#define OFFSET_RENDERER_GET_MATERIALS                0x2ED8E20
+#define OFFSET_RENDERER_IS_STATIC_BATCH              0x2ED9370
+#define OFFSET_OBJECT_FIND_OBJECTS_OF_TYPE            0x2EF9B30
 #define OFFSET_MATERIAL_GET_COLOR                   0x2ECEBB0
 #define OFFSET_MATERIAL_SET_COLOR                   0x2ECF040
 #define OFFSET_MATERIAL_SET_RENDERQUEUE             0x2ECF3F0
@@ -318,7 +321,11 @@ bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool worldColorEnabled = false;
 float worldColor[3] = { 0.35f, 0.55f, 1.0f };
-float worldColorStrength = 0.30f;
+float worldColorStrength = 1.0f;
+struct WorldColorMaterial { uintptr_t material; Color originalColor; };
+std::vector<WorldColorMaterial> worldColorMaterials;
+volatile LONG pendingWorldColorCommand = 0;
+char worldColorStatus[128] = "Disabled";
 bool customSkyboxEnabled = false;
 float customSkyboxColor[3] = { 0.15f, 0.25f, 0.55f };
 bool imageSkyboxEnabled = false;
@@ -733,6 +740,9 @@ void(__fastcall* o_Material_ctor)(uintptr_t, uintptr_t, const Il2CppMethod*) = n
 void(__fastcall* o_Material_set_mainTexture)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Renderer_get_material)(uintptr_t) = nullptr;
 void(__fastcall* o_Renderer_set_material)(uintptr_t, uintptr_t) = nullptr;
+Il2CppArray*(__fastcall* o_Renderer_get_materials)(uintptr_t) = nullptr;
+bool(__fastcall* o_Renderer_get_isPartOfStaticBatch)(uintptr_t) = nullptr;
+Il2CppArray*(__fastcall* o_Object_FindObjectsOfType)(Il2CppObject*, bool, const Il2CppMethod*) = nullptr;
 Color(__fastcall* o_Material_get_color)(uintptr_t) = nullptr;
 void(__fastcall* o_Material_set_color)(uintptr_t, Color) = nullptr;
 void(__fastcall* o_Material_set_renderQueue)(uintptr_t, int) = nullptr;
@@ -762,6 +772,77 @@ void(__fastcall* o_CanvasGroup_set_alpha)(uintptr_t, float) = nullptr;
 void(__fastcall* o_HUDView_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 
 
+
+static void RestoreWorldColor()
+{
+    if (o_Material_set_color) {
+        for (const WorldColorMaterial& entry : worldColorMaterials) {
+            if (!entry.material) continue;
+            __try { o_Material_set_color(entry.material, entry.originalColor); }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+    }
+    worldColorMaterials.clear();
+    strcpy_s(worldColorStatus, "Disabled; map materials restored");
+}
+
+static void ApplyWorldColorToCache()
+{
+    if (!o_Material_set_color) return;
+    const float strength = (std::max)(0.0f, (std::min)(worldColorStrength, 1.0f));
+    for (const WorldColorMaterial& entry : worldColorMaterials) {
+        if (!entry.material) continue;
+        const Color& original = entry.originalColor;
+        const Color tinted(
+            original.r + (worldColor[0] - original.r) * strength,
+            original.g + (worldColor[1] - original.g) * strength,
+            original.b + (worldColor[2] - original.b) * strength,
+            original.a);
+        __try { o_Material_set_color(entry.material, tinted); }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    sprintf_s(worldColorStatus, "Active on %zu static map material(s)", worldColorMaterials.size());
+}
+
+static void CaptureWorldColorMaterials()
+{
+    worldColorMaterials.clear();
+    if (!g_il2cpp.class_get_type || !g_il2cpp.type_get_object || !o_Object_FindObjectsOfType ||
+        !o_Renderer_get_materials || !o_Renderer_get_isPartOfStaticBatch || !o_Material_get_color) {
+        strcpy_s(worldColorStatus, "World Color API unavailable");
+        return;
+    }
+    Il2CppClass* meshRendererClass = g_il2cpp.find_class("UnityEngine", "MeshRenderer");
+    if (!meshRendererClass) { strcpy_s(worldColorStatus, "MeshRenderer class unavailable"); return; }
+    __try {
+        const Il2CppType* meshType = g_il2cpp.class_get_type(meshRendererClass);
+        Il2CppObject* reflectionType = meshType ? g_il2cpp.type_get_object(meshType) : nullptr;
+        Il2CppArray* renderers = reflectionType ? o_Object_FindObjectsOfType(reflectionType, false, nullptr) : nullptr;
+        const uintptr_t rendererArray = reinterpret_cast<uintptr_t>(renderers);
+        const size_t rendererCount = rendererArray ? *(size_t*)(rendererArray + 0x18) : 0;
+        if (!rendererCount || rendererCount > 20000) { strcpy_s(worldColorStatus, "No active map renderers found"); return; }
+        std::unordered_map<uintptr_t, bool> seenMaterials;
+        for (size_t i = 0; i < rendererCount; ++i) {
+            const uintptr_t renderer = *(uintptr_t*)(rendererArray + 0x20 + i * sizeof(uintptr_t));
+            if (!renderer || !o_Renderer_get_isPartOfStaticBatch(renderer)) continue;
+            Il2CppArray* materials = o_Renderer_get_materials(renderer);
+            const uintptr_t materialArray = reinterpret_cast<uintptr_t>(materials);
+            const size_t materialCount = materialArray ? *(size_t*)(materialArray + 0x18) : 0;
+            if (!materialCount || materialCount > 64) continue;
+            for (size_t j = 0; j < materialCount; ++j) {
+                const uintptr_t material = *(uintptr_t*)(materialArray + 0x20 + j * sizeof(uintptr_t));
+                if (!material || seenMaterials.find(material) != seenMaterials.end()) continue;
+                seenMaterials[material] = true;
+                worldColorMaterials.push_back({ material, o_Material_get_color(material) });
+            }
+        }
+        ApplyWorldColorToCache();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        worldColorMaterials.clear();
+        strcpy_s(worldColorStatus, "Map material capture failed");
+    }
+}
 
 uintptr_t GetCamera() {
 
@@ -2018,6 +2099,8 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
         if (armChamsEnabled) InterlockedExchange(&pendingArmChamsRefresh, 1);
         if (gloveChamsEnabled) InterlockedExchange(&pendingGloveChamsRefresh, 1);
+        worldColorMaterials.clear();
+        if (worldColorEnabled) InterlockedExchange(&pendingWorldColorCommand, 1);
     }
 
     const bool weaponRefreshRequested = InterlockedExchange(&pendingWeaponChamsRefresh, 0) != 0;
@@ -2039,6 +2122,14 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     AnimateGloveChamsColor();
 
     if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
+
+    const LONG worldColorCommand = InterlockedExchange(&pendingWorldColorCommand, 0);
+    if (keyValidated && worldColorCommand == 1) {
+        if (worldColorMaterials.empty()) CaptureWorldColorMaterials();
+        else ApplyWorldColorToCache();
+    } else if (worldColorCommand == 2) {
+        RestoreWorldColor();
+    }
 
     const LONG skyboxCommand = InterlockedExchange(&pendingSkyboxCommand, 0);
     if (keyValidated && skyboxCommand == 1) LoadEmbeddedCatSkybox();
@@ -2802,14 +2893,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
 
 
-    if (worldColorEnabled && worldColorStrength > 0.0f) {
-        const ImVec2 display = ImGui::GetIO().DisplaySize;
-        const float alpha = (std::max)(0.0f, (std::min)(worldColorStrength, 1.0f));
-        ImGui::GetBackgroundDrawList()->AddRectFilled(
-            ImVec2(0.0f, 0.0f), display,
-            ImGui::ColorConvertFloat4ToU32(ImVec4(worldColor[0], worldColor[1], worldColor[2], alpha)));
-    }
-
     UpdateTrail();
     DrawTrail();
 
@@ -3036,10 +3119,13 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Box ESP", &boxEsp);
         ImGui::Checkbox("Show Velocity", &showVelocity);
         ImGui::Checkbox("Show Trail", &showTrail);
-        ImGui::Checkbox("World Color", &worldColorEnabled);
+        if (ImGui::Checkbox("World Color", &worldColorEnabled))
+            InterlockedExchange(&pendingWorldColorCommand, worldColorEnabled ? 1 : 2);
         if (worldColorEnabled) {
-            ImGui::ColorEdit3("World Tint", worldColor);
-            ImGui::SliderFloat("World Tint Strength", &worldColorStrength, 0.0f, 1.0f, "%.2f");
+            if (ImGui::ColorEdit3("Map Material Color", worldColor)) InterlockedExchange(&pendingWorldColorCommand, 1);
+            if (ImGui::SliderFloat("Map Color Strength", &worldColorStrength, 0.0f, 1.0f, "%.2f"))
+                InterlockedExchange(&pendingWorldColorCommand, 1);
+            ImGui::TextWrapped("World status: %s", worldColorStatus);
         }
         ImGui::Checkbox("Camera FOV", &cameraFovEnabled);
         if (cameraFovEnabled) {
@@ -3292,6 +3378,9 @@ DWORD WINAPI HackThread(LPVOID)
     o_Material_set_mainTexture = (void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_MATERIAL_SET_MAINTEXTURE);
     o_Renderer_get_material = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_GET_MATERIAL);
     o_Renderer_set_material = (void(__fastcall*)(uintptr_t, uintptr_t))(base + OFFSET_RENDERER_SET_MATERIAL);
+    o_Renderer_get_materials = (Il2CppArray*(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_GET_MATERIALS);
+    o_Renderer_get_isPartOfStaticBatch = (bool(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_IS_STATIC_BATCH);
+    o_Object_FindObjectsOfType = (Il2CppArray*(__fastcall*)(Il2CppObject*, bool, const Il2CppMethod*))(base + OFFSET_OBJECT_FIND_OBJECTS_OF_TYPE);
     o_Material_get_color = (Color(__fastcall*)(uintptr_t))(base + OFFSET_MATERIAL_GET_COLOR);
     o_Material_set_color = (void(__fastcall*)(uintptr_t, Color))(base + OFFSET_MATERIAL_SET_COLOR);
     o_Material_set_renderQueue = (void(__fastcall*)(uintptr_t, int))(base + OFFSET_MATERIAL_SET_RENDERQUEUE);
