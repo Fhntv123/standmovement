@@ -1210,8 +1210,14 @@ short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
 
     short currentAmmo = o_GunController_GetCurrentAmmo(instance);
 
-
-
+    if (keyValidated && instance) {
+        // The HUD calls this on the currently active GunController, so it is the
+        // most reliable live source when PlayerController lookup is unavailable.
+        if (instance != activeLocalWeaponController) {
+            activeLocalWeaponController = instance;
+            if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
+        }
+    }
 
     if (keyValidated && infinityAmmo && instance) {
 
@@ -1949,11 +1955,13 @@ static void CaptureWeaponChamsRenderers(uintptr_t weaponController)
 static uintptr_t GetCurrentLocalWeaponController()
 {
     __try {
-        const uintptr_t localPlayer = GetPlayerController();
+        uintptr_t localPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
+        if (!localPlayer) localPlayer = GetPlayerController();
         const uintptr_t weaponry = localPlayer ? *(uintptr_t*)(localPlayer + OFFSET_WEAPONRYCONTROLLER) : 0;
-        return weaponry ? *(uintptr_t*)(weaponry + OFFSET_WEAPONCONTROLLER) : 0;
+        const uintptr_t currentWeapon = weaponry ? *(uintptr_t*)(weaponry + OFFSET_WEAPONCONTROLLER) : 0;
+        return currentWeapon ? currentWeapon : activeLocalWeaponController;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return activeLocalWeaponController; }
 }
 
 static void UpdateWeaponChams(uintptr_t knownWeaponController)
@@ -1969,13 +1977,13 @@ static void UpdateWeaponChams(uintptr_t knownWeaponController)
         strcpy_s(weaponChamsStatus, "Disabled");
         return;
     }
-    if (!weaponController) {
-        strcpy_s(weaponChamsStatus, "Waiting for active weapon");
+    if (!weaponController && weaponChamsRenderers.empty()) {
+        strcpy_s(weaponChamsStatus, "Waiting for first weapon HUD update");
         return;
     }
     const uintptr_t replacement = EnsureSelectedWeaponChamsMaterial();
     if (!replacement) return;
-    if (weaponController != weaponChamsController || weaponChamsRenderers.empty())
+    if (weaponController && (weaponController != weaponChamsController || weaponChamsRenderers.empty()))
         CaptureWeaponChamsRenderers(weaponController);
     if (weaponChamsRenderers.empty()) return;
 
@@ -1986,26 +1994,28 @@ static void UpdateWeaponChams(uintptr_t knownWeaponController)
     o_Material_set_color(replacement, GetWeaponChamsDisplayColor());
     for (const WeaponChamsRenderer& entry : weaponChamsRenderers) {
         if (!entry.renderer) continue;
-        __try { o_Renderer_set_material(entry.renderer, replacement); }
+        __try {
+            const uintptr_t currentMaterial = o_Renderer_get_material ? o_Renderer_get_material(entry.renderer) : 0;
+            if (currentMaterial != replacement) o_Renderer_set_material(entry.renderer, replacement);
+        }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
+    strcpy_s(weaponChamsStatus, "Active");
 }
 
 int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
     if (keyValidated && instance) lastCharacterController = instance;
 
-    if (InterlockedExchange(&pendingWeaponChamsRefresh, 0)) {
-        const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
-        if (currentWeapon) activeLocalWeaponController = currentWeapon;
-        UpdateWeaponChams(currentWeapon ? currentWeapon : activeLocalWeaponController);
-    }
+    const bool weaponRefreshRequested = InterlockedExchange(&pendingWeaponChamsRefresh, 0) != 0;
     const bool armRefreshRequested = InterlockedExchange(&pendingArmChamsRefresh, 0) != 0;
     const bool gloveRefreshRequested = InterlockedExchange(&pendingGloveChamsRefresh, 0) != 0;
     const ULONGLONG chamsNow = GetTickCount64();
     const bool maintenanceDue = chamsNow - armGloveChamsLastMaintenanceTick >= 100;
-    if (armRefreshRequested || gloveRefreshRequested || maintenanceDue) {
+    if (weaponRefreshRequested || armRefreshRequested || gloveRefreshRequested || maintenanceDue) {
         if (maintenanceDue) armGloveChamsLastMaintenanceTick = chamsNow;
+        if (weaponRefreshRequested || (maintenanceDue && weaponChamsEnabled))
+            UpdateWeaponChams(GetCurrentLocalWeaponController());
         uintptr_t liveArmsLodGroup = 0;
         if (armRefreshRequested || gloveRefreshRequested) liveArmsLodGroup = DiscoverLiveArmsLodGroup(true);
         if (!liveArmsLodGroup) liveArmsLodGroup = GetCurrentLocalArmsLodGroup();
