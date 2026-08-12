@@ -1487,6 +1487,30 @@ static void ApplyScopeOverlayState()
     __except (EXCEPTION_EXECUTE_HANDLER) { customScopeReticleVisible = false; }
 }
 
+static bool IsLocalMovementSnapshot(uintptr_t snapshot)
+{
+    if (!silentAntiAimEnabled || !snapshot || !liveHudLocalPlayer) return false;
+    __try {
+        // PlayerController.bzxa MovementController +0xE0; its cached local
+        // MovementSnapshot caik is +0x90.
+        const uintptr_t movementController = *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xE0);
+        return movementController && *reinterpret_cast<uintptr_t*>(movementController + 0x90) == snapshot;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static bool IsLocalAimSnapshot(uintptr_t snapshot)
+{
+    if (!silentAntiAimEnabled || !snapshot || !liveHudLocalPlayer) return false;
+    __try {
+        // PlayerController.bzwx AimController +0xC8; its readonly local
+        // AimSnapshot catv is +0x168.
+        const uintptr_t aimController = *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
+        return aimController && *reinterpret_cast<uintptr_t*>(aimController + 0x168) == snapshot;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
 thread_local bool insideLocalSilentSnapshotWrite = false;
 
 static float NormalizeAngle360(float angle)
@@ -1513,7 +1537,7 @@ void __fastcall hk_NetworkController_WriteSnapshot(uintptr_t instance, uintptr_t
 
 void __fastcall hk_MovementSnapshot_Serialize(uintptr_t snapshot, uintptr_t writer, const Il2CppMethod* method)
 {
-    if (!insideLocalSilentSnapshotWrite || !snapshot) {
+    if (!(insideLocalSilentSnapshotWrite || IsLocalMovementSnapshot(snapshot))) {
         o_MovementSnapshot_Serialize(snapshot, writer, method);
         return;
     }
@@ -1548,7 +1572,7 @@ void __fastcall hk_MovementSnapshot_Serialize(uintptr_t snapshot, uintptr_t writ
 
 void __fastcall hk_AimSnapshot_Serialize(uintptr_t snapshot, uintptr_t writer, const Il2CppMethod* method)
 {
-    if (!insideLocalSilentSnapshotWrite || !snapshot) {
+    if (!(insideLocalSilentSnapshotWrite || IsLocalAimSnapshot(snapshot))) {
         o_AimSnapshot_Serialize(snapshot, writer, method);
         return;
     }
