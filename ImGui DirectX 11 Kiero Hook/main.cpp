@@ -1040,7 +1040,7 @@ static void ApplyScopeOverlayState()
     __except (EXCEPTION_EXECUTE_HANDLER) { customScopeReticleVisible = false; }
 }
 
-static void UpdateWeaponChams();
+static void UpdateWeaponChams(uintptr_t knownWeaponController = 0);
 
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
@@ -1109,6 +1109,9 @@ short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
 {
 
     short currentAmmo = o_GunController_GetCurrentAmmo(instance);
+
+    // Proven local-weapon path: this hook already drives the working Infinity Ammo feature.
+    UpdateWeaponChams(instance);
 
 
 
@@ -1504,17 +1507,19 @@ static void CaptureWeaponChamsRenderers(uintptr_t weaponController)
     }
 }
 
-static void UpdateWeaponChams()
+static void UpdateWeaponChams(uintptr_t knownWeaponController)
 {
     if (!keyValidated) { strcpy_s(weaponChamsStatus, "License validation inactive"); return; }
     if (!o_Renderer_set_material || !o_Material_set_color) { strcpy_s(weaponChamsStatus, "Material API unavailable"); return; }
-    uintptr_t weaponController = 0;
-    __try {
-        const uintptr_t localPlayer = GetPlayerController();
-        const uintptr_t weaponry = localPlayer ? *(uintptr_t*)(localPlayer + OFFSET_WEAPONRYCONTROLLER) : 0;
-        weaponController = weaponry ? *(uintptr_t*)(weaponry + OFFSET_WEAPONCONTROLLER) : 0;
+    uintptr_t weaponController = knownWeaponController;
+    if (!weaponController) {
+        __try {
+            const uintptr_t localPlayer = GetPlayerController();
+            const uintptr_t weaponry = localPlayer ? *(uintptr_t*)(localPlayer + OFFSET_WEAPONRYCONTROLLER) : 0;
+            weaponController = weaponry ? *(uintptr_t*)(weaponry + OFFSET_WEAPONCONTROLLER) : 0;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { weaponController = 0; }
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { weaponController = 0; }
 
     if (!weaponChamsEnabled || !weaponController) {
         if (!weaponChamsRenderers.empty()) RestoreWeaponChams();
@@ -1538,6 +1543,8 @@ static void UpdateWeaponChams()
 int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
     if (keyValidated && instance) lastCharacterController = instance;
+
+    UpdateWeaponChams();
 
     if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
 
