@@ -164,6 +164,7 @@ struct Matrix16 {
 #define OFFSET_CHARACTERCONTROLLER_MOVE            0x2F4DD80
 
 #define OFFSET_CHARACTERCONTROLLER_GET_VELOCITY    0x2F4DF80
+#define OFFSET_TIME_GET_DELTATIME                   0x2F048A0
 
 #define OFFSET_TRANSFORM_GET_POSITION              0x2F06CE0
 #define OFFSET_TRANSFORM_GET_FORWARD               0x2F06780
@@ -420,6 +421,8 @@ float surfSpeed = 1.5f;
 // Velocity limiter
 bool velocityLimiterEnabled = false;
 float velocityLimit = 500.0f;
+float velocityLimiterCurrentHorizontalSpeed = 0.0f;
+float velocityLimiterLastAppliedScale = 1.0f;
 
 
 
@@ -703,6 +706,7 @@ bool(__fastcall* o_CC_get_isGrounded)(uintptr_t) = nullptr;
 int(__fastcall* o_CC_Move)(uintptr_t, Vector3) = nullptr;
 
 Vector3(__fastcall* o_CC_get_velocity)(uintptr_t) = nullptr;
+float(__fastcall* o_Time_get_deltaTime)() = nullptr;
 
 Vector3(__fastcall* o_Transform_get_position)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_forward)(uintptr_t) = nullptr;
@@ -1503,28 +1507,44 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
 Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 {
     Vector3 vel = o_CC_get_velocity(instance);
-    if (keyValidated) {
-        lastSpeed = sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
-        if (jbActive) {
-            float horSpeed = sqrt(vel.x * vel.x + vel.z * vel.z);
-            if (horSpeed < 1.0f) horSpeed = surfSpeed * 5.0f;
-            
-            // Original acceleration
-            if (vel.Length2D() < surfSpeed * 3.0f) {
-                vel.x *= 1.05f;
-                vel.z *= 1.05f;
-            }
-            
-            // Apply our new velocity limiter clamp
-            vel = ApplyVelocityLimit(vel);
-            
-            vel.y = 0;
+    if (!keyValidated) return vel;
+
+    if (jbActive) {
+        const float horSpeed = sqrtf(vel.x * vel.x + vel.z * vel.z);
+        if (horSpeed < surfSpeed * 3.0f) {
+            vel.x *= 1.05f;
+            vel.z *= 1.05f;
         }
+        vel.y = 0.0f;
     }
+
+    // This getter can be consumed by game movement code, but the authoritative
+    // physical cap is also enforced on CharacterController.Move below.
+    if (velocityLimiterEnabled) vel = ApplyVelocityLimit(vel);
+    velocityLimiterCurrentHorizontalSpeed = sqrtf(vel.x * vel.x + vel.z * vel.z);
+    lastSpeed = sqrtf(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
     return vel;
 }
 
+static Vector3 ApplyVelocityLimitToMotion(const Vector3& motion)
+{
+    velocityLimiterLastAppliedScale = 1.0f;
+    if (!velocityLimiterEnabled || velocityLimit <= 0.0f) return motion;
 
+    float deltaTime = o_Time_get_deltaTime ? o_Time_get_deltaTime() : (1.0f / 60.0f);
+    if (!isfinite(deltaTime) || deltaTime < (1.0f / 240.0f) || deltaTime > 0.1f)
+        deltaTime = 1.0f / 60.0f;
+
+    Vector3 result = motion;
+    const float horizontalMotion = sqrtf(result.x * result.x + result.z * result.z);
+    const float maxHorizontalMotion = velocityLimit * deltaTime;
+    if (horizontalMotion > maxHorizontalMotion && horizontalMotion > 0.00001f) {
+        velocityLimiterLastAppliedScale = maxHorizontalMotion / horizontalMotion;
+        result.x *= velocityLimiterLastAppliedScale;
+        result.z *= velocityLimiterLastAppliedScale;
+    }
+    return result;
+}
 
 static void RestoreWeaponChams()
 {
@@ -2041,26 +2061,15 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
             motion.z = (motion.z / speed) * surfSpeed * 10.0f;
         }
         
-        // If limiter is enabled, we must also clamp the motion vector.
-        // Since motion is per-frame, we scale the limit by a factor (e.g. 0.016 for 60fps)
-        // But to be safe and match the user's slider (which is likely in velocity units),
-        // we can just clamp it using the same ApplyVelocityLimit but scaled for motion.
-        // Actually, the original code forces motion to surfSpeed * 10.0f.
-        // Let's just clamp motion directly if it exceeds the limit * 0.02f (approx frame time).
-        if (velocityLimiterEnabled && velocityLimit > 0.0f) {
-            float motionLimit = velocityLimit * 0.02f; // Approximate conversion to per-frame motion
-            float currentMotionSpeed = sqrt(motion.x * motion.x + motion.z * motion.z);
-            if (currentMotionSpeed > motionLimit) {
-                motion.x = (motion.x / currentMotionSpeed) * motionLimit;
-                motion.z = (motion.z / currentMotionSpeed) * motionLimit;
-            }
-        }
-        
         motion.y = 0;
     }
 
     if (keyValidated) {
         motion = EdgeBug::ApplyDownwardPull(motion, edgeBugEnabled, edgeBugPullForce);
+        // CharacterController.Move receives per-frame displacement. Convert the
+        // configured units/second limit using the real Unity deltaTime and clamp
+        // every movement call, regardless of BunnyHop/Surf state.
+        motion = ApplyVelocityLimitToMotion(motion);
     }
 
     return o_CC_Move(instance, motion);
@@ -2965,7 +2974,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         
         ImGui::Checkbox("Velocity Limiter", &velocityLimiterEnabled);
         if (velocityLimiterEnabled) {
-            ImGui::SliderFloat("Max Speed", &velocityLimit, 0.0f, 1000.0f, "%.0f");
+            ImGui::SliderFloat("Max Horizontal Speed", &velocityLimit, 1.0f, 1000.0f, "%.0f units/s");
+            ImGui::Text("Current: %.1f units/s", velocityLimiterCurrentHorizontalSpeed);
+            ImGui::Text("Limiter: %s", velocityLimiterLastAppliedScale < 0.999f ? "CLAMPING" : "within limit");
         }
         
         ImGui::Checkbox("Air Jump", &airJump);
@@ -3257,6 +3268,7 @@ DWORD WINAPI HackThread(LPVOID)
     o_Component_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_TRANSFORM);
 
     o_Camera_get_main = (uintptr_t(__fastcall*)())(base + OFFSET_CAMERA_MAIN);
+    o_Time_get_deltaTime = (float(__fastcall*)())(base + OFFSET_TIME_GET_DELTATIME);
 
     MH_CreateHook((LPVOID)(base + OFFSET_CAMERA_SET_FIELDOFVIEW), hk_Camera_set_fieldOfView, (LPVOID*)&o_Camera_set_fieldOfView);
 
