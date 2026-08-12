@@ -361,6 +361,15 @@ char weaponChamsStatus[128] = "Select Flat or Glass";
 volatile LONG pendingWeaponChamsRefresh = 0;
 
 bool handChamsEnabled = false;
+int handChamsMode = 0;
+float handChamsColor[3] = { 1.0f, 0.25f, 0.65f };
+float handChamsAlpha = 0.35f;
+float handChamsMetallic = 0.9f;
+float handChamsSmoothness = 0.8f;
+float handChamsAnimationSpeed = 1.0f;
+ULONGLONG handChamsLastAnimationTick = 0;
+uintptr_t handChamsMaterials[7] = {};
+uint32_t handChamsMaterialHandles[7] = {};
 struct HandChamsRenderer {
     uintptr_t renderer;
     uintptr_t originalMaterial;
@@ -1556,10 +1565,63 @@ static void AnimateWeaponChamsColor()
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
+static uintptr_t EnsureSelectedHandChamsMaterial()
+{
+    const int mode = (handChamsMode >= 0 && handChamsMode < 7) ? handChamsMode : 0;
+    if (handChamsMaterials[mode]) return handChamsMaterials[mode];
+    static const char* shaderCandidates[7][5] = {
+        { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
+        { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", "UI/Default", nullptr },
+        { "Legacy Shaders/Diffuse", "Standard", "Legacy Shaders/VertexLit", "Diffuse", nullptr },
+        { "Standard", "Legacy Shaders/Specular", "Legacy Shaders/Reflective/Diffuse", "Legacy Shaders/Diffuse", nullptr },
+        { "Legacy Shaders/Transparent/Diffuse", "Legacy Shaders/Transparent/VertexLit", "Legacy Shaders/Transparent/Specular", "Unlit/Transparent", nullptr },
+        { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
+        { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr }
+    };
+    const bool transparent = mode == 1 || mode == 4;
+    for (const char* shaderName : shaderCandidates[mode]) {
+        if (!shaderName) break;
+        handChamsMaterials[mode] = CreateWeaponChamsMaterial(shaderName, transparent);
+        if (handChamsMaterials[mode]) break;
+    }
+    const uintptr_t material = handChamsMaterials[mode];
+    if (!material) { strcpy_s(handChamsStatus, "Selected hand shader not found"); return 0; }
+    if (g_il2cpp.gchandle_new)
+        handChamsMaterialHandles[mode] = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(material), false);
+    return material;
+}
+
+static Color GetHandChamsDisplayColor()
+{
+    if (handChamsMode == 5) {
+        const float t = static_cast<float>(GetTickCount64() % 60000) * 0.001f * handChamsAnimationSpeed;
+        return Color(0.5f + 0.5f * sinf(t), 0.5f + 0.5f * sinf(t + 2.0943951f), 0.5f + 0.5f * sinf(t + 4.1887902f), 1.0f);
+    }
+    if (handChamsMode == 6) {
+        const float t = static_cast<float>(GetTickCount64() % 60000) * 0.001f * handChamsAnimationSpeed;
+        const float intensity = 0.2f + 0.8f * (0.5f + 0.5f * sinf(t));
+        return Color(handChamsColor[0] * intensity, handChamsColor[1] * intensity, handChamsColor[2] * intensity, 1.0f);
+    }
+    return Color(handChamsColor[0], handChamsColor[1], handChamsColor[2], (handChamsMode == 1 || handChamsMode == 4) ? handChamsAlpha : 1.0f);
+}
+
+static void AnimateHandChamsColor()
+{
+    if (!handChamsEnabled || (handChamsMode != 5 && handChamsMode != 6) || !o_Material_set_color) return;
+    const ULONGLONG now = GetTickCount64();
+    if (now - handChamsLastAnimationTick < 33) return;
+    handChamsLastAnimationTick = now;
+    const uintptr_t material = handChamsMaterials[handChamsMode];
+    if (!material) return;
+    __try { o_Material_set_color(material, GetHandChamsDisplayColor()); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 static uintptr_t GetCurrentLocalArmsLodGroup()
 {
     __try {
-        const uintptr_t localPlayer = GetPlayerController();
+        uintptr_t localPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
+        if (!localPlayer) localPlayer = GetPlayerController();
         return localPlayer ? *(uintptr_t*)(localPlayer + 0x138) : 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
@@ -1610,16 +1672,16 @@ static void UpdateHandChams(uintptr_t knownArmsLodGroup)
         return;
     }
     if (!armsLodGroup) { strcpy_s(handChamsStatus, "Waiting for local hands"); return; }
-    const uintptr_t replacement = EnsureSelectedWeaponChamsMaterial();
-    if (!replacement) { strcpy_s(handChamsStatus, "Selected material unavailable"); return; }
+    const uintptr_t replacement = EnsureSelectedHandChamsMaterial();
+    if (!replacement) return;
     if (armsLodGroup != handChamsArmsLodGroup || handChamsRenderers.empty())
         CaptureHandChamsRenderers(armsLodGroup);
     if (handChamsRenderers.empty()) return;
-    if (weaponChamsMode == 3 && o_Material_SetFloat && g_il2cpp.string_new) {
-        o_Material_SetFloat(replacement, g_il2cpp.string_new("_Metallic"), weaponChamsMetallic);
-        o_Material_SetFloat(replacement, g_il2cpp.string_new("_Glossiness"), weaponChamsSmoothness);
+    if (handChamsMode == 3 && o_Material_SetFloat && g_il2cpp.string_new) {
+        o_Material_SetFloat(replacement, g_il2cpp.string_new("_Metallic"), handChamsMetallic);
+        o_Material_SetFloat(replacement, g_il2cpp.string_new("_Glossiness"), handChamsSmoothness);
     }
-    o_Material_set_color(replacement, GetWeaponChamsDisplayColor());
+    o_Material_set_color(replacement, GetHandChamsDisplayColor());
     for (const HandChamsRenderer& entry : handChamsRenderers) {
         if (!entry.renderer) continue;
         __try { o_Renderer_set_material(entry.renderer, replacement); }
@@ -1714,6 +1776,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         UpdateHandChams(GetCurrentLocalArmsLodGroup());
 
     AnimateWeaponChamsColor();
+    AnimateHandChamsColor();
 
     if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
 
@@ -2755,17 +2818,15 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (ImGui::Combo("Chams Material", &weaponChamsMode, chamsModes, IM_ARRAYSIZE(chamsModes))) {
                 weaponChamsController = 0;
                 InterlockedExchange(&pendingWeaponChamsRefresh, 1);
-                InterlockedExchange(&pendingHandChamsRefresh, 1);
             }
             if (ImGui::ColorEdit3("Chams Color", weaponChamsColor)) {
                 InterlockedExchange(&pendingWeaponChamsRefresh, 1);
-                InterlockedExchange(&pendingHandChamsRefresh, 1);
             }
             if ((weaponChamsMode == 1 || weaponChamsMode == 4) && ImGui::SliderFloat("Transparency", &weaponChamsGlassAlpha, 0.05f, 0.95f, "%.2f"))
-                { InterlockedExchange(&pendingWeaponChamsRefresh, 1); InterlockedExchange(&pendingHandChamsRefresh, 1); }
+                InterlockedExchange(&pendingWeaponChamsRefresh, 1);
             if (weaponChamsMode == 3) {
-                if (ImGui::SliderFloat("Metallic", &weaponChamsMetallic, 0.0f, 1.0f, "%.2f")) { InterlockedExchange(&pendingWeaponChamsRefresh, 1); InterlockedExchange(&pendingHandChamsRefresh, 1); }
-                if (ImGui::SliderFloat("Smoothness", &weaponChamsSmoothness, 0.0f, 1.0f, "%.2f")) { InterlockedExchange(&pendingWeaponChamsRefresh, 1); InterlockedExchange(&pendingHandChamsRefresh, 1); }
+                if (ImGui::SliderFloat("Metallic", &weaponChamsMetallic, 0.0f, 1.0f, "%.2f")) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
+                if (ImGui::SliderFloat("Smoothness", &weaponChamsSmoothness, 0.0f, 1.0f, "%.2f")) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
             }
             if (weaponChamsMode == 5 || weaponChamsMode == 6)
                 ImGui::SliderFloat("Animation Speed", &weaponChamsAnimationSpeed, 0.2f, 5.0f, "%.1f");
@@ -2775,7 +2836,23 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             strcpy_s(handChamsStatus, handChamsEnabled ? "Applying to arms and gloves" : "Restoring original hand materials");
             InterlockedExchange(&pendingHandChamsRefresh, 1);
         }
-        if (handChamsEnabled) ImGui::TextWrapped("Hand status: %s", handChamsStatus);
+        if (handChamsEnabled) {
+            const char* handModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse" };
+            if (ImGui::Combo("Hand Material", &handChamsMode, handModes, IM_ARRAYSIZE(handModes))) {
+                RestoreHandChams();
+                InterlockedExchange(&pendingHandChamsRefresh, 1);
+            }
+            if (ImGui::ColorEdit3("Hand Color", handChamsColor)) InterlockedExchange(&pendingHandChamsRefresh, 1);
+            if ((handChamsMode == 1 || handChamsMode == 4) && ImGui::SliderFloat("Hand Transparency", &handChamsAlpha, 0.05f, 0.95f, "%.2f"))
+                InterlockedExchange(&pendingHandChamsRefresh, 1);
+            if (handChamsMode == 3) {
+                if (ImGui::SliderFloat("Hand Metallic", &handChamsMetallic, 0.0f, 1.0f, "%.2f")) InterlockedExchange(&pendingHandChamsRefresh, 1);
+                if (ImGui::SliderFloat("Hand Smoothness", &handChamsSmoothness, 0.0f, 1.0f, "%.2f")) InterlockedExchange(&pendingHandChamsRefresh, 1);
+            }
+            if (handChamsMode == 5 || handChamsMode == 6)
+                ImGui::SliderFloat("Hand Animation Speed", &handChamsAnimationSpeed, 0.2f, 5.0f, "%.1f");
+            ImGui::TextWrapped("Hand status: %s", handChamsStatus);
+        }
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
         if (bulletTracerEnabled) {
             ImGui::ColorEdit3("Tracer Start Color", bulletTracerStartColor);
