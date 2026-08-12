@@ -28,6 +28,8 @@ typedef const char*(*t_il2cpp_image_get_name)(const Il2CppImage* image);
 typedef Il2CppObject*(*t_il2cpp_object_new)(Il2CppClass* klass);
 typedef Il2CppArray*(*t_il2cpp_array_new)(Il2CppClass* elementTypeInfo, size_t length);
 typedef Il2CppString*(*t_il2cpp_string_new)(const char* str);
+typedef Il2CppObject*(*t_il2cpp_runtime_invoke)(const Il2CppMethod* method, void* obj, void** params, Il2CppObject** exc);
+typedef void*(*t_il2cpp_object_unbox)(Il2CppObject* obj);
 
 struct IL2CPP_API {
     HMODULE ga = nullptr;
@@ -44,6 +46,8 @@ struct IL2CPP_API {
     t_il2cpp_object_new                    object_new = nullptr;
     t_il2cpp_array_new                     array_new = nullptr;
     t_il2cpp_string_new                    string_new = nullptr;
+    t_il2cpp_runtime_invoke                runtime_invoke = nullptr;
+    t_il2cpp_object_unbox                  object_unbox = nullptr;
 
     bool init() {
         ga = GetModuleHandleA("GameAssembly.dll");
@@ -61,6 +65,8 @@ struct IL2CPP_API {
         object_new                    = (t_il2cpp_object_new)                GetProcAddress(ga, "il2cpp_object_new");
         array_new                     = (t_il2cpp_array_new)                 GetProcAddress(ga, "il2cpp_array_new");
         string_new                    = (t_il2cpp_string_new)                GetProcAddress(ga, "il2cpp_string_new");
+        runtime_invoke                = (t_il2cpp_runtime_invoke)            GetProcAddress(ga, "il2cpp_runtime_invoke");
+        object_unbox                  = (t_il2cpp_object_unbox)              GetProcAddress(ga, "il2cpp_object_unbox");
         return domain_get && domain_get_assemblies && assembly_get_image && class_from_name
             && class_get_field_from_name && field_static_get_value;
     }

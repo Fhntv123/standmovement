@@ -663,53 +663,101 @@ void ApplyCameraFov() {
 
 
 
-bool BuildInternetSkyboxUnityObjects(uintptr_t texture, uintptr_t data) {
-
-    __try {
-        strcpy_s(imageSkyboxStatus, "Creating Unity texture...");
-        o_Texture2D_ctor(texture, 2, 2, nullptr);
-        if (!o_ImageConversion_LoadImage(texture, data, nullptr)) {
-            strcpy_s(imageSkyboxStatus, "Image decode failed (JPG/PNG only)");
-            return false;
-        }
-
-        Il2CppString* shaderName = g_il2cpp.string_new("Skybox/Panoramic");
-        uintptr_t shader = o_Shader_Find(shaderName, nullptr);
-        Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
-        if (!shader || !materialClass) {
-            strcpy_s(imageSkyboxStatus, "Panoramic skybox shader not found");
-            return false;
-        }
-
-        uintptr_t material = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
-        if (!material) {
-            strcpy_s(imageSkyboxStatus, "Unity material allocation failed");
-            return false;
-        }
-
-        strcpy_s(imageSkyboxStatus, "Creating panoramic material...");
-        o_Material_ctor(material, shader, nullptr);
-        o_Material_set_mainTexture(material, texture, nullptr);
-
-        if (!originalSkyboxMaterial) originalSkyboxMaterial = o_RenderSettings_get_skybox(nullptr);
-        imageSkyboxTexture = texture;
-        imageSkyboxMaterial = material;
-        imageSkyboxEnabled = true;
-        customSkyboxEnabled = false;
-        o_RenderSettings_set_skybox(imageSkyboxMaterial, nullptr);
-
-        if (o_Camera_set_clearFlags) {
-            const uintptr_t camera = GetCamera();
-            if (camera) o_Camera_set_clearFlags(camera, 1);
-        }
-
-        strcpy_s(imageSkyboxStatus, "Image skybox loaded");
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        strcpy_s(imageSkyboxStatus, "Unity rejected the image skybox");
+static bool InvokeVoid(const Il2CppMethod* method, void* object, void** args, const char* failure) {
+    if (!method || !g_il2cpp.runtime_invoke) {
+        strcpy_s(imageSkyboxStatus, failure);
         return false;
     }
+    Il2CppObject* exception = nullptr;
+    g_il2cpp.runtime_invoke(method, object, args, &exception);
+    if (exception) {
+        strcpy_s(imageSkyboxStatus, failure);
+        return false;
+    }
+    return true;
+}
+
+bool BuildInternetSkyboxUnityObjects(uintptr_t texture, uintptr_t data) {
+    if (!g_il2cpp.class_get_method_from_name || !g_il2cpp.runtime_invoke || !g_il2cpp.object_unbox) {
+        strcpy_s(imageSkyboxStatus, "IL2CPP invoke API unavailable");
+        return false;
+    }
+
+    Il2CppClass* textureClass = g_il2cpp.find_class("UnityEngine", "Texture2D");
+    Il2CppClass* imageClass = g_il2cpp.find_class("UnityEngine", "ImageConversion");
+    Il2CppClass* shaderClass = g_il2cpp.find_class("UnityEngine", "Shader");
+    Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
+    Il2CppClass* renderSettingsClass = g_il2cpp.find_class("UnityEngine", "RenderSettings");
+    if (!textureClass || !imageClass || !shaderClass || !materialClass || !renderSettingsClass) {
+        strcpy_s(imageSkyboxStatus, "Required Unity class not found");
+        return false;
+    }
+
+    const Il2CppMethod* textureCtor = g_il2cpp.class_get_method_from_name(textureClass, ".ctor", 2);
+    const Il2CppMethod* loadImage = g_il2cpp.class_get_method_from_name(imageClass, "LoadImage", 2);
+    const Il2CppMethod* shaderFind = g_il2cpp.class_get_method_from_name(shaderClass, "Find", 1);
+    const Il2CppMethod* materialCtor = g_il2cpp.class_get_method_from_name(materialClass, ".ctor", 1);
+    const Il2CppMethod* setMainTexture = g_il2cpp.class_get_method_from_name(materialClass, "set_mainTexture", 1);
+    const Il2CppMethod* getSkybox = g_il2cpp.class_get_method_from_name(renderSettingsClass, "get_skybox", 0);
+    const Il2CppMethod* setSkybox = g_il2cpp.class_get_method_from_name(renderSettingsClass, "set_skybox", 1);
+
+    int width = 2, height = 2;
+    void* ctorArgs[] = { &width, &height };
+    if (!InvokeVoid(textureCtor, reinterpret_cast<void*>(texture), ctorArgs, "Texture2D constructor failed")) return false;
+
+    void* textureArg = reinterpret_cast<void*>(texture);
+    void* dataArg = reinterpret_cast<void*>(data);
+    void* imageArgs[] = { &textureArg, &dataArg };
+    Il2CppObject* exception = nullptr;
+    Il2CppObject* loadResult = g_il2cpp.runtime_invoke(loadImage, nullptr, imageArgs, &exception);
+    if (exception || !loadResult || !*reinterpret_cast<bool*>(g_il2cpp.object_unbox(loadResult))) {
+        strcpy_s(imageSkyboxStatus, "ImageConversion.LoadImage failed");
+        return false;
+    }
+
+    Il2CppString* shaderName = g_il2cpp.string_new("Skybox/Panoramic");
+    void* shaderNameArg = shaderName;
+    void* shaderArgs[] = { &shaderNameArg };
+    exception = nullptr;
+    Il2CppObject* shaderObject = g_il2cpp.runtime_invoke(shaderFind, nullptr, shaderArgs, &exception);
+    if (exception || !shaderObject) {
+        strcpy_s(imageSkyboxStatus, "Skybox/Panoramic shader not found");
+        return false;
+    }
+
+    uintptr_t material = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
+    if (!material) {
+        strcpy_s(imageSkyboxStatus, "Material allocation failed");
+        return false;
+    }
+
+    void* shaderArg = shaderObject;
+    void* materialArgs[] = { &shaderArg };
+    if (!InvokeVoid(materialCtor, reinterpret_cast<void*>(material), materialArgs, "Material constructor failed")) return false;
+
+    void* mainTextureArg = reinterpret_cast<void*>(texture);
+    void* textureArgs[] = { &mainTextureArg };
+    if (!InvokeVoid(setMainTexture, reinterpret_cast<void*>(material), textureArgs, "Material texture assignment failed")) return false;
+
+    if (!originalSkyboxMaterial) {
+        exception = nullptr;
+        originalSkyboxMaterial = reinterpret_cast<uintptr_t>(g_il2cpp.runtime_invoke(getSkybox, nullptr, nullptr, &exception));
+    }
+
+    void* materialArg = reinterpret_cast<void*>(material);
+    void* skyboxArgs[] = { &materialArg };
+    if (!InvokeVoid(setSkybox, nullptr, skyboxArgs, "RenderSettings.set_skybox failed")) return false;
+
+    imageSkyboxTexture = texture;
+    imageSkyboxMaterial = material;
+    imageSkyboxEnabled = true;
+    customSkyboxEnabled = false;
+    if (o_Camera_set_clearFlags) {
+        const uintptr_t camera = GetCamera();
+        if (camera) o_Camera_set_clearFlags(camera, 1);
+    }
+    strcpy_s(imageSkyboxStatus, "Image skybox loaded");
+    return true;
 }
 
 bool LoadEmbeddedCatSkybox() {
