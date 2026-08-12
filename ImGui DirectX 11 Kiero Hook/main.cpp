@@ -191,11 +191,10 @@ struct Matrix16 {
 #define OFFSET_AIMVIEW_AWAKE                       0xA60AA0
 #define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
 #define OFFSET_HUDVIEW_UPDATE                       0xA68C60
-#define OFFSET_PLAYERMAINCAMERA_GET_INSTANCE        0x83E960
-#define OFFSET_PLAYERMAINCAMERA_GET_SCOPE_ACTIVE    0x83EB30
 #define OFFSET_COMPONENT_GET_GAMEOBJECT             0x2EF2CA0
 #define OFFSET_GAMEOBJECT_SETACTIVE                 0x2EF6620
 #define OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY     0x2EF6A20
+#define OFFSET_CANVASGROUP_SET_ALPHA                0x312A590
 
 #define OFFSET_WORLDTOSCREENPOINT                  0x2EC0950
 
@@ -323,6 +322,7 @@ bool bulletTracerEnabled = false;
 bool noSpreadEnabled = false;
 bool removeScopeBorders = false;
 bool customScopeReticleVisible = false;
+uintptr_t liveAimView = 0;
 uintptr_t sniperSightObject = 0;
 volatile LONG pendingScopeOverlayRefresh = 0;
 float bulletTracerColor[3] = { 1.0f, 0.25f, 0.05f };
@@ -663,9 +663,8 @@ void(__fastcall* o_AimView_UpdateSniperPanels)(uintptr_t, float, float, const Il
 uintptr_t(__fastcall* o_Component_get_gameObject)(uintptr_t) = nullptr;
 void(__fastcall* o_GameObject_SetActive)(uintptr_t, bool) = nullptr;
 bool(__fastcall* o_GameObject_get_activeInHierarchy)(uintptr_t) = nullptr;
+void(__fastcall* o_CanvasGroup_set_alpha)(uintptr_t, float) = nullptr;
 void(__fastcall* o_HUDView_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
-uintptr_t(__fastcall* o_PlayerMainCamera_get_instance)() = nullptr;
-bool(__fastcall* o_PlayerMainCamera_get_scopeActive)(uintptr_t) = nullptr;
 
 
 
@@ -970,62 +969,57 @@ uintptr_t GetPlayerController() {
 
 void __fastcall hk_GameObject_SetActive(uintptr_t instance, bool active)
 {
-    if (instance && instance == sniperSightObject) {
-        customScopeReticleVisible = active && removeScopeBorders;
-        if (active && removeScopeBorders) {
-            o_GameObject_SetActive(instance, false);
-            return;
-        }
-    }
+    if (instance && instance == sniperSightObject) customScopeReticleVisible = removeScopeBorders && active;
     o_GameObject_SetActive(instance, active);
 }
 
 void __fastcall hk_AimView_Awake(uintptr_t instance, const Il2CppMethod* method)
 {
     o_AimView_Awake(instance, method);
-    __try { sniperSightObject = instance ? *(uintptr_t*)(instance + 0x48) : 0; }
+    __try {
+        liveAimView = instance;
+        sniperSightObject = instance ? *(uintptr_t*)(instance + 0x48) : 0;
+    }
     __except (EXCEPTION_EXECUTE_HANDLER) { sniperSightObject = 0; }
 }
 
 void __fastcall hk_AimView_UpdateSniperPanels(uintptr_t instance, float a, float b, const Il2CppMethod* method)
 {
     // This runs on every aiming transition, so it also captures AimView when injected mid-match.
-    __try { if (instance) sniperSightObject = *(uintptr_t*)(instance + 0x48); }
+    __try {
+        if (instance) {
+            liveAimView = instance;
+            sniperSightObject = *(uintptr_t*)(instance + 0x48);
+        }
+    }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
     o_AimView_UpdateSniperPanels(instance, a, b, method);
 }
 
-static void RefreshScopeOverlayOnGameThread()
+static void ApplyScopeOverlayState()
 {
-    if (!sniperSightObject || !o_GameObject_get_activeInHierarchy || !o_GameObject_SetActive) return;
-    __try {
-        const bool active = o_GameObject_get_activeInHierarchy(sniperSightObject);
-        if (removeScopeBorders && active) {
-            customScopeReticleVisible = true;
-            o_GameObject_SetActive(sniperSightObject, false);
-        } else if (!removeScopeBorders && customScopeReticleVisible) {
-            customScopeReticleVisible = false;
-            o_GameObject_SetActive(sniperSightObject, true);
-        }
+    if (!liveAimView || !sniperSightObject || !o_GameObject_get_activeInHierarchy || !o_CanvasGroup_set_alpha) {
+        customScopeReticleVisible = false;
+        return;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __try {
+        const bool scoped = o_GameObject_get_activeInHierarchy(sniperSightObject);
+        customScopeReticleVisible = removeScopeBorders && scoped;
+        const uintptr_t scopeCanvasGroup = *(uintptr_t*)(liveAimView + 0xA8);
+        if (scopeCanvasGroup) o_CanvasGroup_set_alpha(scopeCanvasGroup, removeScopeBorders && scoped ? 0.0f : 1.0f);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { customScopeReticleVisible = false; }
 }
 
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
     __try {
-        const uintptr_t aimView = instance ? *(uintptr_t*)(instance + 0x38) : 0;
-        if (aimView) sniperSightObject = *(uintptr_t*)(aimView + 0x48);
+        liveAimView = instance ? *(uintptr_t*)(instance + 0x38) : 0;
+        sniperSightObject = liveAimView ? *(uintptr_t*)(liveAimView + 0x48) : 0;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { sniperSightObject = 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
-    __try {
-        const uintptr_t playerMainCamera = o_PlayerMainCamera_get_instance ? o_PlayerMainCamera_get_instance() : 0;
-        const bool scoped = playerMainCamera && o_PlayerMainCamera_get_scopeActive && o_PlayerMainCamera_get_scopeActive(playerMainCamera);
-        customScopeReticleVisible = removeScopeBorders && scoped;
-        if (customScopeReticleVisible && sniperSightObject && o_GameObject_SetActive) o_GameObject_SetActive(sniperSightObject, false);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { customScopeReticleVisible = false; }
+    ApplyScopeOverlayState();
 }
 
 void DrawBorderlessScopeReticle()
@@ -1397,7 +1391,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
     if (keyValidated && instance) lastCharacterController = instance;
 
-    if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) RefreshScopeOverlayOnGameThread();
+    if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
 
     const LONG skyboxCommand = InterlockedExchange(&pendingSkyboxCommand, 0);
     if (keyValidated && skyboxCommand == 1) LoadEmbeddedCatSkybox();
@@ -2572,14 +2566,13 @@ DWORD WINAPI HackThread(LPVOID)
 
     o_Component_get_gameObject = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_GAMEOBJECT);
     o_GameObject_get_activeInHierarchy = (bool(__fastcall*)(uintptr_t))(base + OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY);
+    o_CanvasGroup_set_alpha = (void(__fastcall*)(uintptr_t, float))(base + OFFSET_CANVASGROUP_SET_ALPHA);
     MH_CreateHook((LPVOID)(base + OFFSET_GAMEOBJECT_SETACTIVE), hk_GameObject_SetActive, (LPVOID*)&o_GameObject_SetActive);
     MH_EnableHook((LPVOID)(base + OFFSET_GAMEOBJECT_SETACTIVE));
     MH_CreateHook((LPVOID)(base + OFFSET_AIMVIEW_AWAKE), hk_AimView_Awake, (LPVOID*)&o_AimView_Awake);
     MH_EnableHook((LPVOID)(base + OFFSET_AIMVIEW_AWAKE));
     MH_CreateHook((LPVOID)(base + OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS), hk_AimView_UpdateSniperPanels, (LPVOID*)&o_AimView_UpdateSniperPanels);
     MH_EnableHook((LPVOID)(base + OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS));
-    o_PlayerMainCamera_get_instance = (uintptr_t(__fastcall*)())(base + OFFSET_PLAYERMAINCAMERA_GET_INSTANCE);
-    o_PlayerMainCamera_get_scopeActive = (bool(__fastcall*)(uintptr_t))(base + OFFSET_PLAYERMAINCAMERA_GET_SCOPE_ACTIVE);
     MH_CreateHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE), hk_HUDView_Update, (LPVOID*)&o_HUDView_Update);
     MH_EnableHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE));
 
