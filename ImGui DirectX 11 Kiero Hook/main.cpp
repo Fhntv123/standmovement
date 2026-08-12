@@ -214,6 +214,10 @@ struct Matrix16 {
 #define OFFSET_HUDVIEW_UPDATE                       0xA68C60
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xA5D6C0
 #define OFFSET_PLAYERSNAPSHOT_SERIALIZE             0x8431A0
+#define OFFSET_TRANSFORM_GET_EULERANGLES            0x2F066B0
+#define OFFSET_TRANSFORM_SET_EULERANGLES            0x2F07020
+#define OFFSET_TRANSFORM_GET_LOCALEULERANGLES       0x2F06890
+#define OFFSET_TRANSFORM_SET_LOCALEULERANGLES       0x2F07100
 #define OFFSET_COMPONENT_GET_GAMEOBJECT             0x2EF2CA0
 #define OFFSET_GAMEOBJECT_SETACTIVE                 0x2EF6620
 #define OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY     0x2EF6A20
@@ -329,7 +333,9 @@ bool showTrail = false;
 bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool silentAntiAimEnabled = false;
+bool silentAntiAimLocalPreview = true;
 bool silentAntiAimHookReady = false;
+bool silentAntiAimPreviewApplied = false;
 volatile LONG silentAntiAimHookCalls = 0;
 volatile LONG silentAntiAimLocalPacketCalls = 0;
 char silentAntiAimStatus[96] = "Disabled";
@@ -758,6 +764,10 @@ float(__fastcall* o_Time_get_deltaTime)() = nullptr;
 
 Vector3(__fastcall* o_Transform_get_position)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_forward)(uintptr_t) = nullptr;
+Vector3(__fastcall* o_Transform_get_eulerAngles)(uintptr_t) = nullptr;
+void(__fastcall* o_Transform_set_eulerAngles)(uintptr_t, Vector3) = nullptr;
+Vector3(__fastcall* o_Transform_get_localEulerAngles)(uintptr_t) = nullptr;
+void(__fastcall* o_Transform_set_localEulerAngles)(uintptr_t, Vector3) = nullptr;
 
 uintptr_t(__fastcall* o_Component_get_transform)(uintptr_t) = nullptr;
 
@@ -1620,6 +1630,65 @@ void __fastcall hk_PlayerSnapshot_Serialize(uintptr_t snapshot, uintptr_t writer
     }
 }
 
+static void ApplyLocalAntiAimPreview()
+{
+    if (!liveHudLocalPlayer || !o_Component_get_transform ||
+        !o_Transform_get_eulerAngles || !o_Transform_set_eulerAngles ||
+        !o_Transform_get_localEulerAngles || !o_Transform_set_localEulerAngles)
+        return;
+
+    __try {
+        // _characterBiped is the rendered third-person model only. It is
+        // separate from _mainCameraHolder, FPSCamera and weapon shot direction.
+        const uintptr_t characterBiped =
+            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0x30);
+        const uintptr_t modelRoot = characterBiped ?
+            o_Component_get_transform(characterBiped) : 0;
+        const uintptr_t head = characterBiped ?
+            *reinterpret_cast<uintptr_t*>(characterBiped + 0x20) : 0;
+
+        // Derive the body yaw from the live movement snapshot, never from the
+        // previously modified model transform, so +180 cannot accumulate.
+        const uintptr_t movementController =
+            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xE0);
+        const uintptr_t movementSnapshot = movementController ?
+            *reinterpret_cast<uintptr_t*>(movementController + 0x90) : 0;
+        if (!modelRoot || !head || !movementSnapshot) return;
+
+        Vector3 bodyEuler = o_Transform_get_eulerAngles(modelRoot);
+        Vector3 headEuler = o_Transform_get_localEulerAngles(head);
+        const Vector3 realCharacterRotation =
+            *reinterpret_cast<Vector3*>(movementSnapshot + 0x58);
+
+        if (silentAntiAimEnabled && silentAntiAimLocalPreview) {
+            bodyEuler.y = NormalizeAngle360(realCharacterRotation.y + 180.0f);
+            headEuler.x = 89.0f;
+            o_Transform_set_eulerAngles(modelRoot, bodyEuler);
+            o_Transform_set_localEulerAngles(head, headEuler);
+            silentAntiAimPreviewApplied = true;
+            if (InterlockedCompareExchange(&silentAntiAimLocalPacketCalls, 0, 0) == 0)
+                strcpy_s(silentAntiAimStatus, "Local preview active; network packet not observed");
+        }
+        else if (silentAntiAimPreviewApplied) {
+            // Return to authoritative live angles rather than stale cached ones.
+            bodyEuler.y = NormalizeAngle360(realCharacterRotation.y);
+            const uintptr_t aimController =
+                *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
+            const uintptr_t aimSnapshot = aimController ?
+                *reinterpret_cast<uintptr_t*>(aimController + 0x168) : 0;
+            headEuler.x = aimSnapshot ?
+                *reinterpret_cast<float*>(aimSnapshot + 0x58) : 0.0f;
+            o_Transform_set_eulerAngles(modelRoot, bodyEuler);
+            o_Transform_set_localEulerAngles(head, headEuler);
+            silentAntiAimPreviewApplied = false;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        silentAntiAimPreviewApplied = false;
+        strcpy_s(silentAntiAimStatus, "Waiting for local character model");
+    }
+}
+
 static uintptr_t GetAuthoritativeLocalWeaponController();
 static uintptr_t GetCurrentLocalWeaponController();
 static void UpdateWeaponChams(uintptr_t knownWeaponController = 0);
@@ -1639,6 +1708,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
         ApplyCustomizedThirdPersonOffsets();
     if (InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0) && ApplyNativeThirdPersonState())
         InterlockedExchange(&pendingThirdPersonCommand, 0);
+    ApplyLocalAntiAimPreview();
     ApplyScopeOverlayState();
 }
 
@@ -3574,13 +3644,14 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             strcpy_s(silentAntiAimStatus, !silentAntiAimEnabled ? "Disabled" :
                 (silentAntiAimHookReady ? "Final packet hook installed; waiting for first call" : "Player packet hook failed to install"));
         }
+        ImGui::Checkbox("Local Third-Person Preview", &silentAntiAimLocalPreview);
         ImGui::TextWrapped("Status: %s", silentAntiAimStatus);
         if (silentAntiAimEnabled)
             ImGui::Text("Hook calls: %ld | Local packets: %ld",
                 InterlockedCompareExchange(&silentAntiAimHookCalls, 0, 0),
                 InterlockedCompareExchange(&silentAntiAimLocalPacketCalls, 0, 0));
         ImGui::Spacing();
-        ImGui::TextWrapped("Changes only the outgoing player snapshot. Local camera, crosshair and shot direction stay untouched.");
+        ImGui::TextWrapped("Preview rotates only the rendered character BipedMap. Camera, crosshair and shot direction stay untouched.");
         ImGui::EndChild();
     }
     else if (currentTab == 2) { // VISUALS
@@ -3862,6 +3933,10 @@ DWORD WINAPI HackThread(LPVOID)
 
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
     o_Transform_get_forward = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_FORWARD);
+    o_Transform_get_eulerAngles = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_EULERANGLES);
+    o_Transform_set_eulerAngles = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_EULERANGLES);
+    o_Transform_get_localEulerAngles = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_LOCALEULERANGLES);
+    o_Transform_set_localEulerAngles = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_LOCALEULERANGLES);
 
     o_Component_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_TRANSFORM);
 
