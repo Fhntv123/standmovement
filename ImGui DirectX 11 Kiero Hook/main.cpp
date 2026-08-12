@@ -164,6 +164,7 @@ struct Matrix16 {
 #define OFFSET_CHARACTERCONTROLLER_MOVE            0x2F4DD80
 
 #define OFFSET_CHARACTERCONTROLLER_GET_VELOCITY    0x2F4DF80
+#define OFFSET_TIME_GET_DELTATIME                   0x2F048A0
 
 #define OFFSET_TRANSFORM_GET_POSITION              0x2F06CE0
 #define OFFSET_TRANSFORM_GET_FORWARD               0x2F06780
@@ -706,6 +707,7 @@ bool(__fastcall* o_CC_get_isGrounded)(uintptr_t) = nullptr;
 int(__fastcall* o_CC_Move)(uintptr_t, Vector3) = nullptr;
 
 Vector3(__fastcall* o_CC_get_velocity)(uintptr_t) = nullptr;
+float(__fastcall* o_Time_get_deltaTime)() = nullptr;
 
 Vector3(__fastcall* o_Transform_get_position)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_forward)(uintptr_t) = nullptr;
@@ -1519,16 +1521,32 @@ Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
         vel.y = 0.0f;
     }
 
-    // Limit the game's actual reported horizontal velocity. CharacterController.Move
-    // is intentionally left untouched because this game does not pass a simple
-    // velocity*deltaTime displacement there; clamping it slows normal walking/jumps.
-    const float horizontalBeforeLimit = sqrtf(vel.x * vel.x + vel.z * vel.z);
+    // This getter can be consumed by game movement code, but the authoritative
+    // physical cap is also enforced on CharacterController.Move below.
     if (velocityLimiterEnabled) vel = ApplyVelocityLimit(vel);
     velocityLimiterCurrentHorizontalSpeed = sqrtf(vel.x * vel.x + vel.z * vel.z);
-    velocityLimiterLastAppliedScale = horizontalBeforeLimit > 0.00001f
-        ? velocityLimiterCurrentHorizontalSpeed / horizontalBeforeLimit : 1.0f;
     lastSpeed = sqrtf(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
     return vel;
+}
+
+static Vector3 ApplyVelocityLimitToMotion(const Vector3& motion)
+{
+    velocityLimiterLastAppliedScale = 1.0f;
+    if (!velocityLimiterEnabled || velocityLimit <= 0.0f) return motion;
+
+    float deltaTime = o_Time_get_deltaTime ? o_Time_get_deltaTime() : (1.0f / 60.0f);
+    if (!isfinite(deltaTime) || deltaTime < (1.0f / 240.0f) || deltaTime > 0.1f)
+        deltaTime = 1.0f / 60.0f;
+
+    Vector3 result = motion;
+    const float horizontalMotion = sqrtf(result.x * result.x + result.z * result.z);
+    const float maxHorizontalMotion = velocityLimit * deltaTime;
+    if (horizontalMotion > maxHorizontalMotion && horizontalMotion > 0.00001f) {
+        velocityLimiterLastAppliedScale = maxHorizontalMotion / horizontalMotion;
+        result.x *= velocityLimiterLastAppliedScale;
+        result.z *= velocityLimiterLastAppliedScale;
+    }
+    return result;
 }
 
 static void RestoreWeaponChams()
@@ -2069,6 +2087,9 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 
     if (keyValidated) {
         motion = EdgeBug::ApplyDownwardPull(motion, edgeBugEnabled, edgeBugPullForce);
+        // Enforce the configured horizontal units/second cap on the movement
+        // passed to Unity, using the real frame delta.
+        motion = ApplyVelocityLimitToMotion(motion);
     }
 
     return o_CC_Move(instance, motion);
@@ -3273,6 +3294,7 @@ DWORD WINAPI HackThread(LPVOID)
     o_Component_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_TRANSFORM);
 
     o_Camera_get_main = (uintptr_t(__fastcall*)())(base + OFFSET_CAMERA_MAIN);
+    o_Time_get_deltaTime = (float(__fastcall*)())(base + OFFSET_TIME_GET_DELTATIME);
 
     MH_CreateHook((LPVOID)(base + OFFSET_CAMERA_SET_FIELDOFVIEW), hk_Camera_set_fieldOfView, (LPVOID*)&o_Camera_set_fieldOfView);
 
