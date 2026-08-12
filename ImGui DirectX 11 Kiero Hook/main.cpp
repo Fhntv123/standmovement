@@ -351,6 +351,7 @@ uintptr_t flatChamsMaterial = 0;
 uintptr_t glassChamsMaterial = 0;
 uint32_t flatChamsMaterialHandle = 0;
 uint32_t glassChamsMaterialHandle = 0;
+char weaponChamsStatus[128] = "Select Flat or Glass";
 
 struct BulletTracerEntry {
     Vector3 start;
@@ -1442,33 +1443,49 @@ static uintptr_t CreateWeaponChamsMaterial(const char* shaderName, bool glass)
     return material;
 }
 
-static bool EnsureWeaponChamsMaterials()
+static uintptr_t EnsureSelectedWeaponChamsMaterial()
 {
-    if (!flatChamsMaterial) {
-        flatChamsMaterial = CreateWeaponChamsMaterial("Unlit/Color", false);
-        if (!flatChamsMaterial) flatChamsMaterial = CreateWeaponChamsMaterial("Legacy Shaders/Unlit/Color", false);
-        if (flatChamsMaterial && g_il2cpp.gchandle_new)
-            flatChamsMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(flatChamsMaterial), false);
+    if (weaponChamsMode == 0) {
+        if (!flatChamsMaterial) {
+            const char* flatShaders[] = { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default" };
+            for (const char* shaderName : flatShaders) {
+                flatChamsMaterial = CreateWeaponChamsMaterial(shaderName, false);
+                if (flatChamsMaterial) break;
+            }
+            if (flatChamsMaterial && g_il2cpp.gchandle_new)
+                flatChamsMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(flatChamsMaterial), false);
+        }
+        if (!flatChamsMaterial) strcpy_s(weaponChamsStatus, "Flat shader not found in this build");
+        return flatChamsMaterial;
     }
+
     if (!glassChamsMaterial) {
-        glassChamsMaterial = CreateWeaponChamsMaterial("Unlit/Transparent", true);
-        if (!glassChamsMaterial) glassChamsMaterial = CreateWeaponChamsMaterial("Legacy Shaders/Transparent/Diffuse", true);
+        const char* glassShaders[] = { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", "UI/Default" };
+        for (const char* shaderName : glassShaders) {
+            glassChamsMaterial = CreateWeaponChamsMaterial(shaderName, true);
+            if (glassChamsMaterial) break;
+        }
         if (glassChamsMaterial && g_il2cpp.gchandle_new)
             glassChamsMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(glassChamsMaterial), false);
     }
-    return flatChamsMaterial && glassChamsMaterial;
+    if (!glassChamsMaterial) strcpy_s(weaponChamsStatus, "Glass shader not found in this build");
+    return glassChamsMaterial;
 }
 
 static void CaptureWeaponChamsRenderers(uintptr_t weaponController)
 {
     RestoreWeaponChams();
-    if (!weaponController || !o_Renderer_get_material) return;
+    if (!weaponController || !o_Renderer_get_material) {
+        strcpy_s(weaponChamsStatus, "No local weapon controller");
+        return;
+    }
     __try {
         const uintptr_t lodGroup = *(uintptr_t*)(weaponController + 0x80);
         const uintptr_t renderers = lodGroup ? *(uintptr_t*)(lodGroup + 0x40) : 0;
-        if (!renderers) return;
+        if (!lodGroup) { strcpy_s(weaponChamsStatus, "WeaponLodGroup not found"); return; }
+        if (!renderers) { strcpy_s(weaponChamsStatus, "Weapon renderer array not found"); return; }
         const size_t count = *(size_t*)(renderers + 0x18);
-        if (!count || count > 64) return;
+        if (!count || count > 64) { strcpy_s(weaponChamsStatus, "Weapon renderer array is empty"); return; }
         for (size_t i = 0; i < count; ++i) {
             const uintptr_t renderer = *(uintptr_t*)(renderers + 0x20 + i * sizeof(uintptr_t));
             if (!renderer) continue;
@@ -1476,8 +1493,12 @@ static void CaptureWeaponChamsRenderers(uintptr_t weaponController)
             if (originalMaterial) weaponChamsRenderers.push_back({ renderer, originalMaterial });
         }
         weaponChamsController = weaponController;
+        sprintf_s(weaponChamsStatus, "Applied to %zu weapon renderer(s)", weaponChamsRenderers.size());
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { RestoreWeaponChams(); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        strcpy_s(weaponChamsStatus, "Weapon renderer capture failed");
+        RestoreWeaponChams();
+    }
 }
 
 static void UpdateWeaponChams()
@@ -1495,12 +1516,12 @@ static void UpdateWeaponChams()
         if (!weaponChamsRenderers.empty()) RestoreWeaponChams();
         return;
     }
-    if (!EnsureWeaponChamsMaterials()) return;
+    const uintptr_t replacement = EnsureSelectedWeaponChamsMaterial();
+    if (!replacement) return;
     if (weaponController != weaponChamsController || weaponChamsRenderers.empty())
         CaptureWeaponChamsRenderers(weaponController);
     if (weaponChamsRenderers.empty()) return;
 
-    const uintptr_t replacement = weaponChamsMode == 1 ? glassChamsMaterial : flatChamsMaterial;
     const float alpha = weaponChamsMode == 1 ? weaponChamsGlassAlpha : 1.0f;
     o_Material_set_color(replacement, Color(weaponChamsColor[0], weaponChamsColor[1], weaponChamsColor[2], alpha));
     for (const WeaponChamsRenderer& entry : weaponChamsRenderers) {
@@ -2550,9 +2571,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Weapon Chams", &weaponChamsEnabled);
         if (weaponChamsEnabled) {
             const char* chamsModes[] = { "Flat", "Glass" };
-            ImGui::Combo("Chams Material", &weaponChamsMode, chamsModes, IM_ARRAYSIZE(chamsModes));
+            if (ImGui::Combo("Chams Material", &weaponChamsMode, chamsModes, IM_ARRAYSIZE(chamsModes))) weaponChamsController = 0;
             ImGui::ColorEdit3("Chams Color", weaponChamsColor);
             if (weaponChamsMode == 1) ImGui::SliderFloat("Glass Alpha", &weaponChamsGlassAlpha, 0.05f, 0.95f, "%.2f");
+            ImGui::TextWrapped("Status: %s", weaponChamsStatus);
         }
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
         if (bulletTracerEnabled) {
