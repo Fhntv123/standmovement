@@ -2171,12 +2171,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (customSkyboxEnabled) {
             ImGui::ColorEdit3("Skybox Color", customSkyboxColor);
         }
-        if (ImGui::Button("Load Embedded Cat Skybox")) LoadEmbeddedCatSkybox();
-        ImGui::InputText("Skybox Image URL", imageSkyboxUrl, sizeof(imageSkyboxUrl));
-        if (ImGui::Button("Load Image Skybox")) LoadInternetSkybox();
-        ImGui::SameLine();
-        if (ImGui::Button("Restore Skybox")) RestoreDefaultSkybox();
-        ImGui::TextWrapped("%s", imageSkyboxStatus);
+        ImGui::TextDisabled("Image skybox disabled: unstable Unity renderer path");
         
         ImGui::EndChild();
     }
@@ -2389,7 +2384,6 @@ BOOL WINAPI DllMain(HMODULE hMod, DWORD dwReason, LPVOID lpReserved)
 
         DisableThreadLibraryCalls(hMod);
 
-        ShellExecuteA(NULL, "open", "https://t.me/ze0ntap", NULL, NULL, SW_SHOWNORMAL);
 
         CreateThread(nullptr, 0, MainThread, hMod, 0, nullptr);
 
