@@ -1652,7 +1652,7 @@ static void ApplyLocalAntiAimPreview()
             *reinterpret_cast<uintptr_t*>(characterBiped + 0x20) : 0;
         const uintptr_t aimController =
             *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
-        const uintptr_t cameraTransform = aimController ?
+        uintptr_t cameraTransform = aimController ?
             *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
         if (!cameraTransform) {
             const uintptr_t camera = GetCamera();
