@@ -168,9 +168,6 @@ struct Matrix16 {
 
 #define OFFSET_TRANSFORM_GET_POSITION              0x2F06CE0
 #define OFFSET_TRANSFORM_GET_FORWARD               0x2F06780
-#define OFFSET_TRANSFORM_GET_RIGHT                 0x2F06D30
-#define OFFSET_TRANSFORM_GET_UP                    0x2F06EA0
-#define OFFSET_TRANSFORM_SET_POSITION              0x2F07480
 
 #define OFFSET_COMPONENT_GET_TRANSFORM             0x2EF2D50
 
@@ -183,8 +180,7 @@ struct Matrix16 {
 #define OFFSET_CAMERA_SET_BACKGROUNDCOLOR          0x2EC1890
 
 #define OFFSET_CAMERA_SET_CLEARFLAGS               0x2EC1920
-#define OFFSET_CAMERACONTROLLER_ONPRECULL          0xA9A130
-#define OFFSET_CAMERACONTROLLER_ONPOSTRENDER       0xA9A120
+#define OFFSET_OTHER_CHEAT_THIRDPERSON_GET         0x7CE8E0
 
 #define OFFSET_TEXTURE2D_CTOR                      0x2EDB780
 #define OFFSET_IMAGECONVERSION_LOADIMAGE           0x2F2B980
@@ -332,12 +328,6 @@ bool showTrail = false;
 bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool thirdPersonEnabled = false;
-float thirdPersonDistance = 3.0f;
-float thirdPersonHeight = 0.35f;
-float thirdPersonShoulder = 0.45f;
-uintptr_t thirdPersonCameraTransform = 0;
-Vector3 thirdPersonFirstPersonPosition{};
-bool thirdPersonCameraDisplaced = false;
 char thirdPersonStatus[96] = "Disabled";
 bool worldColorEnabled = false;
 float worldColor[3] = { 0.35f, 0.55f, 1.0f };
@@ -751,11 +741,7 @@ float(__fastcall* o_Time_get_deltaTime)() = nullptr;
 
 Vector3(__fastcall* o_Transform_get_position)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_forward)(uintptr_t) = nullptr;
-Vector3(__fastcall* o_Transform_get_right)(uintptr_t) = nullptr;
-Vector3(__fastcall* o_Transform_get_up)(uintptr_t) = nullptr;
-void(__fastcall* o_Transform_set_position)(uintptr_t, Vector3) = nullptr;
-void(__fastcall* o_CameraController_OnPreCull)(uintptr_t) = nullptr;
-void(__fastcall* o_CameraController_OnPostRender)(uintptr_t) = nullptr;
+bool(__fastcall* o_OtherCheat_GetThirdPerson)(uintptr_t) = nullptr;
 
 uintptr_t(__fastcall* o_Component_get_transform)(uintptr_t) = nullptr;
 
@@ -1034,54 +1020,13 @@ static bool CaptureWorldColorMaterials()
     return !worldColorRenderers.empty();
 }
 
-static void RestoreThirdPersonCameraPosition()
+bool __fastcall hk_OtherCheat_GetThirdPerson(uintptr_t instance)
 {
-    if (!thirdPersonCameraDisplaced || !thirdPersonCameraTransform || !o_Transform_set_position) return;
-    __try { o_Transform_set_position(thirdPersonCameraTransform, thirdPersonFirstPersonPosition); }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-    thirdPersonCameraDisplaced = false;
-}
-
-void __fastcall hk_CameraController_OnPreCull(uintptr_t instance)
-{
-    // If OnPostRender was skipped during a scene transition, never compound last frame's offset.
-    RestoreThirdPersonCameraPosition();
-    o_CameraController_OnPreCull(instance);
-    if (!keyValidated || !thirdPersonEnabled || !instance || !liveHudLocalPlayer) return;
-    __try {
-        const bool isFpsCamera = *reinterpret_cast<bool*>(instance + 0x22);
-        const uintptr_t camera = *reinterpret_cast<uintptr_t*>(instance + 0x28);
-        const uintptr_t transform = camera && o_Component_get_transform ? o_Component_get_transform(camera) : 0;
-        if (!isFpsCamera || !transform || !o_Transform_get_position || !o_Transform_get_forward ||
-            !o_Transform_get_right || !o_Transform_get_up || !o_Transform_set_position) {
-            strcpy_s(thirdPersonStatus, "Waiting for active FPS camera");
-            return;
-        }
-        const Vector3 basePosition = o_Transform_get_position(transform);
-        const Vector3 forward = o_Transform_get_forward(transform);
-        const Vector3 right = o_Transform_get_right(transform);
-        const Vector3 up = o_Transform_get_up(transform);
-        Vector3 offsetPosition = basePosition;
-        offsetPosition.x += -forward.x * thirdPersonDistance + right.x * thirdPersonShoulder + up.x * thirdPersonHeight;
-        offsetPosition.y += -forward.y * thirdPersonDistance + right.y * thirdPersonShoulder + up.y * thirdPersonHeight;
-        offsetPosition.z += -forward.z * thirdPersonDistance + right.z * thirdPersonShoulder + up.z * thirdPersonHeight;
-        thirdPersonCameraTransform = transform;
-        thirdPersonFirstPersonPosition = basePosition;
-        o_Transform_set_position(transform, offsetPosition);
-        thirdPersonCameraDisplaced = true;
-        strcpy_s(thirdPersonStatus, "Active via CameraController render hook");
+    if (keyValidated && thirdPersonEnabled) {
+        strcpy_s(thirdPersonStatus, "Active via native game TPS mode");
+        return true;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        thirdPersonCameraTransform = 0;
-        thirdPersonCameraDisplaced = false;
-        strcpy_s(thirdPersonStatus, "Waiting for active FPS camera");
-    }
-}
-
-void __fastcall hk_CameraController_OnPostRender(uintptr_t instance)
-{
-    o_CameraController_OnPostRender(instance);
-    RestoreThirdPersonCameraPosition();
+    return o_OtherCheat_GetThirdPerson(instance);
 }
 
 uintptr_t GetCamera() {
@@ -2336,9 +2281,6 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         activeLocalWeaponController = 0;
         armChamsArmsLodGroup = 0;
         gloveChamsArmsLodGroup = 0;
-        thirdPersonCameraTransform = 0;
-        thirdPersonCameraDisplaced = false;
-        if (thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Waiting for new match FPS camera");
         if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
         if (armChamsEnabled) InterlockedExchange(&pendingArmChamsRefresh, 1);
         if (gloveChamsEnabled) InterlockedExchange(&pendingGloveChamsRefresh, 1);
@@ -3404,16 +3346,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 InterlockedExchange(&pendingWorldColorCommand, 1);
             ImGui::TextWrapped("World status: %s", worldColorStatus);
         }
-        if (ImGui::Checkbox("Third Person", &thirdPersonEnabled)) {
-            if (!thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Disabled; restoring first person");
-            else strcpy_s(thirdPersonStatus, "Waiting for local camera");
-        }
-        if (thirdPersonEnabled) {
-            ImGui::SliderFloat("Third Person Distance", &thirdPersonDistance, 1.0f, 8.0f, "%.2f");
-            ImGui::SliderFloat("Third Person Height", &thirdPersonHeight, -1.0f, 3.0f, "%.2f");
-            ImGui::SliderFloat("Shoulder Offset", &thirdPersonShoulder, -2.0f, 2.0f, "%.2f");
-            ImGui::TextWrapped("Third person status: %s", thirdPersonStatus);
-        }
+        if (ImGui::Checkbox("Third Person", &thirdPersonEnabled))
+            strcpy_s(thirdPersonStatus, thirdPersonEnabled ? "Native TPS requested" : "Disabled; native FPS restored");
+        if (thirdPersonEnabled) ImGui::TextWrapped("Third person status: %s", thirdPersonStatus);
         ImGui::Checkbox("Camera FOV", &cameraFovEnabled);
         if (cameraFovEnabled) {
             ImGui::SliderFloat("Camera FOV Slider", &cameraFov, 30.0f, 150.0f, "%.1f");
@@ -3644,13 +3579,8 @@ DWORD WINAPI HackThread(LPVOID)
 
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
     o_Transform_get_forward = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_FORWARD);
-    o_Transform_get_right = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_RIGHT);
-    o_Transform_get_up = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_UP);
-    o_Transform_set_position = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_POSITION);
-    MH_CreateHook((LPVOID)(base + OFFSET_CAMERACONTROLLER_ONPRECULL), hk_CameraController_OnPreCull, (LPVOID*)&o_CameraController_OnPreCull);
-    MH_EnableHook((LPVOID)(base + OFFSET_CAMERACONTROLLER_ONPRECULL));
-    MH_CreateHook((LPVOID)(base + OFFSET_CAMERACONTROLLER_ONPOSTRENDER), hk_CameraController_OnPostRender, (LPVOID*)&o_CameraController_OnPostRender);
-    MH_EnableHook((LPVOID)(base + OFFSET_CAMERACONTROLLER_ONPOSTRENDER));
+    MH_CreateHook((LPVOID)(base + OFFSET_OTHER_CHEAT_THIRDPERSON_GET), hk_OtherCheat_GetThirdPerson, (LPVOID*)&o_OtherCheat_GetThirdPerson);
+    MH_EnableHook((LPVOID)(base + OFFSET_OTHER_CHEAT_THIRDPERSON_GET));
 
     o_Component_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_TRANSFORM);
 
