@@ -186,8 +186,10 @@ struct Matrix16 {
 #define OFFSET_MATERIAL_CTOR                       0x2ECEA40
 #define OFFSET_MATERIAL_SET_MAINTEXTURE            0x2ECF320
 #define OFFSET_RENDERER_GET_MATERIAL                0x2ED8EA0
+#define OFFSET_RENDERER_SET_MATERIAL                0x2ED9230
 #define OFFSET_MATERIAL_GET_COLOR                   0x2ECEBB0
 #define OFFSET_MATERIAL_SET_COLOR                   0x2ECF040
+#define OFFSET_MATERIAL_SET_RENDERQUEUE             0x2ECF3F0
 #define OFFSET_RENDERSETTINGS_GET_SKYBOX            0x2ED8D60
 #define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x2ED8D90
 #define OFFSET_GUNCONTROLLER_FIRE                  0x996BE0
@@ -335,16 +337,20 @@ float bulletTracerDuration = 1.5f;
 float bulletTracerThickness = 2.5f;
 
 bool weaponChamsEnabled = false;
-float weaponChamsColorA[3] = { 0.05f, 0.75f, 1.0f };
-float weaponChamsColorB[3] = { 0.85f, 0.10f, 1.0f };
-float weaponChamsSpeed = 1.0f;
+int weaponChamsMode = 0; // 0 = Flat, 1 = Glass
+float weaponChamsColor[3] = { 0.05f, 0.75f, 1.0f };
+float weaponChamsGlassAlpha = 0.35f;
 
-struct WeaponChamsMaterial {
-    uintptr_t material;
-    Color originalColor;
+struct WeaponChamsRenderer {
+    uintptr_t renderer;
+    uintptr_t originalMaterial;
 };
-std::vector<WeaponChamsMaterial> weaponChamsMaterials;
+std::vector<WeaponChamsRenderer> weaponChamsRenderers;
 uintptr_t weaponChamsController = 0;
+uintptr_t flatChamsMaterial = 0;
+uintptr_t glassChamsMaterial = 0;
+uint32_t flatChamsMaterialHandle = 0;
+uint32_t glassChamsMaterialHandle = 0;
 
 struct BulletTracerEntry {
     Vector3 start;
@@ -663,8 +669,10 @@ uintptr_t(__fastcall* o_Shader_Find)(Il2CppString*, const Il2CppMethod*) = nullp
 void(__fastcall* o_Material_ctor)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_Material_set_mainTexture)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Renderer_get_material)(uintptr_t) = nullptr;
+void(__fastcall* o_Renderer_set_material)(uintptr_t, uintptr_t) = nullptr;
 Color(__fastcall* o_Material_get_color)(uintptr_t) = nullptr;
 void(__fastcall* o_Material_set_color)(uintptr_t, Color) = nullptr;
+void(__fastcall* o_Material_set_renderQueue)(uintptr_t, int) = nullptr;
 uintptr_t(__fastcall* o_RenderSettings_get_skybox)(const Il2CppMethod*) = nullptr;
 void(__fastcall* o_RenderSettings_set_skybox)(uintptr_t, const Il2CppMethod*) = nullptr;
 
@@ -1409,23 +1417,53 @@ Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 
 static void RestoreWeaponChams()
 {
-    if (o_Material_set_color) {
-        for (const WeaponChamsMaterial& entry : weaponChamsMaterials) {
-            if (!entry.material) continue;
-            __try { o_Material_set_color(entry.material, entry.originalColor); }
+    if (o_Renderer_set_material) {
+        for (const WeaponChamsRenderer& entry : weaponChamsRenderers) {
+            if (!entry.renderer || !entry.originalMaterial) continue;
+            __try { o_Renderer_set_material(entry.renderer, entry.originalMaterial); }
             __except (EXCEPTION_EXECUTE_HANDLER) {}
         }
     }
-    weaponChamsMaterials.clear();
+    weaponChamsRenderers.clear();
     weaponChamsController = 0;
 }
 
-static void CaptureWeaponChamsMaterials(uintptr_t weaponController)
+static uintptr_t CreateWeaponChamsMaterial(const char* shaderName, bool glass)
+{
+    if (!shaderName || !o_Shader_Find || !o_Material_ctor || !g_il2cpp.object_new || !g_il2cpp.string_new) return 0;
+    Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
+    if (!materialClass) return 0;
+    const uintptr_t shader = o_Shader_Find(g_il2cpp.string_new(shaderName), nullptr);
+    if (!shader) return 0;
+    const uintptr_t material = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
+    if (!material) return 0;
+    o_Material_ctor(material, shader, nullptr);
+    if (glass && o_Material_set_renderQueue) o_Material_set_renderQueue(material, 3000);
+    return material;
+}
+
+static bool EnsureWeaponChamsMaterials()
+{
+    if (!flatChamsMaterial) {
+        flatChamsMaterial = CreateWeaponChamsMaterial("Unlit/Color", false);
+        if (!flatChamsMaterial) flatChamsMaterial = CreateWeaponChamsMaterial("Legacy Shaders/Unlit/Color", false);
+        if (flatChamsMaterial && g_il2cpp.gchandle_new)
+            flatChamsMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(flatChamsMaterial), false);
+    }
+    if (!glassChamsMaterial) {
+        glassChamsMaterial = CreateWeaponChamsMaterial("Unlit/Transparent", true);
+        if (!glassChamsMaterial) glassChamsMaterial = CreateWeaponChamsMaterial("Legacy Shaders/Transparent/Diffuse", true);
+        if (glassChamsMaterial && g_il2cpp.gchandle_new)
+            glassChamsMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(glassChamsMaterial), false);
+    }
+    return flatChamsMaterial && glassChamsMaterial;
+}
+
+static void CaptureWeaponChamsRenderers(uintptr_t weaponController)
 {
     RestoreWeaponChams();
-    if (!weaponController || !o_Renderer_get_material || !o_Material_get_color) return;
+    if (!weaponController || !o_Renderer_get_material) return;
     __try {
-        // WeaponController.cdyf (+0x80) -> WeaponLodGroup._meshRenderers (+0x40).
         const uintptr_t lodGroup = *(uintptr_t*)(weaponController + 0x80);
         const uintptr_t renderers = lodGroup ? *(uintptr_t*)(lodGroup + 0x40) : 0;
         if (!renderers) return;
@@ -1434,12 +1472,8 @@ static void CaptureWeaponChamsMaterials(uintptr_t weaponController)
         for (size_t i = 0; i < count; ++i) {
             const uintptr_t renderer = *(uintptr_t*)(renderers + 0x20 + i * sizeof(uintptr_t));
             if (!renderer) continue;
-            const uintptr_t material = o_Renderer_get_material(renderer);
-            if (!material) continue;
-            const auto duplicate = std::find_if(weaponChamsMaterials.begin(), weaponChamsMaterials.end(),
-                [material](const WeaponChamsMaterial& entry) { return entry.material == material; });
-            if (duplicate == weaponChamsMaterials.end())
-                weaponChamsMaterials.push_back({ material, o_Material_get_color(material) });
+            const uintptr_t originalMaterial = o_Renderer_get_material(renderer);
+            if (originalMaterial) weaponChamsRenderers.push_back({ renderer, originalMaterial });
         }
         weaponChamsController = weaponController;
     }
@@ -1448,7 +1482,7 @@ static void CaptureWeaponChamsMaterials(uintptr_t weaponController)
 
 static void UpdateWeaponChams()
 {
-    if (!keyValidated || !o_Material_set_color) return;
+    if (!keyValidated || !o_Renderer_set_material || !o_Material_set_color) return;
     uintptr_t weaponController = 0;
     __try {
         const uintptr_t localPlayer = GetPlayerController();
@@ -1458,23 +1492,20 @@ static void UpdateWeaponChams()
     __except (EXCEPTION_EXECUTE_HANDLER) { weaponController = 0; }
 
     if (!weaponChamsEnabled || !weaponController) {
-        if (!weaponChamsMaterials.empty()) RestoreWeaponChams();
+        if (!weaponChamsRenderers.empty()) RestoreWeaponChams();
         return;
     }
-    if (weaponController != weaponChamsController || weaponChamsMaterials.empty())
-        CaptureWeaponChamsMaterials(weaponController);
-    if (weaponChamsMaterials.empty()) return;
+    if (!EnsureWeaponChamsMaterials()) return;
+    if (weaponController != weaponChamsController || weaponChamsRenderers.empty())
+        CaptureWeaponChamsRenderers(weaponController);
+    if (weaponChamsRenderers.empty()) return;
 
-    const float phase = static_cast<float>(GetTickCount64() % 100000) * 0.001f * weaponChamsSpeed;
-    const float blend = 0.5f + 0.5f * sinf(phase);
-    const Color animated(
-        weaponChamsColorA[0] + (weaponChamsColorB[0] - weaponChamsColorA[0]) * blend,
-        weaponChamsColorA[1] + (weaponChamsColorB[1] - weaponChamsColorA[1]) * blend,
-        weaponChamsColorA[2] + (weaponChamsColorB[2] - weaponChamsColorA[2]) * blend,
-        1.0f);
-    for (const WeaponChamsMaterial& entry : weaponChamsMaterials) {
-        if (!entry.material) continue;
-        __try { o_Material_set_color(entry.material, animated); }
+    const uintptr_t replacement = weaponChamsMode == 1 ? glassChamsMaterial : flatChamsMaterial;
+    const float alpha = weaponChamsMode == 1 ? weaponChamsGlassAlpha : 1.0f;
+    o_Material_set_color(replacement, Color(weaponChamsColor[0], weaponChamsColor[1], weaponChamsColor[2], alpha));
+    for (const WeaponChamsRenderer& entry : weaponChamsRenderers) {
+        if (!entry.renderer) continue;
+        __try { o_Renderer_set_material(entry.renderer, replacement); }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
 }
@@ -2518,9 +2549,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (ImGui::Checkbox("Remove Scope Borders", &removeScopeBorders)) InterlockedExchange(&pendingScopeOverlayRefresh, 1);
         ImGui::Checkbox("Weapon Chams", &weaponChamsEnabled);
         if (weaponChamsEnabled) {
-            ImGui::ColorEdit3("Chams Color A", weaponChamsColorA);
-            ImGui::ColorEdit3("Chams Color B", weaponChamsColorB);
-            ImGui::SliderFloat("Chams Animation Speed", &weaponChamsSpeed, 0.1f, 5.0f, "%.1f");
+            const char* chamsModes[] = { "Flat", "Glass" };
+            ImGui::Combo("Chams Material", &weaponChamsMode, chamsModes, IM_ARRAYSIZE(chamsModes));
+            ImGui::ColorEdit3("Chams Color", weaponChamsColor);
+            if (weaponChamsMode == 1) ImGui::SliderFloat("Glass Alpha", &weaponChamsGlassAlpha, 0.05f, 0.95f, "%.2f");
         }
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
         if (bulletTracerEnabled) {
@@ -2658,8 +2690,10 @@ DWORD WINAPI HackThread(LPVOID)
     o_Material_ctor = (void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_MATERIAL_CTOR);
     o_Material_set_mainTexture = (void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_MATERIAL_SET_MAINTEXTURE);
     o_Renderer_get_material = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_GET_MATERIAL);
+    o_Renderer_set_material = (void(__fastcall*)(uintptr_t, uintptr_t))(base + OFFSET_RENDERER_SET_MATERIAL);
     o_Material_get_color = (Color(__fastcall*)(uintptr_t))(base + OFFSET_MATERIAL_GET_COLOR);
     o_Material_set_color = (void(__fastcall*)(uintptr_t, Color))(base + OFFSET_MATERIAL_SET_COLOR);
+    o_Material_set_renderQueue = (void(__fastcall*)(uintptr_t, int))(base + OFFSET_MATERIAL_SET_RENDERQUEUE);
     o_RenderSettings_get_skybox = (uintptr_t(__fastcall*)(const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_GET_SKYBOX);
     o_RenderSettings_set_skybox = (void(__fastcall*)(uintptr_t, const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_SET_SKYBOX);
 
