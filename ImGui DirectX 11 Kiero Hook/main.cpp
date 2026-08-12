@@ -316,6 +316,9 @@ bool showTrail = false;
 
 bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
+bool worldColorEnabled = false;
+float worldColor[3] = { 0.35f, 0.55f, 1.0f };
+float worldColorStrength = 0.30f;
 bool customSkyboxEnabled = false;
 float customSkyboxColor[3] = { 0.15f, 0.25f, 0.55f };
 bool imageSkyboxEnabled = false;
@@ -2799,6 +2802,14 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
 
 
+    if (worldColorEnabled && worldColorStrength > 0.0f) {
+        const ImVec2 display = ImGui::GetIO().DisplaySize;
+        const float alpha = (std::max)(0.0f, (std::min)(worldColorStrength, 1.0f));
+        ImGui::GetBackgroundDrawList()->AddRectFilled(
+            ImVec2(0.0f, 0.0f), display,
+            ImGui::ColorConvertFloat4ToU32(ImVec4(worldColor[0], worldColor[1], worldColor[2], alpha)));
+    }
+
     UpdateTrail();
     DrawTrail();
 
@@ -3025,6 +3036,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Box ESP", &boxEsp);
         ImGui::Checkbox("Show Velocity", &showVelocity);
         ImGui::Checkbox("Show Trail", &showTrail);
+        ImGui::Checkbox("World Color", &worldColorEnabled);
+        if (worldColorEnabled) {
+            ImGui::ColorEdit3("World Tint", worldColor);
+            ImGui::SliderFloat("World Tint Strength", &worldColorStrength, 0.0f, 1.0f, "%.2f");
+        }
         ImGui::Checkbox("Camera FOV", &cameraFovEnabled);
         if (cameraFovEnabled) {
             ImGui::SliderFloat("Camera FOV Slider", &cameraFov, 30.0f, 150.0f, "%.1f");
