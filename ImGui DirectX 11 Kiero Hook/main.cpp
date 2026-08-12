@@ -192,7 +192,7 @@ struct Matrix16 {
 #define OFFSET_MATERIAL_SET_RENDERQUEUE             0x2ECF3F0
 #define OFFSET_RENDERSETTINGS_GET_SKYBOX            0x2ED8D60
 #define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x2ED8D90
-#define OFFSET_WEAPONRY_SET_CURRENT_WEAPON         0x69AB50
+#define OFFSET_WEAPONRY_TAKE_WEAPON                0x8491C0
 #define OFFSET_GUNCONTROLLER_FIRE                  0x996BE0
 #define OFFSET_HITCASTER_CAST                      0x99FBB0
 #define OFFSET_AIMVIEW_AWAKE                       0xA60AA0
@@ -686,7 +686,7 @@ Matrix16(__fastcall* o_Camera_get_worldToCameraMatrix)(uintptr_t) = nullptr;
 Matrix16(__fastcall* o_Camera_get_projectionMatrix)(uintptr_t) = nullptr;
 
 short(__fastcall* o_GunController_GetCurrentAmmo)(uintptr_t) = nullptr;
-void(__fastcall* o_Weaponry_SetCurrentWeapon)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_Weaponry_TakeWeapon)(uintptr_t, uint8_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float, uintptr_t, const Il2CppMethod*) = nullptr;
 thread_local bool insideLocalGunFire = false;
@@ -1100,12 +1100,15 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
     return result;
 }
 
-void __fastcall hk_Weaponry_SetCurrentWeapon(uintptr_t instance, uintptr_t weaponController, const Il2CppMethod* method)
+void __fastcall hk_Weaponry_TakeWeapon(uintptr_t instance, uint8_t slotIndex, const Il2CppMethod* method)
 {
-    o_Weaponry_SetCurrentWeapon(instance, weaponController, method);
+    o_Weaponry_TakeWeapon(instance, slotIndex, method);
+    uintptr_t weaponController = 0;
+    __try { weaponController = instance ? *(uintptr_t*)(instance + OFFSET_WEAPONCONTROLLER) : 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { weaponController = 0; }
     activeLocalWeaponController = weaponController;
     if (weaponChamsEnabled && weaponController) {
-        strcpy_s(weaponChamsStatus, "Equipped weapon captured");
+        sprintf_s(weaponChamsStatus, "Slot %u equipped; applying", static_cast<unsigned>(slotIndex));
         UpdateWeaponChams(weaponController);
     }
 }
@@ -2606,7 +2609,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (weaponChamsEnabled) {
                 const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
                 if (currentWeapon) activeLocalWeaponController = currentWeapon;
-                strcpy_s(weaponChamsStatus, currentWeapon ? "Applying to equipped weapon" : "Switch weapon once to capture it");
+                strcpy_s(weaponChamsStatus, currentWeapon ? "Applying to equipped weapon" : "Switch to another weapon slot");
             } else strcpy_s(weaponChamsStatus, "Disabling...");
         }
         if (weaponChamsEnabled) {
@@ -2795,9 +2798,9 @@ DWORD WINAPI HackThread(LPVOID)
     MH_CreateHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE), hk_HUDView_Update, (LPVOID*)&o_HUDView_Update);
     MH_EnableHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE));
 
-    // Current WeaponController setter fires for every equipped item, including knives.
-    MH_CreateHook((LPVOID)(base + OFFSET_WEAPONRY_SET_CURRENT_WEAPON), hk_Weaponry_SetCurrentWeapon, (LPVOID*)&o_Weaponry_SetCurrentWeapon);
-    MH_EnableHook((LPVOID)(base + OFFSET_WEAPONRY_SET_CURRENT_WEAPON));
+    // Actual equip transition for every slot, including knives.
+    MH_CreateHook((LPVOID)(base + OFFSET_WEAPONRY_TAKE_WEAPON), hk_Weaponry_TakeWeapon, (LPVOID*)&o_Weaponry_TakeWeapon);
+    MH_EnableHook((LPVOID)(base + OFFSET_WEAPONRY_TAKE_WEAPON));
 
     // Fire remains a fallback for guns injected after the equip event.
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
