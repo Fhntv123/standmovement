@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <fstream>
 #include <cstring>
+#include <cmath>
 
 #include <string>
 
@@ -184,6 +185,9 @@ struct Matrix16 {
 #define OFFSET_SHADER_FIND                         0x2ED9DD0
 #define OFFSET_MATERIAL_CTOR                       0x2ECEA40
 #define OFFSET_MATERIAL_SET_MAINTEXTURE            0x2ECF320
+#define OFFSET_RENDERER_GET_MATERIAL                0x2ED8EA0
+#define OFFSET_MATERIAL_GET_COLOR                   0x2ECEBB0
+#define OFFSET_MATERIAL_SET_COLOR                   0x2ECF040
 #define OFFSET_RENDERSETTINGS_GET_SKYBOX            0x2ED8D60
 #define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x2ED8D90
 #define OFFSET_GUNCONTROLLER_FIRE                  0x996BE0
@@ -329,6 +333,18 @@ float bulletTracerStartColor[3] = { 1.0f, 0.15f, 0.05f };
 float bulletTracerEndColor[3] = { 0.15f, 0.55f, 1.0f };
 float bulletTracerDuration = 1.5f;
 float bulletTracerThickness = 2.5f;
+
+bool weaponChamsEnabled = false;
+float weaponChamsColorA[3] = { 0.05f, 0.75f, 1.0f };
+float weaponChamsColorB[3] = { 0.85f, 0.10f, 1.0f };
+float weaponChamsSpeed = 1.0f;
+
+struct WeaponChamsMaterial {
+    uintptr_t material;
+    Color originalColor;
+};
+std::vector<WeaponChamsMaterial> weaponChamsMaterials;
+uintptr_t weaponChamsController = 0;
 
 struct BulletTracerEntry {
     Vector3 start;
@@ -646,6 +662,9 @@ bool(__fastcall* o_ImageConversion_LoadImage)(uintptr_t, uintptr_t, const Il2Cpp
 uintptr_t(__fastcall* o_Shader_Find)(Il2CppString*, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_Material_ctor)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_Material_set_mainTexture)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+uintptr_t(__fastcall* o_Renderer_get_material)(uintptr_t) = nullptr;
+Color(__fastcall* o_Material_get_color)(uintptr_t) = nullptr;
+void(__fastcall* o_Material_set_color)(uintptr_t, Color) = nullptr;
 uintptr_t(__fastcall* o_RenderSettings_get_skybox)(const Il2CppMethod*) = nullptr;
 void(__fastcall* o_RenderSettings_set_skybox)(uintptr_t, const Il2CppMethod*) = nullptr;
 
@@ -1388,9 +1407,83 @@ Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 
 
 
+static void RestoreWeaponChams()
+{
+    if (o_Material_set_color) {
+        for (const WeaponChamsMaterial& entry : weaponChamsMaterials) {
+            if (!entry.material) continue;
+            __try { o_Material_set_color(entry.material, entry.originalColor); }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+    }
+    weaponChamsMaterials.clear();
+    weaponChamsController = 0;
+}
+
+static void CaptureWeaponChamsMaterials(uintptr_t weaponController)
+{
+    RestoreWeaponChams();
+    if (!weaponController || !o_Renderer_get_material || !o_Material_get_color) return;
+    __try {
+        // WeaponController.cdyf (+0x80) -> WeaponLodGroup._meshRenderers (+0x40).
+        const uintptr_t lodGroup = *(uintptr_t*)(weaponController + 0x80);
+        const uintptr_t renderers = lodGroup ? *(uintptr_t*)(lodGroup + 0x40) : 0;
+        if (!renderers) return;
+        const size_t count = *(size_t*)(renderers + 0x18);
+        if (!count || count > 64) return;
+        for (size_t i = 0; i < count; ++i) {
+            const uintptr_t renderer = *(uintptr_t*)(renderers + 0x20 + i * sizeof(uintptr_t));
+            if (!renderer) continue;
+            const uintptr_t material = o_Renderer_get_material(renderer);
+            if (!material) continue;
+            const auto duplicate = std::find_if(weaponChamsMaterials.begin(), weaponChamsMaterials.end(),
+                [material](const WeaponChamsMaterial& entry) { return entry.material == material; });
+            if (duplicate == weaponChamsMaterials.end())
+                weaponChamsMaterials.push_back({ material, o_Material_get_color(material) });
+        }
+        weaponChamsController = weaponController;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { RestoreWeaponChams(); }
+}
+
+static void UpdateWeaponChams()
+{
+    if (!keyValidated || !o_Material_set_color) return;
+    uintptr_t weaponController = 0;
+    __try {
+        const uintptr_t localPlayer = GetPlayerController();
+        const uintptr_t weaponry = localPlayer ? *(uintptr_t*)(localPlayer + OFFSET_WEAPONRYCONTROLLER) : 0;
+        weaponController = weaponry ? *(uintptr_t*)(weaponry + OFFSET_WEAPONCONTROLLER) : 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { weaponController = 0; }
+
+    if (!weaponChamsEnabled || !weaponController) {
+        if (!weaponChamsMaterials.empty()) RestoreWeaponChams();
+        return;
+    }
+    if (weaponController != weaponChamsController || weaponChamsMaterials.empty())
+        CaptureWeaponChamsMaterials(weaponController);
+    if (weaponChamsMaterials.empty()) return;
+
+    const float phase = static_cast<float>(GetTickCount64() % 100000) * 0.001f * weaponChamsSpeed;
+    const float blend = 0.5f + 0.5f * sinf(phase);
+    const Color animated(
+        weaponChamsColorA[0] + (weaponChamsColorB[0] - weaponChamsColorA[0]) * blend,
+        weaponChamsColorA[1] + (weaponChamsColorB[1] - weaponChamsColorA[1]) * blend,
+        weaponChamsColorA[2] + (weaponChamsColorB[2] - weaponChamsColorA[2]) * blend,
+        1.0f);
+    for (const WeaponChamsMaterial& entry : weaponChamsMaterials) {
+        if (!entry.material) continue;
+        __try { o_Material_set_color(entry.material, animated); }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+}
+
 int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
     if (keyValidated && instance) lastCharacterController = instance;
+
+    UpdateWeaponChams();
 
     if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
 
@@ -2423,6 +2516,12 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Infinity Ammo", &infinityAmmo);
         ImGui::Checkbox("No Spread", &noSpreadEnabled);
         if (ImGui::Checkbox("Remove Scope Borders", &removeScopeBorders)) InterlockedExchange(&pendingScopeOverlayRefresh, 1);
+        ImGui::Checkbox("Weapon Chams", &weaponChamsEnabled);
+        if (weaponChamsEnabled) {
+            ImGui::ColorEdit3("Chams Color A", weaponChamsColorA);
+            ImGui::ColorEdit3("Chams Color B", weaponChamsColorB);
+            ImGui::SliderFloat("Chams Animation Speed", &weaponChamsSpeed, 0.1f, 5.0f, "%.1f");
+        }
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
         if (bulletTracerEnabled) {
             ImGui::ColorEdit3("Tracer Start Color", bulletTracerStartColor);
@@ -2558,6 +2657,9 @@ DWORD WINAPI HackThread(LPVOID)
     o_Shader_Find = (uintptr_t(__fastcall*)(Il2CppString*, const Il2CppMethod*))(base + OFFSET_SHADER_FIND);
     o_Material_ctor = (void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_MATERIAL_CTOR);
     o_Material_set_mainTexture = (void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_MATERIAL_SET_MAINTEXTURE);
+    o_Renderer_get_material = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_GET_MATERIAL);
+    o_Material_get_color = (Color(__fastcall*)(uintptr_t))(base + OFFSET_MATERIAL_GET_COLOR);
+    o_Material_set_color = (void(__fastcall*)(uintptr_t, Color))(base + OFFSET_MATERIAL_SET_COLOR);
     o_RenderSettings_get_skybox = (uintptr_t(__fastcall*)(const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_GET_SKYBOX);
     o_RenderSettings_set_skybox = (void(__fastcall*)(uintptr_t, const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_SET_SKYBOX);
 
