@@ -190,6 +190,9 @@ struct Matrix16 {
 #define OFFSET_HITCASTER_CAST                      0x99FBB0
 #define OFFSET_AIMVIEW_AWAKE                       0xA60AA0
 #define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
+#define OFFSET_HUDVIEW_UPDATE                       0xA68C60
+#define OFFSET_PLAYERMAINCAMERA_GET_INSTANCE        0x83E960
+#define OFFSET_PLAYERMAINCAMERA_GET_SCOPE_ACTIVE    0x83EB30
 #define OFFSET_COMPONENT_GET_GAMEOBJECT             0x2EF2CA0
 #define OFFSET_GAMEOBJECT_SETACTIVE                 0x2EF6620
 #define OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY     0x2EF6A20
@@ -320,7 +323,6 @@ bool bulletTracerEnabled = false;
 bool noSpreadEnabled = false;
 bool removeScopeBorders = false;
 bool customScopeReticleVisible = false;
-bool sniperZoomActive = false;
 uintptr_t sniperSightObject = 0;
 volatile LONG pendingScopeOverlayRefresh = 0;
 float bulletTracerColor[3] = { 1.0f, 0.25f, 0.05f };
@@ -661,6 +663,9 @@ void(__fastcall* o_AimView_UpdateSniperPanels)(uintptr_t, float, float, const Il
 uintptr_t(__fastcall* o_Component_get_gameObject)(uintptr_t) = nullptr;
 void(__fastcall* o_GameObject_SetActive)(uintptr_t, bool) = nullptr;
 bool(__fastcall* o_GameObject_get_activeInHierarchy)(uintptr_t) = nullptr;
+void(__fastcall* o_HUDView_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
+uintptr_t(__fastcall* o_PlayerMainCamera_get_instance)() = nullptr;
+bool(__fastcall* o_PlayerMainCamera_get_scopeActive)(uintptr_t) = nullptr;
 
 
 
@@ -677,13 +682,6 @@ uintptr_t GetCamera() {
 
 
 void __fastcall hk_Camera_set_fieldOfView(uintptr_t camera, float value) {
-
-    // CameraScopeZoomer drives the sniper camera down to ~20 FOV and restores it on exit.
-    // Read the requested value before the optional custom-FOV override.
-    const bool wasZoomed = sniperZoomActive;
-    sniperZoomActive = value < 45.0f;
-    if (wasZoomed && !sniperZoomActive) customScopeReticleVisible = false;
-    else if (!wasZoomed && sniperZoomActive && removeScopeBorders && sniperSightObject) customScopeReticleVisible = true;
 
     if (keyValidated && cameraFovEnabled) value = cameraFov;
 
@@ -995,7 +993,6 @@ void __fastcall hk_AimView_UpdateSniperPanels(uintptr_t instance, float a, float
     __try { if (instance) sniperSightObject = *(uintptr_t*)(instance + 0x48); }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
     o_AimView_UpdateSniperPanels(instance, a, b, method);
-    if (!sniperZoomActive) customScopeReticleVisible = false;
 }
 
 static void RefreshScopeOverlayOnGameThread()
@@ -1014,9 +1011,26 @@ static void RefreshScopeOverlayOnGameThread()
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
+void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
+{
+    __try {
+        const uintptr_t aimView = instance ? *(uintptr_t*)(instance + 0x38) : 0;
+        if (aimView) sniperSightObject = *(uintptr_t*)(aimView + 0x48);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { sniperSightObject = 0; }
+    o_HUDView_Update(instance, method);
+    __try {
+        const uintptr_t playerMainCamera = o_PlayerMainCamera_get_instance ? o_PlayerMainCamera_get_instance() : 0;
+        const bool scoped = playerMainCamera && o_PlayerMainCamera_get_scopeActive && o_PlayerMainCamera_get_scopeActive(playerMainCamera);
+        customScopeReticleVisible = removeScopeBorders && scoped;
+        if (customScopeReticleVisible && sniperSightObject && o_GameObject_SetActive) o_GameObject_SetActive(sniperSightObject, false);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { customScopeReticleVisible = false; }
+}
+
 void DrawBorderlessScopeReticle()
 {
-    if (!removeScopeBorders || !customScopeReticleVisible || !sniperZoomActive) return;
+    if (!removeScopeBorders || !customScopeReticleVisible) return;
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const ImVec2 center(display.x * 0.5f, display.y * 0.5f);
     ImDrawList* draw = ImGui::GetForegroundDrawList();
@@ -2564,6 +2578,10 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_AIMVIEW_AWAKE));
     MH_CreateHook((LPVOID)(base + OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS), hk_AimView_UpdateSniperPanels, (LPVOID*)&o_AimView_UpdateSniperPanels);
     MH_EnableHook((LPVOID)(base + OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS));
+    o_PlayerMainCamera_get_instance = (uintptr_t(__fastcall*)())(base + OFFSET_PLAYERMAINCAMERA_GET_INSTANCE);
+    o_PlayerMainCamera_get_scopeActive = (bool(__fastcall*)(uintptr_t))(base + OFFSET_PLAYERMAINCAMERA_GET_SCOPE_ACTIVE);
+    MH_CreateHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE), hk_HUDView_Update, (LPVOID*)&o_HUDView_Update);
+    MH_EnableHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE));
 
     // Fire is only a synchronous scope marker; HitCaster supplies the real spread-adjusted path.
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
