@@ -320,6 +320,7 @@ bool bulletTracerEnabled = false;
 bool noSpreadEnabled = false;
 bool removeScopeBorders = false;
 bool customScopeReticleVisible = false;
+bool sniperZoomActive = false;
 uintptr_t sniperSightObject = 0;
 volatile LONG pendingScopeOverlayRefresh = 0;
 float bulletTracerColor[3] = { 1.0f, 0.25f, 0.05f };
@@ -677,6 +678,13 @@ uintptr_t GetCamera() {
 
 void __fastcall hk_Camera_set_fieldOfView(uintptr_t camera, float value) {
 
+    // CameraScopeZoomer drives the sniper camera down to ~20 FOV and restores it on exit.
+    // Read the requested value before the optional custom-FOV override.
+    const bool wasZoomed = sniperZoomActive;
+    sniperZoomActive = value < 45.0f;
+    if (wasZoomed && !sniperZoomActive) customScopeReticleVisible = false;
+    else if (!wasZoomed && sniperZoomActive && removeScopeBorders && sniperSightObject) customScopeReticleVisible = true;
+
     if (keyValidated && cameraFovEnabled) value = cameraFov;
 
     o_Camera_set_fieldOfView(camera, value);
@@ -983,10 +991,11 @@ void __fastcall hk_AimView_Awake(uintptr_t instance, const Il2CppMethod* method)
 
 void __fastcall hk_AimView_UpdateSniperPanels(uintptr_t instance, float a, float b, const Il2CppMethod* method)
 {
-    // Capture before the original method attempts to activate the scope object.
+    // This runs on every aiming transition, so it also captures AimView when injected mid-match.
     __try { if (instance) sniperSightObject = *(uintptr_t*)(instance + 0x48); }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
     o_AimView_UpdateSniperPanels(instance, a, b, method);
+    if (!sniperZoomActive) customScopeReticleVisible = false;
 }
 
 static void RefreshScopeOverlayOnGameThread()
@@ -1007,7 +1016,7 @@ static void RefreshScopeOverlayOnGameThread()
 
 void DrawBorderlessScopeReticle()
 {
-    if (!removeScopeBorders || !customScopeReticleVisible) return;
+    if (!removeScopeBorders || !customScopeReticleVisible || !sniperZoomActive) return;
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const ImVec2 center(display.x * 0.5f, display.y * 0.5f);
     ImDrawList* draw = ImGui::GetForegroundDrawList();
