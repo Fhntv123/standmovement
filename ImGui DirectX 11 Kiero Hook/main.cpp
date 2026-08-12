@@ -354,6 +354,7 @@ uintptr_t glassChamsMaterial = 0;
 uint32_t flatChamsMaterialHandle = 0;
 uint32_t glassChamsMaterialHandle = 0;
 char weaponChamsStatus[128] = "Select Flat or Glass";
+volatile LONG pendingWeaponChamsRefresh = 0;
 
 struct BulletTracerEntry {
     Vector3 start;
@@ -1570,9 +1571,11 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
     if (keyValidated && instance) lastCharacterController = instance;
 
-    const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
-    if (currentWeapon) activeLocalWeaponController = currentWeapon;
-    UpdateWeaponChams(currentWeapon);
+    if (InterlockedExchange(&pendingWeaponChamsRefresh, 0)) {
+        const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
+        if (currentWeapon) activeLocalWeaponController = currentWeapon;
+        UpdateWeaponChams(currentWeapon ? currentWeapon : activeLocalWeaponController);
+    }
 
     if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
 
@@ -2606,17 +2609,18 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("No Spread", &noSpreadEnabled);
         if (ImGui::Checkbox("Remove Scope Borders", &removeScopeBorders)) InterlockedExchange(&pendingScopeOverlayRefresh, 1);
         if (ImGui::Checkbox("Weapon Chams", &weaponChamsEnabled)) {
-            if (weaponChamsEnabled) {
-                const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
-                if (currentWeapon) activeLocalWeaponController = currentWeapon;
-                strcpy_s(weaponChamsStatus, currentWeapon ? "Applying to equipped weapon" : "Switch to another weapon slot");
-            } else strcpy_s(weaponChamsStatus, "Disabling...");
+            strcpy_s(weaponChamsStatus, weaponChamsEnabled ? "Applying to equipped weapon" : "Restoring original materials");
+            InterlockedExchange(&pendingWeaponChamsRefresh, 1);
         }
         if (weaponChamsEnabled) {
             const char* chamsModes[] = { "Flat", "Glass" };
-            if (ImGui::Combo("Chams Material", &weaponChamsMode, chamsModes, IM_ARRAYSIZE(chamsModes))) weaponChamsController = 0;
-            ImGui::ColorEdit3("Chams Color", weaponChamsColor);
-            if (weaponChamsMode == 1) ImGui::SliderFloat("Glass Alpha", &weaponChamsGlassAlpha, 0.05f, 0.95f, "%.2f");
+            if (ImGui::Combo("Chams Material", &weaponChamsMode, chamsModes, IM_ARRAYSIZE(chamsModes))) {
+                weaponChamsController = 0;
+                InterlockedExchange(&pendingWeaponChamsRefresh, 1);
+            }
+            if (ImGui::ColorEdit3("Chams Color", weaponChamsColor)) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
+            if (weaponChamsMode == 1 && ImGui::SliderFloat("Glass Alpha", &weaponChamsGlassAlpha, 0.05f, 0.95f, "%.2f"))
+                InterlockedExchange(&pendingWeaponChamsRefresh, 1);
             ImGui::TextWrapped("Status: %s", weaponChamsStatus);
         }
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
