@@ -12,6 +12,7 @@ typedef void* Il2CppMethod;
 typedef void* Il2CppField;
 typedef void* Il2CppString;
 typedef void* Il2CppType;
+typedef void* Il2CppArray;
 
 // Function pointer typedefs
 typedef Il2CppDomain(*t_il2cpp_domain_get)();
@@ -24,6 +25,9 @@ typedef void(*t_il2cpp_field_static_get_value)(Il2CppField* field, void* value);
 typedef Il2CppClass*(*t_il2cpp_class_get_parent)(Il2CppClass* klass);
 typedef const char*(*t_il2cpp_class_get_name)(Il2CppClass* klass);
 typedef const char*(*t_il2cpp_image_get_name)(const Il2CppImage* image);
+typedef Il2CppObject*(*t_il2cpp_object_new)(Il2CppClass* klass);
+typedef Il2CppArray*(*t_il2cpp_array_new)(Il2CppClass* elementTypeInfo, size_t length);
+typedef Il2CppString*(*t_il2cpp_string_new)(const char* str);
 
 struct IL2CPP_API {
     HMODULE ga = nullptr;
@@ -37,6 +41,9 @@ struct IL2CPP_API {
     t_il2cpp_class_get_parent              class_get_parent = nullptr;
     t_il2cpp_class_get_name                class_get_name = nullptr;
     t_il2cpp_image_get_name                image_get_name = nullptr;
+    t_il2cpp_object_new                    object_new = nullptr;
+    t_il2cpp_array_new                     array_new = nullptr;
+    t_il2cpp_string_new                    string_new = nullptr;
 
     bool init() {
         ga = GetModuleHandleA("GameAssembly.dll");
@@ -51,6 +58,9 @@ struct IL2CPP_API {
         class_get_parent              = (t_il2cpp_class_get_parent)          GetProcAddress(ga, "il2cpp_class_get_parent");
         class_get_name                = (t_il2cpp_class_get_name)            GetProcAddress(ga, "il2cpp_class_get_name");
         image_get_name                = (t_il2cpp_image_get_name)            GetProcAddress(ga, "il2cpp_image_get_name");
+        object_new                    = (t_il2cpp_object_new)                GetProcAddress(ga, "il2cpp_object_new");
+        array_new                     = (t_il2cpp_array_new)                 GetProcAddress(ga, "il2cpp_array_new");
+        string_new                    = (t_il2cpp_string_new)                GetProcAddress(ga, "il2cpp_string_new");
         return domain_get && domain_get_assemblies && assembly_get_image && class_from_name
             && class_get_field_from_name && field_static_get_value;
     }

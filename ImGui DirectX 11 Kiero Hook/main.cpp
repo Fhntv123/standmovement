@@ -4,6 +4,8 @@
 
 #include <vector>
 #include <unordered_map>
+#include <fstream>
+#include <cstring>
 
 #include <string>
 
@@ -174,6 +176,14 @@ struct Matrix16 {
 
 #define OFFSET_CAMERA_SET_CLEARFLAGS               0x2EC1920
 
+#define OFFSET_TEXTURE2D_CTOR                      0x2EDB780
+#define OFFSET_IMAGECONVERSION_LOADIMAGE           0x2F2B980
+#define OFFSET_SHADER_FIND                         0x2ED9DD0
+#define OFFSET_MATERIAL_CTOR                       0x2ECEA40
+#define OFFSET_MATERIAL_SET_MAINTEXTURE            0x2ECF320
+#define OFFSET_RENDERSETTINGS_GET_SKYBOX            0x2ED8D60
+#define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x2ED8D90
+
 #define OFFSET_WORLDTOSCREENPOINT                  0x2EC0950
 
 
@@ -285,6 +295,12 @@ bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool customSkyboxEnabled = false;
 float customSkyboxColor[3] = { 0.15f, 0.25f, 0.55f };
+bool imageSkyboxEnabled = false;
+char imageSkyboxUrl[512] = "";
+char imageSkyboxStatus[128] = "Paste a direct JPG/PNG URL";
+uintptr_t imageSkyboxTexture = 0;
+uintptr_t imageSkyboxMaterial = 0;
+uintptr_t originalSkyboxMaterial = 0;
 
 bool infinityAmmo = false;
 
@@ -590,6 +606,14 @@ void(__fastcall* o_Camera_set_backgroundColor)(uintptr_t, Color) = nullptr;
 
 void(__fastcall* o_Camera_set_clearFlags)(uintptr_t, int) = nullptr;
 
+void(__fastcall* o_Texture2D_ctor)(uintptr_t, int, int) = nullptr;
+bool(__fastcall* o_ImageConversion_LoadImage)(uintptr_t, uintptr_t) = nullptr;
+uintptr_t(__fastcall* o_Shader_Find)(Il2CppString*) = nullptr;
+void(__fastcall* o_Material_ctor)(uintptr_t, uintptr_t) = nullptr;
+void(__fastcall* o_Material_set_mainTexture)(uintptr_t, uintptr_t) = nullptr;
+uintptr_t(__fastcall* o_RenderSettings_get_skybox)() = nullptr;
+void(__fastcall* o_RenderSettings_set_skybox)(uintptr_t) = nullptr;
+
 Vector3(__fastcall* o_WorldToScreenPoint)(uintptr_t, Vector3) = nullptr;
 
 Matrix16(__fastcall* o_Camera_get_worldToCameraMatrix)(uintptr_t) = nullptr;
@@ -637,6 +661,123 @@ void ApplyCameraFov() {
 }
 
 
+
+bool LoadInternetSkybox() {
+
+    if (!imageSkyboxUrl[0] || !g_il2cpp.object_new || !g_il2cpp.array_new || !g_il2cpp.string_new) {
+        strcpy_s(imageSkyboxStatus, "Enter a direct JPG/PNG URL");
+        return false;
+    }
+
+    char tempPath[MAX_PATH] = {};
+    char tempFile[MAX_PATH] = {};
+    if (!GetTempPathA(MAX_PATH, tempPath) || !GetTempFileNameA(tempPath, "sky", 0, tempFile)) {
+        strcpy_s(imageSkyboxStatus, "Could not create temp file");
+        return false;
+    }
+
+    const HRESULT download = URLDownloadToFileA(nullptr, imageSkyboxUrl, tempFile, 0, nullptr);
+    if (FAILED(download)) {
+        DeleteFileA(tempFile);
+        strcpy_s(imageSkyboxStatus, "Download failed: use a direct HTTPS image URL");
+        return false;
+    }
+
+    std::ifstream file(tempFile, std::ios::binary | std::ios::ate);
+    if (!file) {
+        DeleteFileA(tempFile);
+        strcpy_s(imageSkyboxStatus, "Could not read downloaded image");
+        return false;
+    }
+
+    const std::streamsize size = file.tellg();
+    if (size <= 0 || size > 20 * 1024 * 1024) {
+        file.close();
+        DeleteFileA(tempFile);
+        strcpy_s(imageSkyboxStatus, "Image must be between 1 byte and 20 MB");
+        return false;
+    }
+
+    std::vector<unsigned char> bytes((size_t)size);
+    file.seekg(0, std::ios::beg);
+    file.read(reinterpret_cast<char*>(bytes.data()), size);
+    file.close();
+    DeleteFileA(tempFile);
+
+    Il2CppClass* textureClass = g_il2cpp.find_class("UnityEngine", "Texture2D");
+    Il2CppClass* byteClass = g_il2cpp.find_class("System", "Byte");
+    if (!textureClass || !byteClass) {
+        strcpy_s(imageSkyboxStatus, "Unity Texture2D/Byte class not found");
+        return false;
+    }
+
+    uintptr_t texture = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(textureClass));
+    Il2CppArray* data = g_il2cpp.array_new(byteClass, bytes.size());
+    if (!texture || !data) {
+        strcpy_s(imageSkyboxStatus, "Unity texture allocation failed");
+        return false;
+    }
+
+    memcpy(reinterpret_cast<unsigned char*>(data) + 0x20, bytes.data(), bytes.size());
+
+    __try {
+        o_Texture2D_ctor(texture, 2, 2);
+        if (!o_ImageConversion_LoadImage(texture, reinterpret_cast<uintptr_t>(data))) {
+            strcpy_s(imageSkyboxStatus, "Image decode failed (JPG/PNG only)");
+            return false;
+        }
+
+        Il2CppString* shaderName = g_il2cpp.string_new("Skybox/Panoramic");
+        uintptr_t shader = o_Shader_Find(shaderName);
+        Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
+        if (!shader || !materialClass) {
+            strcpy_s(imageSkyboxStatus, "Panoramic skybox shader not found");
+            return false;
+        }
+
+        uintptr_t material = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
+        if (!material) return false;
+        o_Material_ctor(material, shader);
+        o_Material_set_mainTexture(material, texture);
+
+        if (!originalSkyboxMaterial) originalSkyboxMaterial = o_RenderSettings_get_skybox();
+        imageSkyboxTexture = texture;
+        imageSkyboxMaterial = material;
+        imageSkyboxEnabled = true;
+        customSkyboxEnabled = false;
+        o_RenderSettings_set_skybox(imageSkyboxMaterial);
+        if (o_Camera_set_clearFlags) {
+            const uintptr_t camera = GetCamera();
+            if (camera) o_Camera_set_clearFlags(camera, 1); // CameraClearFlags.Skybox
+        }
+        strcpy_s(imageSkyboxStatus, "Image skybox loaded");
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        strcpy_s(imageSkyboxStatus, "Unity rejected the image skybox");
+        return false;
+    }
+}
+
+void RestoreDefaultSkybox() {
+    imageSkyboxEnabled = false;
+    customSkyboxEnabled = false;
+    if (o_RenderSettings_set_skybox && originalSkyboxMaterial) {
+        __try { o_RenderSettings_set_skybox(originalSkyboxMaterial); }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    strcpy_s(imageSkyboxStatus, "Default skybox restored");
+}
+
+void ApplyImageSkybox() {
+    if (!imageSkyboxEnabled || !imageSkyboxMaterial || !o_RenderSettings_set_skybox) return;
+    __try {
+        const uintptr_t camera = GetCamera();
+        if (camera && o_Camera_set_clearFlags) o_Camera_set_clearFlags(camera, 1);
+        o_RenderSettings_set_skybox(imageSkyboxMaterial);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
 
 void ApplyCustomSkybox() {
 
@@ -1634,6 +1775,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (keyValidated) {
         ApplyCameraFov();
         ApplyCustomSkybox();
+        ApplyImageSkybox();
     }
 
 
@@ -1916,6 +2058,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (customSkyboxEnabled) {
             ImGui::ColorEdit3("Skybox Color", customSkyboxColor);
         }
+        ImGui::InputText("Skybox Image URL", imageSkyboxUrl, sizeof(imageSkyboxUrl));
+        if (ImGui::Button("Load Image Skybox")) LoadInternetSkybox();
+        ImGui::SameLine();
+        if (ImGui::Button("Restore Skybox")) RestoreDefaultSkybox();
+        ImGui::TextWrapped("%s", imageSkyboxStatus);
         
         ImGui::EndChild();
     }
@@ -2044,6 +2191,14 @@ DWORD WINAPI HackThread(LPVOID)
     o_Camera_set_backgroundColor = (void(__fastcall*)(uintptr_t, Color))(base + OFFSET_CAMERA_SET_BACKGROUNDCOLOR);
 
     o_Camera_set_clearFlags = (void(__fastcall*)(uintptr_t, int))(base + OFFSET_CAMERA_SET_CLEARFLAGS);
+
+    o_Texture2D_ctor = (void(__fastcall*)(uintptr_t, int, int))(base + OFFSET_TEXTURE2D_CTOR);
+    o_ImageConversion_LoadImage = (bool(__fastcall*)(uintptr_t, uintptr_t))(base + OFFSET_IMAGECONVERSION_LOADIMAGE);
+    o_Shader_Find = (uintptr_t(__fastcall*)(Il2CppString*))(base + OFFSET_SHADER_FIND);
+    o_Material_ctor = (void(__fastcall*)(uintptr_t, uintptr_t))(base + OFFSET_MATERIAL_CTOR);
+    o_Material_set_mainTexture = (void(__fastcall*)(uintptr_t, uintptr_t))(base + OFFSET_MATERIAL_SET_MAINTEXTURE);
+    o_RenderSettings_get_skybox = (uintptr_t(__fastcall*)())(base + OFFSET_RENDERSETTINGS_GET_SKYBOX);
+    o_RenderSettings_set_skybox = (void(__fastcall*)(uintptr_t))(base + OFFSET_RENDERSETTINGS_SET_SKYBOX);
 
     o_WorldToScreenPoint = (Vector3(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_WORLDTOSCREENPOINT);
 
