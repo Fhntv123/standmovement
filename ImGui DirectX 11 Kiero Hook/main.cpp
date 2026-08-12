@@ -154,6 +154,8 @@ struct Matrix16 {
 
 #define OFFSET_CAMERA_MAIN                         0x2EC1090
 
+#define OFFSET_CAMERA_SET_FIELDOFVIEW              0x2EC1A80
+
 #define OFFSET_WORLDTOSCREENPOINT                  0x2EC0950
 
 
@@ -260,6 +262,9 @@ float edgeBugPullForce = 20.0f;
 bool showVelocity = false;
 
 bool showTrail = false;
+
+bool cameraFovEnabled = false;
+float cameraFov = 90.0f;
 
 bool infinityAmmo = false;
 
@@ -555,6 +560,8 @@ uintptr_t(__fastcall* o_GetPlayerController)() = nullptr;
 
 uintptr_t(__fastcall* o_Camera_get_main)() = nullptr;
 
+void(__fastcall* o_Camera_set_fieldOfView)(uintptr_t, float) = nullptr;
+
 Vector3(__fastcall* o_WorldToScreenPoint)(uintptr_t, Vector3) = nullptr;
 
 Matrix16(__fastcall* o_Camera_get_worldToCameraMatrix)(uintptr_t) = nullptr;
@@ -572,6 +579,22 @@ uintptr_t GetCamera() {
     __try { return o_Camera_get_main(); }
 
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+
+}
+
+
+
+void ApplyCameraFov() {
+
+    if (!cameraFovEnabled || !o_Camera_set_fieldOfView) return;
+
+    const uintptr_t camera = GetCamera();
+
+    if (!camera) return;
+
+    __try { o_Camera_set_fieldOfView(camera, cameraFov); }
+
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
 
 }
 
@@ -1524,6 +1547,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     }
 
+    if (keyValidated) ApplyCameraFov();
+
 
 
     if (!init)
@@ -1790,6 +1815,15 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Box ESP", &boxEsp);
         ImGui::Checkbox("Show Velocity", &showVelocity);
         ImGui::Checkbox("Show Trail", &showTrail);
+        ImGui::Checkbox("Camera FOV", &cameraFovEnabled);
+        if (cameraFovEnabled) {
+            ImGui::SliderFloat("Camera FOV Slider", &cameraFov, 30.0f, 150.0f, "%.1f");
+            ImGui::SetNextItemWidth(120.0f);
+            if (ImGui::InputFloat("Camera FOV Value", &cameraFov, 1.0f, 10.0f, "%.1f")) {
+                if (cameraFov < 30.0f) cameraFov = 30.0f;
+                if (cameraFov > 150.0f) cameraFov = 150.0f;
+            }
+        }
         
         ImGui::EndChild();
     }
@@ -1908,6 +1942,8 @@ DWORD WINAPI HackThread(LPVOID)
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
 
     o_Camera_get_main = (uintptr_t(__fastcall*)())(base + OFFSET_CAMERA_MAIN);
+
+    o_Camera_set_fieldOfView = (void(__fastcall*)(uintptr_t, float))(base + OFFSET_CAMERA_SET_FIELDOFVIEW);
 
     o_WorldToScreenPoint = (Vector3(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_WORLDTOSCREENPOINT);
 
