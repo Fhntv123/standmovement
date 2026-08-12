@@ -804,6 +804,34 @@ static void ApplyWorldColorToCache()
     sprintf_s(worldColorStatus, "Active on %zu static map material(s)", worldColorMaterials.size());
 }
 
+static void CaptureWorldColorMaterialsUnsafe()
+{
+    const Il2CppClass* meshRendererClass = g_il2cpp.find_class("UnityEngine", "MeshRenderer");
+    if (!meshRendererClass) { strcpy_s(worldColorStatus, "MeshRenderer class unavailable"); return; }
+    const Il2CppType* meshType = g_il2cpp.class_get_type(const_cast<Il2CppClass*>(meshRendererClass));
+    Il2CppObject* reflectionType = meshType ? g_il2cpp.type_get_object(meshType) : nullptr;
+    Il2CppArray* renderers = reflectionType ? o_Object_FindObjectsOfType(reflectionType, false, nullptr) : nullptr;
+    const uintptr_t rendererArray = reinterpret_cast<uintptr_t>(renderers);
+    const size_t rendererCount = rendererArray ? *(size_t*)(rendererArray + 0x18) : 0;
+    if (!rendererCount || rendererCount > 20000) { strcpy_s(worldColorStatus, "No active map renderers found"); return; }
+    std::unordered_map<uintptr_t, bool> seenMaterials;
+    for (size_t i = 0; i < rendererCount; ++i) {
+        const uintptr_t renderer = *(uintptr_t*)(rendererArray + 0x20 + i * sizeof(uintptr_t));
+        if (!renderer || !o_Renderer_get_isPartOfStaticBatch(renderer)) continue;
+        Il2CppArray* materials = o_Renderer_get_materials(renderer);
+        const uintptr_t materialArray = reinterpret_cast<uintptr_t>(materials);
+        const size_t materialCount = materialArray ? *(size_t*)(materialArray + 0x18) : 0;
+        if (!materialCount || materialCount > 64) continue;
+        for (size_t j = 0; j < materialCount; ++j) {
+            const uintptr_t material = *(uintptr_t*)(materialArray + 0x20 + j * sizeof(uintptr_t));
+            if (!material || seenMaterials.find(material) != seenMaterials.end()) continue;
+            seenMaterials[material] = true;
+            worldColorMaterials.push_back({ material, o_Material_get_color(material) });
+        }
+    }
+    ApplyWorldColorToCache();
+}
+
 static void CaptureWorldColorMaterials()
 {
     worldColorMaterials.clear();
@@ -812,32 +840,7 @@ static void CaptureWorldColorMaterials()
         strcpy_s(worldColorStatus, "World Color API unavailable");
         return;
     }
-    Il2CppClass* meshRendererClass = g_il2cpp.find_class("UnityEngine", "MeshRenderer");
-    if (!meshRendererClass) { strcpy_s(worldColorStatus, "MeshRenderer class unavailable"); return; }
-    __try {
-        const Il2CppType* meshType = g_il2cpp.class_get_type(meshRendererClass);
-        Il2CppObject* reflectionType = meshType ? g_il2cpp.type_get_object(meshType) : nullptr;
-        Il2CppArray* renderers = reflectionType ? o_Object_FindObjectsOfType(reflectionType, false, nullptr) : nullptr;
-        const uintptr_t rendererArray = reinterpret_cast<uintptr_t>(renderers);
-        const size_t rendererCount = rendererArray ? *(size_t*)(rendererArray + 0x18) : 0;
-        if (!rendererCount || rendererCount > 20000) { strcpy_s(worldColorStatus, "No active map renderers found"); return; }
-        std::unordered_map<uintptr_t, bool> seenMaterials;
-        for (size_t i = 0; i < rendererCount; ++i) {
-            const uintptr_t renderer = *(uintptr_t*)(rendererArray + 0x20 + i * sizeof(uintptr_t));
-            if (!renderer || !o_Renderer_get_isPartOfStaticBatch(renderer)) continue;
-            Il2CppArray* materials = o_Renderer_get_materials(renderer);
-            const uintptr_t materialArray = reinterpret_cast<uintptr_t>(materials);
-            const size_t materialCount = materialArray ? *(size_t*)(materialArray + 0x18) : 0;
-            if (!materialCount || materialCount > 64) continue;
-            for (size_t j = 0; j < materialCount; ++j) {
-                const uintptr_t material = *(uintptr_t*)(materialArray + 0x20 + j * sizeof(uintptr_t));
-                if (!material || seenMaterials.find(material) != seenMaterials.end()) continue;
-                seenMaterials[material] = true;
-                worldColorMaterials.push_back({ material, o_Material_get_color(material) });
-            }
-        }
-        ApplyWorldColorToCache();
-    }
+    __try { CaptureWorldColorMaterialsUnsafe(); }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         worldColorMaterials.clear();
         strcpy_s(worldColorStatus, "Map material capture failed");
