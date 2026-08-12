@@ -824,6 +824,30 @@ bool GetViewProjectionMatrix(Matrix16& out) {
 
 
 
+bool UnityWorldToScreen(const Vector3& pos, Vector2& screen) {
+
+    if (!o_WorldToScreenPoint) return false;
+
+    const uintptr_t camera = GetCamera();
+    if (!camera) return false;
+
+    __try {
+        const Vector3 projected = o_WorldToScreenPoint(camera, pos);
+        if (projected.z <= 0.01f) return false;
+
+        const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+        screen.x = projected.x;
+        screen.y = displaySize.y - projected.y;
+        return screen.x >= -100.0f && screen.x <= displaySize.x + 100.0f &&
+               screen.y >= -100.0f && screen.y <= displaySize.y + 100.0f;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+
+}
+
+
 bool WorldToScreen(const Vector3& pos, Vector2& screen, const Matrix16& matrix) {
 
     Vector4 clip;
@@ -1081,15 +1105,7 @@ void DrawTrail() {
 
     if (!keyValidated || !showTrail || trailPoints.size() < 2) return;
 
-    if (!unityPlayerBase) return;
-
-
-
-    // Обновляем матрицу через камерные методы
-
-    if (!GetViewProjectionMatrix(g_ViewProjectionMatrix)) return;
-
-    g_MatrixValid = true;
+    if (!unityPlayerBase || !o_WorldToScreenPoint) return;
 
     
 
@@ -1103,9 +1119,9 @@ void DrawTrail() {
 
         
 
-        if (WorldToScreen(trailPoints[i], screen1, g_ViewProjectionMatrix) && 
+        if (UnityWorldToScreen(trailPoints[i], screen1) &&
 
-            WorldToScreen(trailPoints[i + 1], screen2, g_ViewProjectionMatrix)) {
+            UnityWorldToScreen(trailPoints[i + 1], screen2)) {
 
             // Градиент от старых точек к новым
 
@@ -1161,7 +1177,7 @@ void DrawTrail() {
 
         Vector2 currentScreen;
 
-        if (WorldToScreen(trailPoints.back(), currentScreen, g_ViewProjectionMatrix)) {
+        if (UnityWorldToScreen(trailPoints.back(), currentScreen)) {
 
             drawList->AddCircleFilled(
 
