@@ -188,6 +188,9 @@ struct Matrix16 {
 #define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x2ED8D90
 #define OFFSET_GUNCONTROLLER_FIRE                  0x996BE0
 #define OFFSET_HITCASTER_CAST                      0x99FBB0
+#define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
+#define OFFSET_COMPONENT_GET_GAMEOBJECT             0x2EF2CA0
+#define OFFSET_GAMEOBJECT_SETACTIVE                 0x2EF6620
 
 #define OFFSET_WORLDTOSCREENPOINT                  0x2EC0950
 
@@ -313,6 +316,7 @@ volatile LONG pendingSkyboxCommand = 0;
 bool infinityAmmo = false;
 bool bulletTracerEnabled = false;
 bool noSpreadEnabled = false;
+bool removeScopeBorders = false;
 float bulletTracerColor[3] = { 1.0f, 0.25f, 0.05f };
 float bulletTracerDuration = 1.5f;
 float bulletTracerThickness = 2.5f;
@@ -646,6 +650,9 @@ short(__fastcall* o_GunController_GetCurrentAmmo)(uintptr_t) = nullptr;
 void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float, uintptr_t, const Il2CppMethod*) = nullptr;
 thread_local bool insideLocalGunFire = false;
+void(__fastcall* o_AimView_UpdateSniperPanels)(uintptr_t, float, float, const Il2CppMethod*) = nullptr;
+uintptr_t(__fastcall* o_Component_get_gameObject)(uintptr_t) = nullptr;
+void(__fastcall* o_GameObject_SetActive)(uintptr_t, bool) = nullptr;
 
 
 
@@ -947,6 +954,30 @@ uintptr_t GetPlayerController() {
 
 
 // Hook на GunController::gcloafhgkcb() - возвращает текущие патроны
+
+static void SetScopeBorderPanels(uintptr_t aimView, bool active)
+{
+    if (!aimView || !o_Component_get_gameObject || !o_GameObject_SetActive) return;
+    __try {
+        const uintptr_t leftPanel = *(uintptr_t*)(aimView + 0xC0);
+        const uintptr_t rightPanel = *(uintptr_t*)(aimView + 0xB8);
+        if (leftPanel) {
+            const uintptr_t leftObject = o_Component_get_gameObject(leftPanel);
+            if (leftObject) o_GameObject_SetActive(leftObject, active);
+        }
+        if (rightPanel) {
+            const uintptr_t rightObject = o_Component_get_gameObject(rightPanel);
+            if (rightObject) o_GameObject_SetActive(rightObject, active);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+void __fastcall hk_AimView_UpdateSniperPanels(uintptr_t instance, float a, float b, const Il2CppMethod* method)
+{
+    o_AimView_UpdateSniperPanels(instance, a, b, method);
+    SetScopeBorderPanels(instance, !removeScopeBorders);
+}
 
 uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float maxDistance, uintptr_t hitParameters, const Il2CppMethod* method)
 {
@@ -2311,6 +2342,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         
         ImGui::Checkbox("Infinity Ammo", &infinityAmmo);
         ImGui::Checkbox("No Spread", &noSpreadEnabled);
+        ImGui::Checkbox("Remove Scope Borders", &removeScopeBorders);
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
         if (bulletTracerEnabled) {
             ImGui::ColorEdit3("Tracer Color", bulletTracerColor);
@@ -2470,6 +2502,11 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_CHARACTERCONTROLLER_GET_VELOCITY));
 
 
+
+    o_Component_get_gameObject = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_GAMEOBJECT);
+    o_GameObject_SetActive = (void(__fastcall*)(uintptr_t, bool))(base + OFFSET_GAMEOBJECT_SETACTIVE);
+    MH_CreateHook((LPVOID)(base + OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS), hk_AimView_UpdateSniperPanels, (LPVOID*)&o_AimView_UpdateSniperPanels);
+    MH_EnableHook((LPVOID)(base + OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS));
 
     // Fire is only a synchronous scope marker; HitCaster supplies the real spread-adjusted path.
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
