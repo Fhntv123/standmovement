@@ -333,7 +333,9 @@ bool thirdPersonEnabled = false;
 float thirdPersonDistance = 3.0f;
 float thirdPersonHeight = 0.35f;
 float thirdPersonShoulder = 0.45f;
-uintptr_t liveMainCameraTransform = 0;
+uintptr_t thirdPersonCameraTransform = 0;
+Vector3 thirdPersonFirstPersonPosition{};
+bool thirdPersonCameraDisplaced = false;
 char thirdPersonStatus[96] = "Disabled";
 bool worldColorEnabled = false;
 float worldColor[3] = { 0.35f, 0.55f, 1.0f };
@@ -750,6 +752,8 @@ Vector3(__fastcall* o_Transform_get_forward)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_right)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_up)(uintptr_t) = nullptr;
 void(__fastcall* o_Transform_set_position)(uintptr_t, Vector3) = nullptr;
+void(__fastcall* o_CameraController_OnPreCull)(uintptr_t) = nullptr;
+void(__fastcall* o_CameraController_OnPostRender)(uintptr_t) = nullptr;
 
 uintptr_t(__fastcall* o_Component_get_transform)(uintptr_t) = nullptr;
 
@@ -1028,22 +1032,54 @@ static bool CaptureWorldColorMaterials()
     return !worldColorRenderers.empty();
 }
 
-void __fastcall hk_Transform_set_position(uintptr_t instance, Vector3 position)
+static void RestoreThirdPersonCameraPosition()
 {
-    if (keyValidated && thirdPersonEnabled && instance && instance == liveMainCameraTransform &&
-        o_Transform_get_forward && o_Transform_get_right && o_Transform_get_up) {
-        __try {
-            const Vector3 forward = o_Transform_get_forward(instance);
-            const Vector3 right = o_Transform_get_right(instance);
-            const Vector3 up = o_Transform_get_up(instance);
-            position.x += -forward.x * thirdPersonDistance + right.x * thirdPersonShoulder + up.x * thirdPersonHeight;
-            position.y += -forward.y * thirdPersonDistance + right.y * thirdPersonShoulder + up.y * thirdPersonHeight;
-            position.z += -forward.z * thirdPersonDistance + right.z * thirdPersonShoulder + up.z * thirdPersonHeight;
-            strcpy_s(thirdPersonStatus, "Active on local main camera");
+    if (!thirdPersonCameraDisplaced || !thirdPersonCameraTransform || !o_Transform_set_position) return;
+    __try { o_Transform_set_position(thirdPersonCameraTransform, thirdPersonFirstPersonPosition); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    thirdPersonCameraDisplaced = false;
+}
+
+void __fastcall hk_CameraController_OnPreCull(uintptr_t instance)
+{
+    // If OnPostRender was skipped during a scene transition, never compound last frame's offset.
+    RestoreThirdPersonCameraPosition();
+    o_CameraController_OnPreCull(instance);
+    if (!keyValidated || !thirdPersonEnabled || !instance || !liveHudLocalPlayer) return;
+    __try {
+        const bool isFpsCamera = *reinterpret_cast<bool*>(instance + 0x22);
+        const uintptr_t camera = *reinterpret_cast<uintptr_t*>(instance + 0x28);
+        const uintptr_t transform = camera && o_Component_get_transform ? o_Component_get_transform(camera) : 0;
+        if (!isFpsCamera || !transform || !o_Transform_get_position || !o_Transform_get_forward ||
+            !o_Transform_get_right || !o_Transform_get_up || !o_Transform_set_position) {
+            strcpy_s(thirdPersonStatus, "Waiting for active FPS camera");
+            return;
         }
-        __except (EXCEPTION_EXECUTE_HANDLER) { strcpy_s(thirdPersonStatus, "Waiting for local camera"); }
+        const Vector3 basePosition = o_Transform_get_position(transform);
+        const Vector3 forward = o_Transform_get_forward(transform);
+        const Vector3 right = o_Transform_get_right(transform);
+        const Vector3 up = o_Transform_get_up(transform);
+        Vector3 offsetPosition = basePosition;
+        offsetPosition.x += -forward.x * thirdPersonDistance + right.x * thirdPersonShoulder + up.x * thirdPersonHeight;
+        offsetPosition.y += -forward.y * thirdPersonDistance + right.y * thirdPersonShoulder + up.y * thirdPersonHeight;
+        offsetPosition.z += -forward.z * thirdPersonDistance + right.z * thirdPersonShoulder + up.z * thirdPersonHeight;
+        thirdPersonCameraTransform = transform;
+        thirdPersonFirstPersonPosition = basePosition;
+        o_Transform_set_position(transform, offsetPosition);
+        thirdPersonCameraDisplaced = true;
+        strcpy_s(thirdPersonStatus, "Active via CameraController render hook");
     }
-    o_Transform_set_position(instance, position);
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        thirdPersonCameraTransform = 0;
+        thirdPersonCameraDisplaced = false;
+        strcpy_s(thirdPersonStatus, "Waiting for active FPS camera");
+    }
+}
+
+void __fastcall hk_CameraController_OnPostRender(uintptr_t instance)
+{
+    o_CameraController_OnPostRender(instance);
+    RestoreThirdPersonCameraPosition();
 }
 
 uintptr_t GetCamera() {
@@ -1404,12 +1440,6 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
-    __try {
-        const uintptr_t mainCamera = GetCamera();
-        liveMainCameraTransform = mainCamera && o_Component_get_transform ? o_Component_get_transform(mainCamera) : 0;
-        if (thirdPersonEnabled && !liveMainCameraTransform) strcpy_s(thirdPersonStatus, "Waiting for local camera");
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { liveMainCameraTransform = 0; }
     ApplyScopeOverlayState();
 }
 
@@ -2304,8 +2334,9 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         activeLocalWeaponController = 0;
         armChamsArmsLodGroup = 0;
         gloveChamsArmsLodGroup = 0;
-        liveMainCameraTransform = 0;
-        if (thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Waiting for new match camera");
+        thirdPersonCameraTransform = 0;
+        thirdPersonCameraDisplaced = false;
+        if (thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Waiting for new match FPS camera");
         if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
         if (armChamsEnabled) InterlockedExchange(&pendingArmChamsRefresh, 1);
         if (gloveChamsEnabled) InterlockedExchange(&pendingGloveChamsRefresh, 1);
@@ -3372,7 +3403,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::TextWrapped("World status: %s", worldColorStatus);
         }
         if (ImGui::Checkbox("Third Person", &thirdPersonEnabled)) {
-            if (!thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Disabled; first person restored");
+            if (!thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Disabled; restoring first person");
             else strcpy_s(thirdPersonStatus, "Waiting for local camera");
         }
         if (thirdPersonEnabled) {
@@ -3613,8 +3644,11 @@ DWORD WINAPI HackThread(LPVOID)
     o_Transform_get_forward = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_FORWARD);
     o_Transform_get_right = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_RIGHT);
     o_Transform_get_up = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_UP);
-    MH_CreateHook((LPVOID)(base + OFFSET_TRANSFORM_SET_POSITION), hk_Transform_set_position, (LPVOID*)&o_Transform_set_position);
-    MH_EnableHook((LPVOID)(base + OFFSET_TRANSFORM_SET_POSITION));
+    o_Transform_set_position = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_POSITION);
+    MH_CreateHook((LPVOID)(base + OFFSET_CAMERACONTROLLER_ONPRECULL), hk_CameraController_OnPreCull, (LPVOID*)&o_CameraController_OnPreCull);
+    MH_EnableHook((LPVOID)(base + OFFSET_CAMERACONTROLLER_ONPRECULL));
+    MH_CreateHook((LPVOID)(base + OFFSET_CAMERACONTROLLER_ONPOSTRENDER), hk_CameraController_OnPostRender, (LPVOID*)&o_CameraController_OnPostRender);
+    MH_EnableHook((LPVOID)(base + OFFSET_CAMERACONTROLLER_ONPOSTRENDER));
 
     o_Component_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_TRANSFORM);
 
