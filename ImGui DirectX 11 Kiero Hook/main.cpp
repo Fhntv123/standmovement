@@ -186,7 +186,8 @@ struct Matrix16 {
 #define OFFSET_MATERIAL_SET_MAINTEXTURE            0x2ECF320
 #define OFFSET_RENDERSETTINGS_GET_SKYBOX            0x2ED8D60
 #define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x2ED8D90
-#define OFFSET_BULLET_TRACE_EMIT                   0xA33840
+#define OFFSET_GUNCONTROLLER_FIRE                  0x996BE0
+#define OFFSET_HITCASTER_CAST                      0x99FBB0
 
 #define OFFSET_WORLDTOSCREENPOINT                  0x2EC0950
 
@@ -641,7 +642,9 @@ Matrix16(__fastcall* o_Camera_get_worldToCameraMatrix)(uintptr_t) = nullptr;
 Matrix16(__fastcall* o_Camera_get_projectionMatrix)(uintptr_t) = nullptr;
 
 short(__fastcall* o_GunController_GetCurrentAmmo)(uintptr_t) = nullptr;
-void(__fastcall* o_BulletTraceEmit)(uintptr_t, Vector3, Vector3, unsigned char, bool, bool, int, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
+uintptr_t(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float, uintptr_t, const Il2CppMethod*) = nullptr;
+thread_local bool insideLocalGunFire = false;
 
 
 
@@ -944,15 +947,29 @@ uintptr_t GetPlayerController() {
 
 // Hook на GunController::gcloafhgkcb() - возвращает текущие патроны
 
-void __fastcall hk_BulletTraceEmit(uintptr_t instance, Vector3 start, Vector3 end, unsigned char weaponType, bool isLocal, bool isSilenced, int source, const Il2CppMethod* method)
+uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float maxDistance, uintptr_t hitParameters, const Il2CppMethod* method)
 {
-    if (keyValidated && bulletTracerEnabled && source == 0) {
-        AcquireSRWLockExclusive(&bulletTracerLock);
-        bulletTracers.push_back({ start, end, GetTickCount64() });
-        if (bulletTracers.size() > 128) bulletTracers.erase(bulletTracers.begin(), bulletTracers.begin() + (bulletTracers.size() - 128));
-        ReleaseSRWLockExclusive(&bulletTracerLock);
+    const uintptr_t result = o_HitCaster_Cast(origin, direction, maxDistance, hitParameters, method);
+    if (keyValidated && bulletTracerEnabled && insideLocalGunFire && result) {
+        __try {
+            // cjr stores the authoritative cast start/end at 0x24/0x30.
+            const Vector3 actualStart = *(Vector3*)(result + 0x24);
+            const Vector3 actualEnd = *(Vector3*)(result + 0x30);
+            AcquireSRWLockExclusive(&bulletTracerLock);
+            bulletTracers.push_back({ actualStart, actualEnd, GetTickCount64() });
+            if (bulletTracers.size() > 128) bulletTracers.erase(bulletTracers.begin(), bulletTracers.begin() + (bulletTracers.size() - 128));
+            ReleaseSRWLockExclusive(&bulletTracerLock);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
-    o_BulletTraceEmit(instance, start, end, weaponType, isLocal, isSilenced, source, method);
+    return result;
+}
+
+void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, const Il2CppMethod* method)
+{
+    insideLocalGunFire = true;
+    o_GunController_Fire(instance, playSound, method);
+    insideLocalGunFire = false;
 }
 
 short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
@@ -2442,9 +2459,11 @@ DWORD WINAPI HackThread(LPVOID)
 
 
 
-    // Capture only the game's authoritative world-space muzzle and impact path.
-    MH_CreateHook((LPVOID)(base + OFFSET_BULLET_TRACE_EMIT), hk_BulletTraceEmit, (LPVOID*)&o_BulletTraceEmit);
-    MH_EnableHook((LPVOID)(base + OFFSET_BULLET_TRACE_EMIT));
+    // Fire is only a synchronous scope marker; HitCaster supplies the real spread-adjusted path.
+    MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
+    MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE));
+    MH_CreateHook((LPVOID)(base + OFFSET_HITCASTER_CAST), hk_HitCaster_Cast, (LPVOID*)&o_HitCaster_Cast);
+    MH_EnableHook((LPVOID)(base + OFFSET_HITCASTER_CAST));
 
     // GunController hook for infinity ammo
 
