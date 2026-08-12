@@ -325,7 +325,8 @@ bool customScopeReticleVisible = false;
 uintptr_t liveAimView = 0;
 uintptr_t sniperSightObject = 0;
 volatile LONG pendingScopeOverlayRefresh = 0;
-float bulletTracerColor[3] = { 1.0f, 0.25f, 0.05f };
+float bulletTracerStartColor[3] = { 1.0f, 0.15f, 0.05f };
+float bulletTracerEndColor[3] = { 0.15f, 0.55f, 1.0f };
 float bulletTracerDuration = 1.5f;
 float bulletTracerThickness = 2.5f;
 
@@ -1616,9 +1617,28 @@ void DrawBulletTracers() {
         if (!startVisible) continue;
         float age = static_cast<float>(now - tracer.createdAt) / (bulletTracerDuration * 1000.0f);
         float alpha = 1.0f - (age < 0.0f ? 0.0f : (age > 1.0f ? 1.0f : age));
-        ImU32 color = ImGui::ColorConvertFloat4ToU32(ImVec4(bulletTracerColor[0], bulletTracerColor[1], bulletTracerColor[2], alpha));
         drawList->AddLine(startScreen, endScreen, IM_COL32(0, 0, 0, static_cast<int>(170 * alpha)), bulletTracerThickness + 2.0f);
-        drawList->AddLine(startScreen, endScreen, color, bulletTracerThickness);
+
+        // Segment the actual world-space shot path so the color interpolation stays attached
+        // to the tracer under perspective instead of becoming a flat screen-space overlay.
+        constexpr int gradientSegments = 32;
+        ImVec2 previous = startScreen;
+        for (int segment = 1; segment <= gradientSegments; ++segment) {
+            const float t = static_cast<float>(segment) / static_cast<float>(gradientSegments);
+            const Vector3 worldPoint(
+                visibleStart.x + (tracer.end.x - visibleStart.x) * t,
+                visibleStart.y + (tracer.end.y - visibleStart.y) * t,
+                visibleStart.z + (tracer.end.z - visibleStart.z) * t);
+            ImVec2 current;
+            if (!ProjectTracerEnd(worldPoint, current)) continue;
+            const float mid = (static_cast<float>(segment) - 0.5f) / static_cast<float>(gradientSegments);
+            const float r = bulletTracerStartColor[0] + (bulletTracerEndColor[0] - bulletTracerStartColor[0]) * mid;
+            const float g = bulletTracerStartColor[1] + (bulletTracerEndColor[1] - bulletTracerStartColor[1]) * mid;
+            const float b = bulletTracerStartColor[2] + (bulletTracerEndColor[2] - bulletTracerStartColor[2]) * mid;
+            const ImU32 color = ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, alpha));
+            drawList->AddLine(previous, current, color, bulletTracerThickness);
+            previous = current;
+        }
     }
     drawList->PopClipRect();
 }
@@ -2405,7 +2425,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (ImGui::Checkbox("Remove Scope Borders", &removeScopeBorders)) InterlockedExchange(&pendingScopeOverlayRefresh, 1);
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
         if (bulletTracerEnabled) {
-            ImGui::ColorEdit3("Tracer Color", bulletTracerColor);
+            ImGui::ColorEdit3("Tracer Start Color", bulletTracerStartColor);
+            ImGui::ColorEdit3("Tracer End Color", bulletTracerEndColor);
             ImGui::SliderFloat("Tracer Duration", &bulletTracerDuration, 0.1f, 5.0f, "%.1f s");
             ImGui::SliderFloat("Tracer Thickness", &bulletTracerThickness, 1.0f, 8.0f, "%.1f");
         }
