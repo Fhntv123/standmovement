@@ -213,9 +213,7 @@ struct Matrix16 {
 #define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
 #define OFFSET_HUDVIEW_UPDATE                       0xA68C60
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xA5D6C0
-#define OFFSET_NETWORKCONTROLLER_WRITE_SNAPSHOT    0x839CB0
-#define OFFSET_MOVEMENTSNAPSHOT_SERIALIZE           0x859240
-#define OFFSET_AIMSNAPSHOT_SERIALIZE                0x881A90
+#define OFFSET_PLAYERSNAPSHOT_SERIALIZE             0x8431A0
 #define OFFSET_COMPONENT_GET_GAMEOBJECT             0x2EF2CA0
 #define OFFSET_GAMEOBJECT_SETACTIVE                 0x2EF6620
 #define OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY     0x2EF6A20
@@ -331,6 +329,7 @@ bool showTrail = false;
 bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool silentAntiAimEnabled = false;
+bool silentAntiAimHookReady = false;
 char silentAntiAimStatus[96] = "Disabled";
 bool thirdPersonEnabled = false;
 uintptr_t customizedThirdPersonPlayer = 0;
@@ -816,9 +815,7 @@ void(__fastcall* o_GameObject_SetActive)(uintptr_t, bool) = nullptr;
 bool(__fastcall* o_GameObject_get_activeInHierarchy)(uintptr_t) = nullptr;
 void(__fastcall* o_CanvasGroup_set_alpha)(uintptr_t, float) = nullptr;
 void(__fastcall* o_HUDView_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
-void(__fastcall* o_NetworkController_WriteSnapshot)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
-void(__fastcall* o_MovementSnapshot_Serialize)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
-void(__fastcall* o_AimSnapshot_Serialize)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_PlayerSnapshot_Serialize)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 
 
 
@@ -1487,31 +1484,22 @@ static void ApplyScopeOverlayState()
     __except (EXCEPTION_EXECUTE_HANDLER) { customScopeReticleVisible = false; }
 }
 
-static bool IsLocalMovementSnapshot(uintptr_t snapshot)
+static bool IsLocalPlayerSnapshot(uintptr_t snapshot)
 {
     if (!silentAntiAimEnabled || !snapshot || !liveHudLocalPlayer) return false;
     __try {
-        // PlayerController.bzxa MovementController +0xE0; its cached local
-        // MovementSnapshot caik is +0x90.
+        const uintptr_t movement = *reinterpret_cast<uintptr_t*>(snapshot + 0x18);
+        const uintptr_t aim = *reinterpret_cast<uintptr_t*>(snapshot + 0x28);
         const uintptr_t movementController = *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xE0);
-        return movementController && *reinterpret_cast<uintptr_t*>(movementController + 0x90) == snapshot;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
-
-static bool IsLocalAimSnapshot(uintptr_t snapshot)
-{
-    if (!silentAntiAimEnabled || !snapshot || !liveHudLocalPlayer) return false;
-    __try {
-        // PlayerController.bzwx AimController +0xC8; its readonly local
-        // AimSnapshot catv is +0x168.
         const uintptr_t aimController = *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
-        return aimController && *reinterpret_cast<uintptr_t*>(aimController + 0x168) == snapshot;
+        const uintptr_t localMovement = movementController ?
+            *reinterpret_cast<uintptr_t*>(movementController + 0x90) : 0;
+        const uintptr_t localAim = aimController ?
+            *reinterpret_cast<uintptr_t*>(aimController + 0x168) : 0;
+        return (movement && movement == localMovement) || (aim && aim == localAim);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
-
-thread_local bool insideLocalSilentSnapshotWrite = false;
 
 static float NormalizeAngle360(float angle)
 {
@@ -1520,101 +1508,87 @@ static float NormalizeAngle360(float angle)
     return angle;
 }
 
-void __fastcall hk_NetworkController_WriteSnapshot(uintptr_t instance, uintptr_t writer, const Il2CppMethod* method)
+void __fastcall hk_PlayerSnapshot_Serialize(uintptr_t snapshot, uintptr_t writer, const Il2CppMethod* method)
 {
-    bool isLocal = false;
-    __try {
-        // NetworkController.bzvz (+0x70) is the owning PlayerController.
-        isLocal = silentAntiAimEnabled && instance && liveHudLocalPlayer &&
-            *reinterpret_cast<uintptr_t*>(instance + 0x70) == liveHudLocalPlayer;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { isLocal = false; }
-    const bool previous = insideLocalSilentSnapshotWrite;
-    insideLocalSilentSnapshotWrite = isLocal;
-    o_NetworkController_WriteSnapshot(instance, writer, method);
-    insideLocalSilentSnapshotWrite = previous;
-}
-
-void __fastcall hk_MovementSnapshot_Serialize(uintptr_t snapshot, uintptr_t writer, const Il2CppMethod* method)
-{
-    if (!(insideLocalSilentSnapshotWrite || IsLocalMovementSnapshot(snapshot))) {
-        o_MovementSnapshot_Serialize(snapshot, writer, method);
+    if (!IsLocalPlayerSnapshot(snapshot)) {
+        o_PlayerSnapshot_Serialize(snapshot, writer, method);
         return;
     }
-    Vector3 savedCharacterRotation;
-    Vector3 savedEulerAngles;
-    bool patched = false;
+
+    uintptr_t movement = 0;
+    uintptr_t aim = 0;
+    uintptr_t aimingData = 0;
+    Vector3 savedCharacterRotation, savedEulerAngles;
+    Vector3 savedAimAngle, savedAimEuler;
+    float savedAimX = 0.0f, savedAimY = 0.0f;
+    bool patchedMovement = false;
+    bool patchedAim = false;
+
     __try {
-        savedCharacterRotation = *reinterpret_cast<Vector3*>(snapshot + 0x58);
-        savedEulerAngles = *reinterpret_cast<Vector3*>(snapshot + 0x98);
-        Vector3 fakeCharacterRotation = savedCharacterRotation;
-        Vector3 fakeEulerAngles = savedEulerAngles;
-        fakeCharacterRotation.y = NormalizeAngle360(fakeCharacterRotation.y + 180.0f);
-        fakeEulerAngles.y = NormalizeAngle360(fakeEulerAngles.y + 180.0f);
-        *reinterpret_cast<Vector3*>(snapshot + 0x58) = fakeCharacterRotation;
-        *reinterpret_cast<Vector3*>(snapshot + 0x98) = fakeEulerAngles;
-        patched = true;
-        o_MovementSnapshot_Serialize(snapshot, writer, method);
-        *reinterpret_cast<Vector3*>(snapshot + 0x58) = savedCharacterRotation;
-        *reinterpret_cast<Vector3*>(snapshot + 0x98) = savedEulerAngles;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        __try {
-            if (patched) {
-                *reinterpret_cast<Vector3*>(snapshot + 0x58) = savedCharacterRotation;
-                *reinterpret_cast<Vector3*>(snapshot + 0x98) = savedEulerAngles;
+        movement = *reinterpret_cast<uintptr_t*>(snapshot + 0x18);
+        aim = *reinterpret_cast<uintptr_t*>(snapshot + 0x28);
+
+        if (movement) {
+            savedCharacterRotation = *reinterpret_cast<Vector3*>(movement + 0x58);
+            savedEulerAngles = *reinterpret_cast<Vector3*>(movement + 0x98);
+            Vector3 fakeCharacterRotation = savedCharacterRotation;
+            Vector3 fakeEulerAngles = savedEulerAngles;
+            fakeCharacterRotation.y = NormalizeAngle360(fakeCharacterRotation.y + 180.0f);
+            fakeEulerAngles.y = NormalizeAngle360(fakeEulerAngles.y + 180.0f);
+            *reinterpret_cast<Vector3*>(movement + 0x58) = fakeCharacterRotation;
+            *reinterpret_cast<Vector3*>(movement + 0x98) = fakeEulerAngles;
+            patchedMovement = true;
+        }
+
+        if (aim) {
+            savedAimX = *reinterpret_cast<float*>(aim + 0x54);
+            savedAimY = *reinterpret_cast<float*>(aim + 0x58);
+            aimingData = *reinterpret_cast<uintptr_t*>(aim + 0x18);
+            if (aimingData) {
+                savedAimAngle = *reinterpret_cast<Vector3*>(aimingData + 0x18);
+                savedAimEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
+            }
+            *reinterpret_cast<float*>(aim + 0x54) = 0.0f;
+            *reinterpret_cast<float*>(aim + 0x58) = 89.0f;
+            if (aimingData) {
+                Vector3 fakeAimAngle = savedAimAngle;
+                Vector3 fakeAimEuler = savedAimEuler;
+                fakeAimAngle.x = 89.0f;
+                fakeAimAngle.y = 0.0f;
+                fakeAimEuler.x = 89.0f;
+                fakeAimEuler.y = 0.0f;
+                *reinterpret_cast<Vector3*>(aimingData + 0x18) = fakeAimAngle;
+                *reinterpret_cast<Vector3*>(aimingData + 0x24) = fakeAimEuler;
+            }
+            patchedAim = true;
+        }
+
+        // This is PlayerSnapshot.isq itself: the final complete player packet.
+        o_PlayerSnapshot_Serialize(snapshot, writer, method);
+
+        if (patchedMovement) {
+            *reinterpret_cast<Vector3*>(movement + 0x58) = savedCharacterRotation;
+            *reinterpret_cast<Vector3*>(movement + 0x98) = savedEulerAngles;
+        }
+        if (patchedAim) {
+            *reinterpret_cast<float*>(aim + 0x54) = savedAimX;
+            *reinterpret_cast<float*>(aim + 0x58) = savedAimY;
+            if (aimingData) {
+                *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAimAngle;
+                *reinterpret_cast<Vector3*>(aimingData + 0x24) = savedAimEuler;
             }
         }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-        strcpy_s(silentAntiAimStatus, "Waiting for movement snapshot");
-    }
-}
-
-void __fastcall hk_AimSnapshot_Serialize(uintptr_t snapshot, uintptr_t writer, const Il2CppMethod* method)
-{
-    if (!(insideLocalSilentSnapshotWrite || IsLocalAimSnapshot(snapshot))) {
-        o_AimSnapshot_Serialize(snapshot, writer, method);
-        return;
-    }
-    uintptr_t aimingData = 0;
-    float savedAimX = 0.0f, savedAimY = 0.0f;
-    Vector3 savedAimAngle, savedAimEuler;
-    bool patched = false;
-    __try {
-        savedAimX = *reinterpret_cast<float*>(snapshot + 0x54);
-        savedAimY = *reinterpret_cast<float*>(snapshot + 0x58);
-        aimingData = *reinterpret_cast<uintptr_t*>(snapshot + 0x18);
-        if (aimingData) {
-            savedAimAngle = *reinterpret_cast<Vector3*>(aimingData + 0x18);
-            savedAimEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
-        }
-        *reinterpret_cast<float*>(snapshot + 0x54) = 0.0f;
-        *reinterpret_cast<float*>(snapshot + 0x58) = 89.0f;
-        if (aimingData) {
-            Vector3 fakeAimAngle = savedAimAngle;
-            Vector3 fakeAimEuler = savedAimEuler;
-            fakeAimAngle.x = 89.0f;
-            fakeAimAngle.y = 0.0f;
-            fakeAimEuler.x = 89.0f;
-            fakeAimEuler.y = 0.0f;
-            *reinterpret_cast<Vector3*>(aimingData + 0x18) = fakeAimAngle;
-            *reinterpret_cast<Vector3*>(aimingData + 0x24) = fakeAimEuler;
-        }
-        patched = true;
-        o_AimSnapshot_Serialize(snapshot, writer, method);
-        *reinterpret_cast<float*>(snapshot + 0x54) = savedAimX;
-        *reinterpret_cast<float*>(snapshot + 0x58) = savedAimY;
-        if (aimingData) {
-            *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAimAngle;
-            *reinterpret_cast<Vector3*>(aimingData + 0x24) = savedAimEuler;
-        }
-        strcpy_s(silentAntiAimStatus, "Active: backward + down (network only)");
+        strcpy_s(silentAntiAimStatus, "Active: final player packet hooked");
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         __try {
-            if (patched) {
-                *reinterpret_cast<float*>(snapshot + 0x54) = savedAimX;
-                *reinterpret_cast<float*>(snapshot + 0x58) = savedAimY;
+            if (patchedMovement && movement) {
+                *reinterpret_cast<Vector3*>(movement + 0x58) = savedCharacterRotation;
+                *reinterpret_cast<Vector3*>(movement + 0x98) = savedEulerAngles;
+            }
+            if (patchedAim && aim) {
+                *reinterpret_cast<float*>(aim + 0x54) = savedAimX;
+                *reinterpret_cast<float*>(aim + 0x58) = savedAimY;
                 if (aimingData) {
                     *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAimAngle;
                     *reinterpret_cast<Vector3*>(aimingData + 0x24) = savedAimEuler;
@@ -1622,7 +1596,7 @@ void __fastcall hk_AimSnapshot_Serialize(uintptr_t snapshot, uintptr_t writer, c
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
-        strcpy_s(silentAntiAimStatus, "Waiting for aim snapshot");
+        strcpy_s(silentAntiAimStatus, "Player packet hook hit; snapshot unavailable");
     }
 }
 
@@ -3575,7 +3549,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Separator();
         ImGui::Spacing();
         if (ImGui::Checkbox("Silent Backward + Down", &silentAntiAimEnabled))
-            strcpy_s(silentAntiAimStatus, silentAntiAimEnabled ? "Waiting for local network snapshot" : "Disabled");
+            strcpy_s(silentAntiAimStatus, !silentAntiAimEnabled ? "Disabled" :
+                (silentAntiAimHookReady ? "Final packet hook installed; waiting for first send" : "Player packet hook failed to install"));
         ImGui::TextWrapped("Status: %s", silentAntiAimStatus);
         ImGui::Spacing();
         ImGui::TextWrapped("Changes only the outgoing player snapshot. Local camera, crosshair and shot direction stay untouched.");
@@ -3933,12 +3908,12 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS));
     MH_CreateHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE), hk_HUDView_Update, (LPVOID*)&o_HUDView_Update);
     MH_EnableHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE));
-    MH_CreateHook((LPVOID)(base + OFFSET_NETWORKCONTROLLER_WRITE_SNAPSHOT), hk_NetworkController_WriteSnapshot, (LPVOID*)&o_NetworkController_WriteSnapshot);
-    MH_EnableHook((LPVOID)(base + OFFSET_NETWORKCONTROLLER_WRITE_SNAPSHOT));
-    MH_CreateHook((LPVOID)(base + OFFSET_MOVEMENTSNAPSHOT_SERIALIZE), hk_MovementSnapshot_Serialize, (LPVOID*)&o_MovementSnapshot_Serialize);
-    MH_EnableHook((LPVOID)(base + OFFSET_MOVEMENTSNAPSHOT_SERIALIZE));
-    MH_CreateHook((LPVOID)(base + OFFSET_AIMSNAPSHOT_SERIALIZE), hk_AimSnapshot_Serialize, (LPVOID*)&o_AimSnapshot_Serialize);
-    MH_EnableHook((LPVOID)(base + OFFSET_AIMSNAPSHOT_SERIALIZE));
+    const MH_STATUS antiAimCreateStatus = MH_CreateHook((LPVOID)(base + OFFSET_PLAYERSNAPSHOT_SERIALIZE), hk_PlayerSnapshot_Serialize, (LPVOID*)&o_PlayerSnapshot_Serialize);
+    const MH_STATUS antiAimEnableStatus = antiAimCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_PLAYERSNAPSHOT_SERIALIZE)) : antiAimCreateStatus;
+    silentAntiAimHookReady = antiAimCreateStatus == MH_OK && antiAimEnableStatus == MH_OK;
+    LINDY_LOG("[anti-aim] PlayerSnapshot.isq hook create=%d enable=%d ready=%d",
+        (int)antiAimCreateStatus, (int)antiAimEnableStatus, silentAntiAimHookReady ? 1 : 0);
 
     // Capture the live ArmsLodGroup directly whenever its first-person visibility is enabled.
     MH_CreateHook((LPVOID)(base + OFFSET_ARMSLOD_SET_VISIBLE), hk_ArmsLod_SetVisible, (LPVOID*)&o_ArmsLod_SetVisible);
