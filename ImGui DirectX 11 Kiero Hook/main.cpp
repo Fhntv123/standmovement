@@ -1040,6 +1040,8 @@ static void ApplyScopeOverlayState()
     __except (EXCEPTION_EXECUTE_HANDLER) { customScopeReticleVisible = false; }
 }
 
+static void UpdateWeaponChams();
+
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
     __try {
@@ -1049,6 +1051,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
     ApplyScopeOverlayState();
+    UpdateWeaponChams();
 }
 
 void DrawBorderlessScopeReticle()
@@ -1503,7 +1506,8 @@ static void CaptureWeaponChamsRenderers(uintptr_t weaponController)
 
 static void UpdateWeaponChams()
 {
-    if (!keyValidated || !o_Renderer_set_material || !o_Material_set_color) return;
+    if (!keyValidated) { strcpy_s(weaponChamsStatus, "License validation inactive"); return; }
+    if (!o_Renderer_set_material || !o_Material_set_color) { strcpy_s(weaponChamsStatus, "Material API unavailable"); return; }
     uintptr_t weaponController = 0;
     __try {
         const uintptr_t localPlayer = GetPlayerController();
@@ -1534,8 +1538,6 @@ static void UpdateWeaponChams()
 int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
     if (keyValidated && instance) lastCharacterController = instance;
-
-    UpdateWeaponChams();
 
     if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
 
