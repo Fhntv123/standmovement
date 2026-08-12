@@ -1108,6 +1108,7 @@ static void ApplyScopeOverlayState()
     __except (EXCEPTION_EXECUTE_HANDLER) { customScopeReticleVisible = false; }
 }
 
+static uintptr_t GetAuthoritativeLocalWeaponController();
 static uintptr_t GetCurrentLocalWeaponController();
 static void UpdateWeaponChams(uintptr_t knownWeaponController = 0);
 static void UpdateArmChams(uintptr_t knownArmsLodGroup = 0);
@@ -1190,8 +1191,16 @@ void __fastcall hk_Weaponry_TakeWeapon(uintptr_t instance, uint8_t slotIndex, co
 {
     o_Weaponry_TakeWeapon(instance, slotIndex, method);
     uintptr_t weaponController = 0;
-    __try { weaponController = instance ? *(uintptr_t*)(instance + OFFSET_WEAPONCONTROLLER) : 0; }
-    __except (EXCEPTION_EXECUTE_HANDLER) { weaponController = 0; }
+    bool isLocalWeaponry = false;
+    __try {
+        uintptr_t localPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
+        if (!localPlayer) localPlayer = GetPlayerController();
+        const uintptr_t localWeaponry = localPlayer ? *(uintptr_t*)(localPlayer + OFFSET_WEAPONRYCONTROLLER) : 0;
+        isLocalWeaponry = instance && instance == localWeaponry;
+        weaponController = isLocalWeaponry ? *(uintptr_t*)(instance + OFFSET_WEAPONCONTROLLER) : 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { weaponController = 0; isLocalWeaponry = false; }
+    if (!isLocalWeaponry) return;
     activeLocalWeaponController = weaponController;
     if (weaponChamsEnabled && weaponController) {
         sprintf_s(weaponChamsStatus, "Slot %u equipped; queued", static_cast<unsigned>(slotIndex));
@@ -1204,11 +1213,12 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     // Fire must remain latency-free: never create materials, inspect renderers,
     // or call set_material from this hook. Only remember the live gun and queue
     // maintenance for the normal movement/game loop after the shot.
-    if (instance) activeLocalWeaponController = instance;
-    insideLocalGunFire = true;
+    const bool isLocalGun = instance && instance == GetAuthoritativeLocalWeaponController();
+    if (isLocalGun) activeLocalWeaponController = instance;
+    insideLocalGunFire = isLocalGun;
     o_GunController_Fire(instance, playSound, method);
     insideLocalGunFire = false;
-    if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
+    if (isLocalGun && weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
 }
 
 short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
@@ -1217,16 +1227,13 @@ short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
 
     short currentAmmo = o_GunController_GetCurrentAmmo(instance);
 
-    if (keyValidated && instance) {
-        // The HUD calls this on the currently active GunController, so it is the
-        // most reliable live source when PlayerController lookup is unavailable.
-        if (instance != activeLocalWeaponController) {
-            activeLocalWeaponController = instance;
-            if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
-        }
+    const bool isLocalGun = keyValidated && instance && instance == GetAuthoritativeLocalWeaponController();
+    if (isLocalGun && instance != activeLocalWeaponController) {
+        activeLocalWeaponController = instance;
+        if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
     }
 
-    if (keyValidated && infinityAmmo && instance) {
+    if (isLocalGun && infinityAmmo) {
 
         __try {
 
@@ -1975,16 +1982,21 @@ static void CaptureWeaponChamsRenderers(uintptr_t weaponController)
     }
 }
 
-static uintptr_t GetCurrentLocalWeaponController()
+static uintptr_t GetAuthoritativeLocalWeaponController()
 {
     __try {
         uintptr_t localPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
         if (!localPlayer) localPlayer = GetPlayerController();
         const uintptr_t weaponry = localPlayer ? *(uintptr_t*)(localPlayer + OFFSET_WEAPONRYCONTROLLER) : 0;
-        const uintptr_t currentWeapon = weaponry ? *(uintptr_t*)(weaponry + OFFSET_WEAPONCONTROLLER) : 0;
-        return currentWeapon ? currentWeapon : activeLocalWeaponController;
+        return weaponry ? *(uintptr_t*)(weaponry + OFFSET_WEAPONCONTROLLER) : 0;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return activeLocalWeaponController; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+static uintptr_t GetCurrentLocalWeaponController()
+{
+    const uintptr_t currentWeapon = GetAuthoritativeLocalWeaponController();
+    return currentWeapon ? currentWeapon : activeLocalWeaponController;
 }
 
 static void UpdateWeaponChams(uintptr_t knownWeaponController)
