@@ -196,8 +196,6 @@ struct Matrix16 {
 #define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x2ED8D90
 #define OFFSET_GLOVES_SET_ARMS                    0x8F8110
 #define OFFSET_ARMSLOD_SET_VISIBLE                 0x81F1E0
-#define OFFSET_RESOURCES_FIND_OBJECTS_ALL          0x2EFFB30
-#define OFFSET_RENDERER_GET_ENABLED                0x2ED9330
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0x8491C0
 #define OFFSET_GUNCONTROLLER_FIRE                  0x996BE0
 #define OFFSET_HITCASTER_CAST                      0x99FBB0
@@ -336,6 +334,7 @@ bool noSpreadEnabled = false;
 bool removeScopeBorders = false;
 bool customScopeReticleVisible = false;
 uintptr_t liveAimView = 0;
+uintptr_t liveHudLocalPlayer = 0;
 uintptr_t sniperSightObject = 0;
 volatile LONG pendingScopeOverlayRefresh = 0;
 float bulletTracerStartColor[3] = { 1.0f, 0.15f, 0.05f };
@@ -400,8 +399,6 @@ uintptr_t gloveChamsArmsLodGroup = 0;
 char gloveChamsStatus[128] = "Disabled";
 volatile LONG pendingGloveChamsRefresh = 0;
 ULONGLONG armGloveChamsLastMaintenanceTick = 0;
-ULONGLONG armsLodGroupLastScanTick = 0;
-Il2CppClass* g_ArmsLodGroupClass = nullptr;
 
 struct BulletTracerEntry {
     Vector3 start;
@@ -749,8 +746,6 @@ Matrix16(__fastcall* o_Camera_get_projectionMatrix)(uintptr_t) = nullptr;
 short(__fastcall* o_GunController_GetCurrentAmmo)(uintptr_t) = nullptr;
 void(__fastcall* o_Gloves_SetArms)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_ArmsLod_SetVisible)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
-Il2CppArray*(__fastcall* o_Resources_FindObjectsOfTypeAll)(Il2CppObject*, const Il2CppMethod*) = nullptr;
-bool(__fastcall* o_Renderer_get_enabled)(uintptr_t) = nullptr;
 void(__fastcall* o_Weaponry_TakeWeapon)(uintptr_t, uint8_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float, uintptr_t, const Il2CppMethod*) = nullptr;
@@ -1113,15 +1108,15 @@ static uintptr_t GetCurrentLocalWeaponController();
 static void UpdateWeaponChams(uintptr_t knownWeaponController = 0);
 static void UpdateArmChams(uintptr_t knownArmsLodGroup = 0);
 static void UpdateGloveChams(uintptr_t knownArmsLodGroup = 0);
-static uintptr_t DiscoverLiveArmsLodGroup(bool forceScan = false);
 
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
     __try {
         liveAimView = instance ? *(uintptr_t*)(instance + 0x38) : 0;
+        liveHudLocalPlayer = instance ? *(uintptr_t*)(instance + 0xD0) : 0;
         sniperSightObject = liveAimView ? *(uintptr_t*)(liveAimView + 0x48) : 0;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; sniperSightObject = 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
     ApplyScopeOverlayState();
 }
@@ -1172,7 +1167,10 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
 void __fastcall hk_ArmsLod_SetVisible(uintptr_t instance, bool visible, const Il2CppMethod* method)
 {
     o_ArmsLod_SetVisible(instance, visible, method);
-    if (!instance || !visible) return;
+    uintptr_t localArms = 0;
+    __try { localArms = liveHudLocalPlayer ? *(uintptr_t*)(liveHudLocalPlayer + 0x138) : 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { localArms = 0; }
+    if (!instance || !visible || instance != localArms) return;
     armChamsArmsLodGroup = instance;
     gloveChamsArmsLodGroup = instance;
     if (armChamsEnabled) InterlockedExchange(&pendingArmChamsRefresh, 1);
@@ -1182,7 +1180,12 @@ void __fastcall hk_ArmsLod_SetVisible(uintptr_t instance, bool visible, const Il
 void __fastcall hk_Gloves_SetArms(uintptr_t instance, uintptr_t armsLodGroup, const Il2CppMethod* method)
 {
     o_Gloves_SetArms(instance, armsLodGroup, method);
-    if (armsLodGroup) { armChamsArmsLodGroup = armsLodGroup; gloveChamsArmsLodGroup = armsLodGroup; }
+    uintptr_t localArms = 0;
+    __try { localArms = liveHudLocalPlayer ? *(uintptr_t*)(liveHudLocalPlayer + 0x138) : 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { localArms = 0; }
+    if (!armsLodGroup || armsLodGroup != localArms) return;
+    armChamsArmsLodGroup = armsLodGroup;
+    gloveChamsArmsLodGroup = armsLodGroup;
     if (armChamsEnabled && armsLodGroup) InterlockedExchange(&pendingArmChamsRefresh, 1);
     if (gloveChamsEnabled && armsLodGroup) InterlockedExchange(&pendingGloveChamsRefresh, 1);
 }
@@ -1193,10 +1196,8 @@ void __fastcall hk_Weaponry_TakeWeapon(uintptr_t instance, uint8_t slotIndex, co
     uintptr_t weaponController = 0;
     bool isLocalWeaponry = false;
     __try {
-        uintptr_t localPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
-        if (!localPlayer) localPlayer = GetPlayerController();
-        const uintptr_t localWeaponry = localPlayer ? *(uintptr_t*)(localPlayer + OFFSET_WEAPONRYCONTROLLER) : 0;
-        isLocalWeaponry = instance && instance == localWeaponry;
+        const uintptr_t ownerPlayer = instance ? *(uintptr_t*)(instance + 0x60) : 0;
+        isLocalWeaponry = ownerPlayer && ownerPlayer == liveHudLocalPlayer;
         weaponController = isLocalWeaponry ? *(uintptr_t*)(instance + OFFSET_WEAPONCONTROLLER) : 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { weaponController = 0; isLocalWeaponry = false; }
@@ -1213,7 +1214,9 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     // Fire must remain latency-free: never create materials, inspect renderers,
     // or call set_material from this hook. Only remember the live gun and queue
     // maintenance for the normal movement/game loop after the shot.
-    const bool isLocalGun = instance && instance == GetAuthoritativeLocalWeaponController();
+    bool isLocalGun = false;
+    __try { isLocalGun = instance && liveHudLocalPlayer && *(uintptr_t*)(instance + 0x20) == liveHudLocalPlayer; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
     if (isLocalGun) activeLocalWeaponController = instance;
     insideLocalGunFire = isLocalGun;
     o_GunController_Fire(instance, playSound, method);
@@ -1227,7 +1230,9 @@ short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
 
     short currentAmmo = o_GunController_GetCurrentAmmo(instance);
 
-    const bool isLocalGun = keyValidated && instance && instance == GetAuthoritativeLocalWeaponController();
+    bool isLocalGun = false;
+    __try { isLocalGun = keyValidated && instance && liveHudLocalPlayer && *(uintptr_t*)(instance + 0x20) == liveHudLocalPlayer; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
     if (isLocalGun && instance != activeLocalWeaponController) {
         activeLocalWeaponController = instance;
         if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
@@ -1700,67 +1705,20 @@ static void AnimateArmChamsColor()
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
-static uintptr_t DiscoverLiveArmsLodGroup(bool forceScan)
-{
-    if (!g_ArmsLodGroupClass || !g_il2cpp.class_get_type || !g_il2cpp.type_get_object || !o_Resources_FindObjectsOfTypeAll) return 0;
-    const ULONGLONG now = GetTickCount64();
-    if (armsLodGroupLastScanTick && now - armsLodGroupLastScanTick < 10000) return 0;
-    armsLodGroupLastScanTick = now;
-    __try {
-        const Il2CppType* armsType = g_il2cpp.class_get_type(g_ArmsLodGroupClass);
-        Il2CppObject* reflectionType = armsType ? g_il2cpp.type_get_object(armsType) : nullptr;
-        Il2CppArray* objects = reflectionType ? o_Resources_FindObjectsOfTypeAll(reflectionType, nullptr) : nullptr;
-        const uintptr_t array = reinterpret_cast<uintptr_t>(objects);
-        const size_t count = array ? *(size_t*)(array + 0x18) : 0;
-        if (!count || count > 256) return 0;
-        uintptr_t best = 0;
-        int bestScore = -1;
-        for (size_t i = 0; i < count; ++i) {
-            const uintptr_t candidate = *(uintptr_t*)(array + 0x20 + i * sizeof(uintptr_t));
-            if (!candidate) continue;
-            const uintptr_t armsRenderer = *(uintptr_t*)(candidate + 0x60);
-            const uintptr_t gloveRenderer = *(uintptr_t*)(candidate + 0x68);
-            if (!armsRenderer && !gloveRenderer) continue;
-            int score = (armsRenderer ? 2 : 0) + (gloveRenderer ? 2 : 0);
-            if (o_Renderer_get_enabled) {
-                if (armsRenderer && o_Renderer_get_enabled(armsRenderer)) score += 4;
-                if (gloveRenderer && o_Renderer_get_enabled(gloveRenderer)) score += 4;
-            }
-            if (score > bestScore) { bestScore = score; best = candidate; }
-        }
-        if (best) {
-            armChamsArmsLodGroup = best;
-            gloveChamsArmsLodGroup = best;
-        }
-        return best;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
-}
-
 static uintptr_t GetCurrentLocalArmsLodGroup()
 {
     __try {
-        // Never run the global Unity Resources scan while a captured model is live.
-        const uintptr_t cachedArms = armChamsArmsLodGroup ? armChamsArmsLodGroup : gloveChamsArmsLodGroup;
-        if (cachedArms) return cachedArms;
-
-        // GlovesManager owns the current local first-person ArmsLodGroup at +0x38.
-        // This exists independently of PlayerManager/GetPlayerController and is the
-        // authoritative immediate source after injecting into an active match.
-        const uintptr_t glovesManager = reinterpret_cast<uintptr_t>(GetGlovesManagerInstance());
-        const uintptr_t managerArms = glovesManager ? *(uintptr_t*)(glovesManager + 0x38) : 0;
-        if (managerArms) return managerArms;
-
-        // Last-resort fallback for builds/states where GlovesManager is not created yet.
-        uintptr_t localPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
-        if (!localPlayer) localPlayer = GetPlayerController();
-        const uintptr_t playerArms = localPlayer ? *(uintptr_t*)(localPlayer + 0x138) : 0;
-        if (playerArms) return playerArms;
-
-        // Expensive global Unity search is used only when every direct source failed.
-        return DiscoverLiveArmsLodGroup(false);
+        const uintptr_t localArms = liveHudLocalPlayer ? *(uintptr_t*)(liveHudLocalPlayer + 0x138) : 0;
+        if (localArms) {
+            armChamsArmsLodGroup = localArms;
+            gloveChamsArmsLodGroup = localArms;
+            return localArms;
+        }
+        return armChamsArmsLodGroup ? armChamsArmsLodGroup : gloveChamsArmsLodGroup;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return armChamsArmsLodGroup ? armChamsArmsLodGroup : gloveChamsArmsLodGroup;
+    }
 }
 
 static void RestoreArmChams()
@@ -1985,9 +1943,7 @@ static void CaptureWeaponChamsRenderers(uintptr_t weaponController)
 static uintptr_t GetAuthoritativeLocalWeaponController()
 {
     __try {
-        uintptr_t localPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
-        if (!localPlayer) localPlayer = GetPlayerController();
-        const uintptr_t weaponry = localPlayer ? *(uintptr_t*)(localPlayer + OFFSET_WEAPONRYCONTROLLER) : 0;
+        const uintptr_t weaponry = liveHudLocalPlayer ? *(uintptr_t*)(liveHudLocalPlayer + OFFSET_WEAPONRYCONTROLLER) : 0;
         return weaponry ? *(uintptr_t*)(weaponry + OFFSET_WEAPONCONTROLLER) : 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
@@ -2042,7 +1998,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
     if (keyValidated && instance) lastCharacterController = instance;
 
-    const uintptr_t currentLocalPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
+    const uintptr_t currentLocalPlayer = liveHudLocalPlayer;
     const bool localPlayerChanged = currentLocalPlayer && currentLocalPlayer != chamsObservedLocalPlayer;
     if (localPlayerChanged) {
         // A different local PlayerController means a new match/respawn scene.
@@ -2056,7 +2012,6 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         activeLocalWeaponController = 0;
         armChamsArmsLodGroup = 0;
         gloveChamsArmsLodGroup = 0;
-        armsLodGroupLastScanTick = 0;
         if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
         if (armChamsEnabled) InterlockedExchange(&pendingArmChamsRefresh, 1);
         if (gloveChamsEnabled) InterlockedExchange(&pendingGloveChamsRefresh, 1);
@@ -3274,8 +3229,6 @@ DWORD WINAPI HackThread(LPVOID)
                 g_PlayerManagerInstanceField = g_il2cpp.class_get_field_from_name(g_PlayerManagerClass, "cgxr");
             }
         }
-        g_ArmsLodGroupClass = g_il2cpp.find_class("Axlebolt.Standoff.Player", "ArmsLodGroup");
-        LINDY_LOG("[init] ArmsLodGroupClass=%p", (void*)g_ArmsLodGroupClass);
         g_GlovesManagerClass = g_il2cpp.find_class("Axlebolt.Standoff.Main.Inventory.Gloves", "GlovesManager");
         LINDY_LOG("[init] GlovesManagerClass=%p", (void*)g_GlovesManagerClass);
         if (g_GlovesManagerClass) {
@@ -3323,8 +3276,6 @@ DWORD WINAPI HackThread(LPVOID)
     o_Material_set_mainTexture = (void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_MATERIAL_SET_MAINTEXTURE);
     o_Renderer_get_material = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_GET_MATERIAL);
     o_Renderer_set_material = (void(__fastcall*)(uintptr_t, uintptr_t))(base + OFFSET_RENDERER_SET_MATERIAL);
-    o_Renderer_get_enabled = (bool(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_GET_ENABLED);
-    o_Resources_FindObjectsOfTypeAll = (Il2CppArray*(__fastcall*)(Il2CppObject*, const Il2CppMethod*))(base + OFFSET_RESOURCES_FIND_OBJECTS_ALL);
     o_Material_get_color = (Color(__fastcall*)(uintptr_t))(base + OFFSET_MATERIAL_GET_COLOR);
     o_Material_set_color = (void(__fastcall*)(uintptr_t, Color))(base + OFFSET_MATERIAL_SET_COLOR);
     o_Material_set_renderQueue = (void(__fastcall*)(uintptr_t, int))(base + OFFSET_MATERIAL_SET_RENDERQUEUE);
