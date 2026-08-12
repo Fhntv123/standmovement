@@ -185,6 +185,8 @@ struct Matrix16 {
 #define OFFSET_IMAGECONVERSION_LOADIMAGE           0x2F2B980
 #define OFFSET_SHADER_FIND                         0x2ED9DD0
 #define OFFSET_MATERIAL_CTOR                       0x2ECEA40
+#define OFFSET_MATERIAL_COPY_CTOR                  0x2ECEB30
+#define OFFSET_MATERIAL_SET_SHADER                 0x2ECF430
 #define OFFSET_MATERIAL_SET_MAINTEXTURE            0x2ECF320
 #define OFFSET_RENDERER_GET_MATERIAL                0x2ED8EA0
 #define OFFSET_RENDERER_SET_MATERIAL                0x2ED9230
@@ -326,9 +328,12 @@ bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool worldColorEnabled = false;
 float worldColor[3] = { 0.35f, 0.55f, 1.0f };
-float worldColorStrength = 1.0f;
-struct WorldColorRenderer { uintptr_t renderer; std::vector<uintptr_t> originalMaterials; };
+float worldColorStrength = 0.35f;
+int worldColorMode = 0; // Textured Tint, Flat
+struct WorldColorRenderer { uintptr_t renderer; std::vector<uintptr_t> originalMaterials; std::vector<uintptr_t> tintedMaterials; };
+struct WorldColorTintMaterial { uintptr_t material; Color originalColor; };
 std::vector<WorldColorRenderer> worldColorRenderers;
+std::vector<WorldColorTintMaterial> worldColorTintMaterials;
 uintptr_t worldColorMaterial = 0;
 uint32_t worldColorMaterialHandle = 0;
 volatile LONG pendingWorldColorCommand = 0;
@@ -744,6 +749,8 @@ void(__fastcall* o_Texture2D_ctor)(uintptr_t, int, int, const Il2CppMethod*) = n
 bool(__fastcall* o_ImageConversion_LoadImage)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Shader_Find)(Il2CppString*, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_Material_ctor)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_Material_copy_ctor)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_Material_set_shader)(uintptr_t, uintptr_t) = nullptr;
 void(__fastcall* o_Material_set_mainTexture)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Renderer_get_material)(uintptr_t) = nullptr;
 void(__fastcall* o_Renderer_set_material)(uintptr_t, uintptr_t) = nullptr;
@@ -805,6 +812,7 @@ static void RestoreWorldColorUnsafe()
     for (const WorldColorRenderer& entry : worldColorRenderers)
         SetRendererMaterialArray(entry.renderer, entry.originalMaterials);
     worldColorRenderers.clear();
+    worldColorTintMaterials.clear();
     strcpy_s(worldColorStatus, "Disabled; original map materials restored");
 }
 
@@ -838,28 +846,47 @@ static uintptr_t EnsureWorldColorMaterial()
     return worldColorMaterial;
 }
 
+static Color GetWorldTintColor(const Color& original)
+{
+    const float strength = (std::max)(0.0f, (std::min)(worldColorStrength, 1.0f));
+    return Color(
+        original.r * ((1.0f - strength) + worldColor[0] * strength),
+        original.g * ((1.0f - strength) + worldColor[1] * strength),
+        original.b * ((1.0f - strength) + worldColor[2] * strength), original.a);
+}
+
 static void ApplyWorldColorToCache()
 {
-    const uintptr_t replacement = EnsureWorldColorMaterial();
-    if (!replacement || !o_Material_set_color) { strcpy_s(worldColorStatus, "Unlit world material unavailable"); return; }
-    const float strength = (std::max)(0.0f, (std::min)(worldColorStrength, 1.0f));
-    const float neutral = 0.5f * (1.0f - strength);
-    o_Material_set_color(replacement, Color(
-        neutral + worldColor[0] * strength,
-        neutral + worldColor[1] * strength,
-        neutral + worldColor[2] * strength, 1.0f));
-    for (const WorldColorRenderer& entry : worldColorRenderers) {
-        std::vector<uintptr_t> replacements(entry.originalMaterials.size(), replacement);
-        SetRendererMaterialArray(entry.renderer, replacements);
+    if (worldColorMode == 1) {
+        const uintptr_t replacement = EnsureWorldColorMaterial();
+        if (!replacement || !o_Material_set_color) { strcpy_s(worldColorStatus, "Flat world material unavailable"); return; }
+        o_Material_set_color(replacement, Color(worldColor[0], worldColor[1], worldColor[2], 1.0f));
+        for (const WorldColorRenderer& entry : worldColorRenderers) {
+            std::vector<uintptr_t> replacements(entry.originalMaterials.size(), replacement);
+            SetRendererMaterialArray(entry.renderer, replacements);
+        }
+        sprintf_s(worldColorStatus, "Flat: %zu map renderer(s)", worldColorRenderers.size());
+        return;
     }
-    sprintf_s(worldColorStatus, "Active on %zu map renderer(s)", worldColorRenderers.size());
+
+    if (!o_Material_set_color) return;
+    for (const WorldColorTintMaterial& entry : worldColorTintMaterials)
+        if (entry.material) o_Material_set_color(entry.material, GetWorldTintColor(entry.originalColor));
+    for (const WorldColorRenderer& entry : worldColorRenderers)
+        SetRendererMaterialArray(entry.renderer, entry.tintedMaterials);
+    sprintf_s(worldColorStatus, "Textured tint: %zu map renderer(s)", worldColorRenderers.size());
 }
 
 static void CaptureWorldColorMaterialsUnsafe()
 {
     RestoreWorldColorUnsafe();
-    const uintptr_t replacement = EnsureWorldColorMaterial();
-    if (!replacement) { strcpy_s(worldColorStatus, "Could not create world material"); return; }
+    const uintptr_t flatReplacement = EnsureWorldColorMaterial();
+    if (!flatReplacement) { strcpy_s(worldColorStatus, "Could not create world material"); return; }
+    uintptr_t texturedShader = o_Shader_Find(g_il2cpp.string_new("Legacy Shaders/Diffuse"), nullptr);
+    if (!texturedShader) texturedShader = o_Shader_Find(g_il2cpp.string_new("Standard"), nullptr);
+    if (!texturedShader) { strcpy_s(worldColorStatus, "Textured tint shader unavailable"); return; }
+    Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
+    if (!materialClass) { strcpy_s(worldColorStatus, "Material class unavailable"); return; }
     Il2CppClass* meshRendererClass = g_il2cpp.find_class("UnityEngine", "MeshRenderer");
     if (!meshRendererClass) { strcpy_s(worldColorStatus, "MeshRenderer class unavailable"); return; }
     const Il2CppType* meshType = g_il2cpp.class_get_type(meshRendererClass);
@@ -870,6 +897,8 @@ static void CaptureWorldColorMaterialsUnsafe()
     if (!rendererCount || rendererCount > 20000) { strcpy_s(worldColorStatus, "No active map renderers found"); return; }
 
     std::unordered_map<uintptr_t, bool> excluded;
+    std::unordered_map<uintptr_t, uintptr_t> tintedByOriginal;
+    worldColorTintMaterials.clear();
     for (const WeaponChamsRenderer& entry : weaponChamsRenderers) if (entry.renderer) excluded[entry.renderer] = true;
     for (const ArmChamsRenderer& entry : armChamsRenderers) if (entry.renderer) excluded[entry.renderer] = true;
     for (const GloveChamsRenderer& entry : gloveChamsRenderers) if (entry.renderer) excluded[entry.renderer] = true;
@@ -897,6 +926,20 @@ static void CaptureWorldColorMaterialsUnsafe()
         for (size_t j = 0; j < materialCount; ++j) {
             const uintptr_t material = *reinterpret_cast<uintptr_t*>(materialArray + 0x20 + j * sizeof(uintptr_t));
             entry.originalMaterials.push_back(material);
+            uintptr_t tinted = 0;
+            const auto found = tintedByOriginal.find(material);
+            if (found != tintedByOriginal.end()) tinted = found->second;
+            else if (material) {
+                tinted = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
+                if (tinted) {
+                    o_Material_copy_ctor(tinted, material, nullptr);
+                    o_Material_set_shader(tinted, texturedShader);
+                    const Color originalColor = o_Material_get_color(tinted);
+                    worldColorTintMaterials.push_back({ tinted, originalColor });
+                    tintedByOriginal[material] = tinted;
+                }
+            }
+            entry.tintedMaterials.push_back(tinted ? tinted : material);
         }
         worldColorRenderers.push_back(std::move(entry));
     }
@@ -906,7 +949,8 @@ static void CaptureWorldColorMaterialsUnsafe()
 static void CaptureWorldColorMaterials()
 {
     if (!g_il2cpp.class_get_type || !g_il2cpp.type_get_object || !o_Object_FindObjectsOfType ||
-        !o_Renderer_get_materials || !o_Renderer_set_materials || !o_Material_set_color || !g_il2cpp.array_new) {
+        !o_Renderer_get_materials || !o_Renderer_set_materials || !o_Material_set_color ||
+        !o_Material_get_color || !o_Material_copy_ctor || !o_Material_set_shader || !g_il2cpp.array_new) {
         strcpy_s(worldColorStatus, "World Color API unavailable");
         return;
     }
@@ -3195,8 +3239,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (ImGui::Checkbox("World Color", &worldColorEnabled))
             InterlockedExchange(&pendingWorldColorCommand, worldColorEnabled ? 1 : 2);
         if (worldColorEnabled) {
+            const char* worldModes[] = { "Textured Tint", "Flat" };
+            if (ImGui::Combo("World Mode", &worldColorMode, worldModes, IM_ARRAYSIZE(worldModes)))
+                InterlockedExchange(&pendingWorldColorCommand, 1);
             if (ImGui::ColorEdit3("Map Material Color", worldColor)) InterlockedExchange(&pendingWorldColorCommand, 1);
-            if (ImGui::SliderFloat("World Color Strength", &worldColorStrength, 0.0f, 1.0f, "%.2f"))
+            if (worldColorMode == 0 && ImGui::SliderFloat("Tint Strength", &worldColorStrength, 0.0f, 1.0f, "%.2f"))
                 InterlockedExchange(&pendingWorldColorCommand, 1);
             ImGui::TextWrapped("World status: %s", worldColorStatus);
         }
@@ -3448,6 +3495,8 @@ DWORD WINAPI HackThread(LPVOID)
     o_ImageConversion_LoadImage = (bool(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_IMAGECONVERSION_LOADIMAGE);
     o_Shader_Find = (uintptr_t(__fastcall*)(Il2CppString*, const Il2CppMethod*))(base + OFFSET_SHADER_FIND);
     o_Material_ctor = (void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_MATERIAL_CTOR);
+    o_Material_copy_ctor = (void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_MATERIAL_COPY_CTOR);
+    o_Material_set_shader = (void(__fastcall*)(uintptr_t, uintptr_t))(base + OFFSET_MATERIAL_SET_SHADER);
     o_Material_set_mainTexture = (void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_MATERIAL_SET_MAINTEXTURE);
     o_Renderer_get_material = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_GET_MATERIAL);
     o_Renderer_set_material = (void(__fastcall*)(uintptr_t, uintptr_t))(base + OFFSET_RENDERER_SET_MATERIAL);
