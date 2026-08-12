@@ -1,6 +1,7 @@
 ﻿#include "includes.h"
 #include "il2cpp.h"
 #include "velocity_limiter.h"
+#include "cat_skybox_bytes.h"
 
 #include <vector>
 #include <unordered_map>
@@ -709,6 +710,31 @@ bool BuildInternetSkyboxUnityObjects(uintptr_t texture, uintptr_t data) {
         strcpy_s(imageSkyboxStatus, "Unity rejected the image skybox");
         return false;
     }
+}
+
+bool LoadEmbeddedCatSkybox() {
+
+    if (!g_il2cpp.object_new || !g_il2cpp.array_new) {
+        strcpy_s(imageSkyboxStatus, "IL2CPP allocator unavailable");
+        return false;
+    }
+
+    Il2CppClass* textureClass = g_il2cpp.find_class("UnityEngine", "Texture2D");
+    Il2CppClass* byteClass = g_il2cpp.find_class("System", "Byte");
+    if (!textureClass || !byteClass) {
+        strcpy_s(imageSkyboxStatus, "Unity Texture2D/Byte class not found");
+        return false;
+    }
+
+    uintptr_t texture = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(textureClass));
+    Il2CppArray* data = g_il2cpp.array_new(byteClass, kCatSkyboxJpgSize);
+    if (!texture || !data) {
+        strcpy_s(imageSkyboxStatus, "Unity texture allocation failed");
+        return false;
+    }
+
+    memcpy(reinterpret_cast<unsigned char*>(data) + 0x20, kCatSkyboxJpg, kCatSkyboxJpgSize);
+    return BuildInternetSkyboxUnityObjects(texture, reinterpret_cast<uintptr_t>(data));
 }
 
 bool LoadInternetSkybox() {
@@ -2071,6 +2097,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (customSkyboxEnabled) {
             ImGui::ColorEdit3("Skybox Color", customSkyboxColor);
         }
+        if (ImGui::Button("Load Embedded Cat Skybox")) LoadEmbeddedCatSkybox();
         ImGui::InputText("Skybox Image URL", imageSkyboxUrl, sizeof(imageSkyboxUrl));
         if (ImGui::Button("Load Image Skybox")) LoadInternetSkybox();
         ImGui::SameLine();
