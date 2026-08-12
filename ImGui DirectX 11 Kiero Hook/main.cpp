@@ -1666,24 +1666,28 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // Custom tab buttons
     float tabWidth = (ImGui::GetContentRegionAvail().x - 24.0f) / 4.0f;
     
-    if (currentTab == 0) ImGui::PushStyleColor(ImGuiCol_Button, accent);
+    bool pushed0 = (currentTab == 0);
+    if (pushed0) ImGui::PushStyleColor(ImGuiCol_Button, accent);
     if (ImGui::Button("RAGEBOT", ImVec2(tabWidth, 0))) currentTab = 0;
-    if (currentTab == 0) ImGui::PopStyleColor();
+    if (pushed0) ImGui::PopStyleColor();
     
     ImGui::SameLine();
-    if (currentTab == 1) ImGui::PushStyleColor(ImGuiCol_Button, accent);
+    bool pushed1 = (currentTab == 1);
+    if (pushed1) ImGui::PushStyleColor(ImGuiCol_Button, accent);
     if (ImGui::Button("ANTI-AIM", ImVec2(tabWidth, 0))) currentTab = 1;
-    if (currentTab == 1) ImGui::PopStyleColor();
+    if (pushed1) ImGui::PopStyleColor();
     
     ImGui::SameLine();
-    if (currentTab == 2) ImGui::PushStyleColor(ImGuiCol_Button, accent);
+    bool pushed2 = (currentTab == 2);
+    if (pushed2) ImGui::PushStyleColor(ImGuiCol_Button, accent);
     if (ImGui::Button("VISUALS", ImVec2(tabWidth, 0))) currentTab = 2;
-    if (currentTab == 2) ImGui::PopStyleColor();
+    if (pushed2) ImGui::PopStyleColor();
     
     ImGui::SameLine();
-    if (currentTab == 3) ImGui::PushStyleColor(ImGuiCol_Button, accent);
+    bool pushed3 = (currentTab == 3);
+    if (pushed3) ImGui::PushStyleColor(ImGuiCol_Button, accent);
     if (ImGui::Button("WEAPONS", ImVec2(tabWidth, 0))) currentTab = 3;
-    if (currentTab == 3) ImGui::PopStyleColor();
+    if (pushed3) ImGui::PopStyleColor();
     
     ImGui::EndChild();
 
