@@ -606,13 +606,13 @@ void(__fastcall* o_Camera_set_backgroundColor)(uintptr_t, Color) = nullptr;
 
 void(__fastcall* o_Camera_set_clearFlags)(uintptr_t, int) = nullptr;
 
-void(__fastcall* o_Texture2D_ctor)(uintptr_t, int, int) = nullptr;
-bool(__fastcall* o_ImageConversion_LoadImage)(uintptr_t, uintptr_t) = nullptr;
-uintptr_t(__fastcall* o_Shader_Find)(Il2CppString*) = nullptr;
-void(__fastcall* o_Material_ctor)(uintptr_t, uintptr_t) = nullptr;
-void(__fastcall* o_Material_set_mainTexture)(uintptr_t, uintptr_t) = nullptr;
-uintptr_t(__fastcall* o_RenderSettings_get_skybox)() = nullptr;
-void(__fastcall* o_RenderSettings_set_skybox)(uintptr_t) = nullptr;
+void(__fastcall* o_Texture2D_ctor)(uintptr_t, int, int, const Il2CppMethod*) = nullptr;
+bool(__fastcall* o_ImageConversion_LoadImage)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+uintptr_t(__fastcall* o_Shader_Find)(Il2CppString*, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_Material_ctor)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_Material_set_mainTexture)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+uintptr_t(__fastcall* o_RenderSettings_get_skybox)(const Il2CppMethod*) = nullptr;
+void(__fastcall* o_RenderSettings_set_skybox)(uintptr_t, const Il2CppMethod*) = nullptr;
 
 Vector3(__fastcall* o_WorldToScreenPoint)(uintptr_t, Vector3) = nullptr;
 
@@ -665,14 +665,15 @@ void ApplyCameraFov() {
 bool BuildInternetSkyboxUnityObjects(uintptr_t texture, uintptr_t data) {
 
     __try {
-        o_Texture2D_ctor(texture, 2, 2);
-        if (!o_ImageConversion_LoadImage(texture, data)) {
+        strcpy_s(imageSkyboxStatus, "Creating Unity texture...");
+        o_Texture2D_ctor(texture, 2, 2, nullptr);
+        if (!o_ImageConversion_LoadImage(texture, data, nullptr)) {
             strcpy_s(imageSkyboxStatus, "Image decode failed (JPG/PNG only)");
             return false;
         }
 
         Il2CppString* shaderName = g_il2cpp.string_new("Skybox/Panoramic");
-        uintptr_t shader = o_Shader_Find(shaderName);
+        uintptr_t shader = o_Shader_Find(shaderName, nullptr);
         Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
         if (!shader || !materialClass) {
             strcpy_s(imageSkyboxStatus, "Panoramic skybox shader not found");
@@ -685,15 +686,16 @@ bool BuildInternetSkyboxUnityObjects(uintptr_t texture, uintptr_t data) {
             return false;
         }
 
-        o_Material_ctor(material, shader);
-        o_Material_set_mainTexture(material, texture);
+        strcpy_s(imageSkyboxStatus, "Creating panoramic material...");
+        o_Material_ctor(material, shader, nullptr);
+        o_Material_set_mainTexture(material, texture, nullptr);
 
-        if (!originalSkyboxMaterial) originalSkyboxMaterial = o_RenderSettings_get_skybox();
+        if (!originalSkyboxMaterial) originalSkyboxMaterial = o_RenderSettings_get_skybox(nullptr);
         imageSkyboxTexture = texture;
         imageSkyboxMaterial = material;
         imageSkyboxEnabled = true;
         customSkyboxEnabled = false;
-        o_RenderSettings_set_skybox(imageSkyboxMaterial);
+        o_RenderSettings_set_skybox(imageSkyboxMaterial, nullptr);
 
         if (o_Camera_set_clearFlags) {
             const uintptr_t camera = GetCamera();
@@ -774,7 +776,7 @@ void RestoreDefaultSkybox() {
     imageSkyboxEnabled = false;
     customSkyboxEnabled = false;
     if (o_RenderSettings_set_skybox && originalSkyboxMaterial) {
-        __try { o_RenderSettings_set_skybox(originalSkyboxMaterial); }
+        __try { o_RenderSettings_set_skybox(originalSkyboxMaterial, nullptr); }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
     strcpy_s(imageSkyboxStatus, "Default skybox restored");
@@ -785,7 +787,7 @@ void ApplyImageSkybox() {
     __try {
         const uintptr_t camera = GetCamera();
         if (camera && o_Camera_set_clearFlags) o_Camera_set_clearFlags(camera, 1);
-        o_RenderSettings_set_skybox(imageSkyboxMaterial);
+        o_RenderSettings_set_skybox(imageSkyboxMaterial, nullptr);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
@@ -2203,13 +2205,13 @@ DWORD WINAPI HackThread(LPVOID)
 
     o_Camera_set_clearFlags = (void(__fastcall*)(uintptr_t, int))(base + OFFSET_CAMERA_SET_CLEARFLAGS);
 
-    o_Texture2D_ctor = (void(__fastcall*)(uintptr_t, int, int))(base + OFFSET_TEXTURE2D_CTOR);
-    o_ImageConversion_LoadImage = (bool(__fastcall*)(uintptr_t, uintptr_t))(base + OFFSET_IMAGECONVERSION_LOADIMAGE);
-    o_Shader_Find = (uintptr_t(__fastcall*)(Il2CppString*))(base + OFFSET_SHADER_FIND);
-    o_Material_ctor = (void(__fastcall*)(uintptr_t, uintptr_t))(base + OFFSET_MATERIAL_CTOR);
-    o_Material_set_mainTexture = (void(__fastcall*)(uintptr_t, uintptr_t))(base + OFFSET_MATERIAL_SET_MAINTEXTURE);
-    o_RenderSettings_get_skybox = (uintptr_t(__fastcall*)())(base + OFFSET_RENDERSETTINGS_GET_SKYBOX);
-    o_RenderSettings_set_skybox = (void(__fastcall*)(uintptr_t))(base + OFFSET_RENDERSETTINGS_SET_SKYBOX);
+    o_Texture2D_ctor = (void(__fastcall*)(uintptr_t, int, int, const Il2CppMethod*))(base + OFFSET_TEXTURE2D_CTOR);
+    o_ImageConversion_LoadImage = (bool(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_IMAGECONVERSION_LOADIMAGE);
+    o_Shader_Find = (uintptr_t(__fastcall*)(Il2CppString*, const Il2CppMethod*))(base + OFFSET_SHADER_FIND);
+    o_Material_ctor = (void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_MATERIAL_CTOR);
+    o_Material_set_mainTexture = (void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_MATERIAL_SET_MAINTEXTURE);
+    o_RenderSettings_get_skybox = (uintptr_t(__fastcall*)(const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_GET_SKYBOX);
+    o_RenderSettings_set_skybox = (void(__fastcall*)(uintptr_t, const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_SET_SKYBOX);
 
     o_WorldToScreenPoint = (Vector3(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_WORLDTOSCREENPOINT);
 
