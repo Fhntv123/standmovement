@@ -132,6 +132,18 @@ struct Vector4 {
 
 
 
+struct Color {
+
+    float r, g, b, a;
+
+    Color() : r(0), g(0), b(0), a(1) {}
+
+    Color(float _r, float _g, float _b, float _a = 1.0f) : r(_r), g(_g), b(_b), a(_a) {}
+
+};
+
+
+
 struct Matrix16 {
 
     float a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p;
@@ -157,6 +169,10 @@ struct Matrix16 {
 #define OFFSET_CAMERA_MAIN                         0x2EC1090
 
 #define OFFSET_CAMERA_SET_FIELDOFVIEW              0x2EC1A80
+
+#define OFFSET_CAMERA_SET_BACKGROUNDCOLOR          0x2EC1890
+
+#define OFFSET_CAMERA_SET_CLEARFLAGS               0x2EC1920
 
 #define OFFSET_WORLDTOSCREENPOINT                  0x2EC0950
 
@@ -267,6 +283,8 @@ bool showTrail = false;
 
 bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
+bool customSkyboxEnabled = false;
+float customSkyboxColor[3] = { 0.15f, 0.25f, 0.55f };
 
 bool infinityAmmo = false;
 
@@ -568,6 +586,10 @@ uintptr_t(__fastcall* o_Camera_get_main)() = nullptr;
 
 void(__fastcall* o_Camera_set_fieldOfView)(uintptr_t, float) = nullptr;
 
+void(__fastcall* o_Camera_set_backgroundColor)(uintptr_t, Color) = nullptr;
+
+void(__fastcall* o_Camera_set_clearFlags)(uintptr_t, int) = nullptr;
+
 Vector3(__fastcall* o_WorldToScreenPoint)(uintptr_t, Vector3) = nullptr;
 
 Matrix16(__fastcall* o_Camera_get_worldToCameraMatrix)(uintptr_t) = nullptr;
@@ -610,6 +632,25 @@ void ApplyCameraFov() {
 
     __try { o_Camera_set_fieldOfView(camera, cameraFov); }
 
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+}
+
+
+
+void ApplyCustomSkybox() {
+
+    if (!customSkyboxEnabled || !o_Camera_set_backgroundColor || !o_Camera_set_clearFlags) return;
+
+    const uintptr_t camera = GetCamera();
+    if (!camera) return;
+
+    const Color color(customSkyboxColor[0], customSkyboxColor[1], customSkyboxColor[2], 1.0f);
+
+    __try {
+        o_Camera_set_clearFlags(camera, 2); // CameraClearFlags.Color
+        o_Camera_set_backgroundColor(camera, color);
+    }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 
 }
@@ -1590,7 +1631,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     }
 
-    if (keyValidated) ApplyCameraFov();
+    if (keyValidated) {
+        ApplyCameraFov();
+        ApplyCustomSkybox();
+    }
 
 
 
@@ -1868,6 +1912,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 if (cameraFov > 150.0f) cameraFov = 150.0f;
             }
         }
+        ImGui::Checkbox("Custom Skybox", &customSkyboxEnabled);
+        if (customSkyboxEnabled) {
+            ImGui::ColorEdit3("Skybox Color", customSkyboxColor);
+        }
         
         ImGui::EndChild();
     }
@@ -1992,6 +2040,10 @@ DWORD WINAPI HackThread(LPVOID)
     MH_CreateHook((LPVOID)(base + OFFSET_CAMERA_SET_FIELDOFVIEW), hk_Camera_set_fieldOfView, (LPVOID*)&o_Camera_set_fieldOfView);
 
     MH_EnableHook((LPVOID)(base + OFFSET_CAMERA_SET_FIELDOFVIEW));
+
+    o_Camera_set_backgroundColor = (void(__fastcall*)(uintptr_t, Color))(base + OFFSET_CAMERA_SET_BACKGROUNDCOLOR);
+
+    o_Camera_set_clearFlags = (void(__fastcall*)(uintptr_t, int))(base + OFFSET_CAMERA_SET_CLEARFLAGS);
 
     o_WorldToScreenPoint = (Vector3(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_WORLDTOSCREENPOINT);
 
