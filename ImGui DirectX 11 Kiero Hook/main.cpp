@@ -329,13 +329,18 @@ float cameraFov = 90.0f;
 bool worldColorEnabled = false;
 float worldColor[3] = { 0.35f, 0.55f, 1.0f };
 float worldColorStrength = 0.35f;
-int worldColorMode = 0; // Textured Tint, Flat
+int worldColorMode = 0; // Textured Tint, Flat, Glass, Lit, Metallic, Rainbow, Pulse
+float worldColorAlpha = 0.35f;
+float worldColorMetallic = 0.9f;
+float worldColorSmoothness = 0.8f;
+float worldColorAnimationSpeed = 1.0f;
+ULONGLONG worldColorLastAnimationTick = 0;
 struct WorldColorRenderer { uintptr_t renderer; std::vector<uintptr_t> originalMaterials; std::vector<uintptr_t> tintedMaterials; };
 struct WorldColorTintMaterial { uintptr_t material; Color originalColor; };
 std::vector<WorldColorRenderer> worldColorRenderers;
 std::vector<WorldColorTintMaterial> worldColorTintMaterials;
-uintptr_t worldColorMaterial = 0;
-uint32_t worldColorMaterialHandle = 0;
+uintptr_t worldColorMaterials[7] = {};
+uint32_t worldColorMaterialHandles[7] = {};
 volatile LONG pendingWorldColorCommand = 0;
 char worldColorStatus[128] = "Disabled";
 bool customSkyboxEnabled = false;
@@ -825,25 +830,37 @@ static void RestoreWorldColor()
     }
 }
 
-static uintptr_t EnsureWorldColorMaterial()
+static uintptr_t EnsureWorldModeMaterial(int mode)
 {
-    if (worldColorMaterial) return worldColorMaterial;
+    if (mode < 1 || mode > 6) return 0;
+    if (worldColorMaterials[mode]) return worldColorMaterials[mode];
     if (!o_Shader_Find || !o_Material_ctor || !g_il2cpp.object_new || !g_il2cpp.string_new) return 0;
-    static const char* shaders[] = { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default" };
+    static const char* shaderCandidates[7][5] = {
+        { nullptr, nullptr, nullptr, nullptr, nullptr },
+        { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
+        { "Legacy Shaders/Transparent/Diffuse", "Unlit/Transparent", "Legacy Shaders/Transparent/VertexLit", "Sprites/Default", nullptr },
+        { "Legacy Shaders/Diffuse", "Standard", "Legacy Shaders/VertexLit", "Diffuse", nullptr },
+        { "Standard", "Legacy Shaders/Specular", "Legacy Shaders/Reflective/Diffuse", "Legacy Shaders/Diffuse", nullptr },
+        { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
+        { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr }
+    };
     Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
     if (!materialClass) return 0;
     uintptr_t shader = 0;
-    for (const char* name : shaders) {
+    for (const char* name : shaderCandidates[mode]) {
+        if (!name) break;
         shader = o_Shader_Find(g_il2cpp.string_new(name), nullptr);
         if (shader) break;
     }
     if (!shader) return 0;
-    worldColorMaterial = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
-    if (!worldColorMaterial) return 0;
-    o_Material_ctor(worldColorMaterial, shader, nullptr);
+    const uintptr_t material = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
+    if (!material) return 0;
+    o_Material_ctor(material, shader, nullptr);
+    if (mode == 2 && o_Material_set_renderQueue) o_Material_set_renderQueue(material, 3000);
     if (g_il2cpp.gchandle_new)
-        worldColorMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(worldColorMaterial), false);
-    return worldColorMaterial;
+        worldColorMaterialHandles[mode] = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(material), false);
+    worldColorMaterials[mode] = material;
+    return material;
 }
 
 static Color GetWorldTintColor(const Color& original)
@@ -855,32 +872,64 @@ static Color GetWorldTintColor(const Color& original)
         original.b * ((1.0f - strength) + worldColor[2] * strength), original.a);
 }
 
+static Color GetWorldAnimatedColor()
+{
+    if (worldColorMode == 5) {
+        const float t = static_cast<float>(GetTickCount64() % 60000) * 0.001f * worldColorAnimationSpeed;
+        return Color(0.5f + 0.5f * sinf(t), 0.5f + 0.5f * sinf(t + 2.0943951f),
+            0.5f + 0.5f * sinf(t + 4.1887902f), 1.0f);
+    }
+    if (worldColorMode == 6) {
+        const float t = static_cast<float>(GetTickCount64() % 60000) * 0.001f * worldColorAnimationSpeed;
+        const float intensity = 0.2f + 0.8f * (0.5f + 0.5f * sinf(t));
+        return Color(worldColor[0] * intensity, worldColor[1] * intensity, worldColor[2] * intensity, 1.0f);
+    }
+    return Color(worldColor[0], worldColor[1], worldColor[2], worldColorMode == 2 ? worldColorAlpha : 1.0f);
+}
+
 static void ApplyWorldColorToCache()
 {
-    if (worldColorMode == 1) {
-        const uintptr_t replacement = EnsureWorldColorMaterial();
-        if (!replacement || !o_Material_set_color) { strcpy_s(worldColorStatus, "Flat world material unavailable"); return; }
-        o_Material_set_color(replacement, Color(worldColor[0], worldColor[1], worldColor[2], 1.0f));
-        for (const WorldColorRenderer& entry : worldColorRenderers) {
-            std::vector<uintptr_t> replacements(entry.originalMaterials.size(), replacement);
-            SetRendererMaterialArray(entry.renderer, replacements);
-        }
-        sprintf_s(worldColorStatus, "Flat: %zu map renderer(s)", worldColorRenderers.size());
+    if (worldColorMode == 0) {
+        if (!o_Material_set_color) return;
+        for (const WorldColorTintMaterial& entry : worldColorTintMaterials)
+            if (entry.material) o_Material_set_color(entry.material, GetWorldTintColor(entry.originalColor));
+        for (const WorldColorRenderer& entry : worldColorRenderers)
+            SetRendererMaterialArray(entry.renderer, entry.tintedMaterials);
+        sprintf_s(worldColorStatus, "Textured tint: %zu map renderer(s)", worldColorRenderers.size());
         return;
     }
 
-    if (!o_Material_set_color) return;
-    for (const WorldColorTintMaterial& entry : worldColorTintMaterials)
-        if (entry.material) o_Material_set_color(entry.material, GetWorldTintColor(entry.originalColor));
-    for (const WorldColorRenderer& entry : worldColorRenderers)
-        SetRendererMaterialArray(entry.renderer, entry.tintedMaterials);
-    sprintf_s(worldColorStatus, "Textured tint: %zu map renderer(s)", worldColorRenderers.size());
+    const uintptr_t replacement = EnsureWorldModeMaterial(worldColorMode);
+    if (!replacement || !o_Material_set_color) { strcpy_s(worldColorStatus, "Selected world shader unavailable"); return; }
+    if (worldColorMode == 4 && o_Material_SetFloat && g_il2cpp.string_new) {
+        o_Material_SetFloat(replacement, g_il2cpp.string_new("_Metallic"), worldColorMetallic);
+        o_Material_SetFloat(replacement, g_il2cpp.string_new("_Glossiness"), worldColorSmoothness);
+    }
+    o_Material_set_color(replacement, GetWorldAnimatedColor());
+    for (const WorldColorRenderer& entry : worldColorRenderers) {
+        std::vector<uintptr_t> replacements(entry.originalMaterials.size(), replacement);
+        SetRendererMaterialArray(entry.renderer, replacements);
+    }
+    static const char* names[] = { "Textured Tint", "Flat", "Glass", "Lit", "Metallic", "Rainbow", "Pulse" };
+    sprintf_s(worldColorStatus, "%s: %zu map renderer(s)", names[worldColorMode], worldColorRenderers.size());
+}
+
+static void AnimateWorldColor()
+{
+    if (!worldColorEnabled || (worldColorMode != 5 && worldColorMode != 6) || !o_Material_set_color) return;
+    const ULONGLONG now = GetTickCount64();
+    if (now - worldColorLastAnimationTick < 33) return;
+    worldColorLastAnimationTick = now;
+    const uintptr_t material = worldColorMaterials[worldColorMode];
+    if (!material) return;
+    __try { o_Material_set_color(material, GetWorldAnimatedColor()); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 static void CaptureWorldColorMaterialsUnsafe()
 {
     RestoreWorldColorUnsafe();
-    const uintptr_t flatReplacement = EnsureWorldColorMaterial();
+    const uintptr_t flatReplacement = EnsureWorldModeMaterial(1);
     if (!flatReplacement) { strcpy_s(worldColorStatus, "Could not create world material"); return; }
     uintptr_t texturedShader = o_Shader_Find(g_il2cpp.string_new("Legacy Shaders/Diffuse"), nullptr);
     if (!texturedShader) texturedShader = o_Shader_Find(g_il2cpp.string_new("Standard"), nullptr);
@@ -2237,6 +2286,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     AnimateWeaponChamsColor();
     AnimateArmChamsColor();
     AnimateGloveChamsColor();
+    AnimateWorldColor();
 
     if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
 
@@ -3239,11 +3289,21 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (ImGui::Checkbox("World Color", &worldColorEnabled))
             InterlockedExchange(&pendingWorldColorCommand, worldColorEnabled ? 1 : 2);
         if (worldColorEnabled) {
-            const char* worldModes[] = { "Textured Tint", "Flat" };
+            const char* worldModes[] = { "Textured Tint", "Flat", "Glass", "Lit", "Metallic", "Rainbow", "Pulse" };
             if (ImGui::Combo("World Mode", &worldColorMode, worldModes, IM_ARRAYSIZE(worldModes)))
                 InterlockedExchange(&pendingWorldColorCommand, 1);
-            if (ImGui::ColorEdit3("Map Material Color", worldColor)) InterlockedExchange(&pendingWorldColorCommand, 1);
+            if (worldColorMode != 5 && ImGui::ColorEdit3("Map Material Color", worldColor))
+                InterlockedExchange(&pendingWorldColorCommand, 1);
             if (worldColorMode == 0 && ImGui::SliderFloat("Tint Strength", &worldColorStrength, 0.0f, 1.0f, "%.2f"))
+                InterlockedExchange(&pendingWorldColorCommand, 1);
+            if (worldColorMode == 2 && ImGui::SliderFloat("Glass Alpha", &worldColorAlpha, 0.05f, 0.95f, "%.2f"))
+                InterlockedExchange(&pendingWorldColorCommand, 1);
+            if (worldColorMode == 4) {
+                if (ImGui::SliderFloat("World Metallic", &worldColorMetallic, 0.0f, 1.0f, "%.2f")) InterlockedExchange(&pendingWorldColorCommand, 1);
+                if (ImGui::SliderFloat("World Smoothness", &worldColorSmoothness, 0.0f, 1.0f, "%.2f")) InterlockedExchange(&pendingWorldColorCommand, 1);
+            }
+            if ((worldColorMode == 5 || worldColorMode == 6) &&
+                ImGui::SliderFloat("World Animation Speed", &worldColorAnimationSpeed, 0.1f, 5.0f, "%.2f"))
                 InterlockedExchange(&pendingWorldColorCommand, 1);
             ImGui::TextWrapped("World status: %s", worldColorStatus);
         }
