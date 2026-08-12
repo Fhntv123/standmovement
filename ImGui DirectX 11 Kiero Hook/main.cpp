@@ -347,7 +347,7 @@ struct WeaponChamsRenderer {
 };
 std::vector<WeaponChamsRenderer> weaponChamsRenderers;
 uintptr_t weaponChamsController = 0;
-uintptr_t activeLocalGunController = 0;
+uintptr_t activeLocalWeaponController = 0;
 uintptr_t flatChamsMaterial = 0;
 uintptr_t glassChamsMaterial = 0;
 uint32_t flatChamsMaterialHandle = 0;
@@ -1041,6 +1041,7 @@ static void ApplyScopeOverlayState()
     __except (EXCEPTION_EXECUTE_HANDLER) { customScopeReticleVisible = false; }
 }
 
+static uintptr_t GetCurrentLocalWeaponController();
 static void UpdateWeaponChams(uintptr_t knownWeaponController = 0);
 
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
@@ -1099,8 +1100,9 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
 
 void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, const Il2CppMethod* method)
 {
-    activeLocalGunController = instance;
-    UpdateWeaponChams(instance);
+    const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
+    activeLocalWeaponController = currentWeapon ? currentWeapon : instance;
+    UpdateWeaponChams(activeLocalWeaponController);
     insideLocalGunFire = true;
     o_GunController_Fire(instance, playSound, method);
     insideLocalGunFire = false;
@@ -1507,19 +1509,23 @@ static void CaptureWeaponChamsRenderers(uintptr_t weaponController)
     }
 }
 
+static uintptr_t GetCurrentLocalWeaponController()
+{
+    __try {
+        const uintptr_t localPlayer = GetPlayerController();
+        const uintptr_t weaponry = localPlayer ? *(uintptr_t*)(localPlayer + OFFSET_WEAPONRYCONTROLLER) : 0;
+        return weaponry ? *(uintptr_t*)(weaponry + OFFSET_WEAPONCONTROLLER) : 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
 static void UpdateWeaponChams(uintptr_t knownWeaponController)
 {
     if (!keyValidated) { strcpy_s(weaponChamsStatus, "License validation inactive"); return; }
     if (!o_Renderer_set_material || !o_Material_set_color) { strcpy_s(weaponChamsStatus, "Material API unavailable"); return; }
-    uintptr_t weaponController = knownWeaponController ? knownWeaponController : activeLocalGunController;
-    if (!weaponController) {
-        __try {
-            const uintptr_t localPlayer = GetPlayerController();
-            const uintptr_t weaponry = localPlayer ? *(uintptr_t*)(localPlayer + OFFSET_WEAPONRYCONTROLLER) : 0;
-            weaponController = weaponry ? *(uintptr_t*)(weaponry + OFFSET_WEAPONCONTROLLER) : 0;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) { weaponController = 0; }
-    }
+    uintptr_t weaponController = knownWeaponController ? knownWeaponController : activeLocalWeaponController;
+    if (!weaponController) weaponController = GetCurrentLocalWeaponController();
+    if (weaponController) activeLocalWeaponController = weaponController;
 
     if (!weaponChamsEnabled) {
         if (!weaponChamsRenderers.empty()) RestoreWeaponChams();
@@ -1527,7 +1533,7 @@ static void UpdateWeaponChams(uintptr_t knownWeaponController)
         return;
     }
     if (!weaponController) {
-        strcpy_s(weaponChamsStatus, "Fire once to capture active weapon");
+        strcpy_s(weaponChamsStatus, "Waiting for active weapon");
         return;
     }
     const uintptr_t replacement = EnsureSelectedWeaponChamsMaterial();
@@ -1549,7 +1555,9 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
     if (keyValidated && instance) lastCharacterController = instance;
 
-    if (activeLocalGunController) UpdateWeaponChams(activeLocalGunController);
+    const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
+    if (currentWeapon) activeLocalWeaponController = currentWeapon;
+    UpdateWeaponChams(currentWeapon);
 
     if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
 
@@ -2583,7 +2591,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("No Spread", &noSpreadEnabled);
         if (ImGui::Checkbox("Remove Scope Borders", &removeScopeBorders)) InterlockedExchange(&pendingScopeOverlayRefresh, 1);
         if (ImGui::Checkbox("Weapon Chams", &weaponChamsEnabled))
-            strcpy_s(weaponChamsStatus, weaponChamsEnabled ? "Fire once to capture active weapon" : "Disabling...");
+            strcpy_s(weaponChamsStatus, weaponChamsEnabled ? "Waiting for active weapon" : "Disabling...");
         if (weaponChamsEnabled) {
             const char* chamsModes[] = { "Flat", "Glass" };
             if (ImGui::Combo("Chams Material", &weaponChamsMode, chamsModes, IM_ARRAYSIZE(chamsModes))) weaponChamsController = 0;
