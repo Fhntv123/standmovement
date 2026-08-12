@@ -193,6 +193,7 @@ struct Matrix16 {
 #define OFFSET_MATERIAL_SET_FLOAT                   0x2ECE360
 #define OFFSET_RENDERSETTINGS_GET_SKYBOX            0x2ED8D60
 #define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x2ED8D90
+#define OFFSET_GLOVES_SET_ARMS                    0x8F8110
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0x8491C0
 #define OFFSET_GUNCONTROLLER_FIRE                  0x996BE0
 #define OFFSET_HITCASTER_CAST                      0x99FBB0
@@ -358,6 +359,16 @@ uintptr_t weaponChamsMaterials[7] = {};
 uint32_t weaponChamsMaterialHandles[7] = {};
 char weaponChamsStatus[128] = "Select Flat or Glass";
 volatile LONG pendingWeaponChamsRefresh = 0;
+
+bool handChamsEnabled = false;
+struct HandChamsRenderer {
+    uintptr_t renderer;
+    uintptr_t originalMaterial;
+};
+std::vector<HandChamsRenderer> handChamsRenderers;
+uintptr_t handChamsArmsLodGroup = 0;
+char handChamsStatus[128] = "Disabled";
+volatile LONG pendingHandChamsRefresh = 0;
 
 struct BulletTracerEntry {
     Vector3 start;
@@ -691,6 +702,7 @@ Matrix16(__fastcall* o_Camera_get_worldToCameraMatrix)(uintptr_t) = nullptr;
 Matrix16(__fastcall* o_Camera_get_projectionMatrix)(uintptr_t) = nullptr;
 
 short(__fastcall* o_GunController_GetCurrentAmmo)(uintptr_t) = nullptr;
+void(__fastcall* o_Gloves_SetArms)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_Weaponry_TakeWeapon)(uintptr_t, uint8_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float, uintptr_t, const Il2CppMethod*) = nullptr;
@@ -1050,6 +1062,7 @@ static void ApplyScopeOverlayState()
 
 static uintptr_t GetCurrentLocalWeaponController();
 static void UpdateWeaponChams(uintptr_t knownWeaponController = 0);
+static void UpdateHandChams(uintptr_t knownArmsLodGroup = 0);
 
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
@@ -1103,6 +1116,13 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
     return result;
+}
+
+void __fastcall hk_Gloves_SetArms(uintptr_t instance, uintptr_t armsLodGroup, const Il2CppMethod* method)
+{
+    o_Gloves_SetArms(instance, armsLodGroup, method);
+    if (armsLodGroup) handChamsArmsLodGroup = armsLodGroup;
+    if (handChamsEnabled && armsLodGroup) UpdateHandChams(armsLodGroup);
 }
 
 void __fastcall hk_Weaponry_TakeWeapon(uintptr_t instance, uint8_t slotIndex, const Il2CppMethod* method)
@@ -1536,6 +1556,77 @@ static void AnimateWeaponChamsColor()
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
+static uintptr_t GetCurrentLocalArmsLodGroup()
+{
+    __try {
+        const uintptr_t localPlayer = GetPlayerController();
+        return localPlayer ? *(uintptr_t*)(localPlayer + 0x138) : 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+static void RestoreHandChams()
+{
+    if (o_Renderer_set_material) {
+        for (const HandChamsRenderer& entry : handChamsRenderers) {
+            if (!entry.renderer || !entry.originalMaterial) continue;
+            __try { o_Renderer_set_material(entry.renderer, entry.originalMaterial); }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+    }
+    handChamsRenderers.clear();
+    handChamsArmsLodGroup = 0;
+}
+
+static void CaptureHandChamsRenderers(uintptr_t armsLodGroup)
+{
+    RestoreHandChams();
+    if (!armsLodGroup || !o_Renderer_get_material) { strcpy_s(handChamsStatus, "Local ArmsLodGroup not found"); return; }
+    __try {
+        // ArmsLodGroup: _armsMeshRenderer +0x60, _glovesMeshRenderer +0x68.
+        const uintptr_t renderers[] = { *(uintptr_t*)(armsLodGroup + 0x60), *(uintptr_t*)(armsLodGroup + 0x68) };
+        for (const uintptr_t renderer : renderers) {
+            if (!renderer) continue;
+            const uintptr_t originalMaterial = o_Renderer_get_material(renderer);
+            if (originalMaterial) handChamsRenderers.push_back({ renderer, originalMaterial });
+        }
+        handChamsArmsLodGroup = armsLodGroup;
+        sprintf_s(handChamsStatus, "Applied to %zu hand renderer(s)", handChamsRenderers.size());
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        strcpy_s(handChamsStatus, "Hand renderer capture failed");
+        RestoreHandChams();
+    }
+}
+
+static void UpdateHandChams(uintptr_t knownArmsLodGroup)
+{
+    if (!keyValidated || !o_Renderer_set_material || !o_Material_set_color) return;
+    uintptr_t armsLodGroup = knownArmsLodGroup ? knownArmsLodGroup : handChamsArmsLodGroup;
+    if (!armsLodGroup) armsLodGroup = GetCurrentLocalArmsLodGroup();
+    if (!handChamsEnabled) {
+        if (!handChamsRenderers.empty()) RestoreHandChams();
+        strcpy_s(handChamsStatus, "Disabled");
+        return;
+    }
+    if (!armsLodGroup) { strcpy_s(handChamsStatus, "Waiting for local hands"); return; }
+    const uintptr_t replacement = EnsureSelectedWeaponChamsMaterial();
+    if (!replacement) { strcpy_s(handChamsStatus, "Selected material unavailable"); return; }
+    if (armsLodGroup != handChamsArmsLodGroup || handChamsRenderers.empty())
+        CaptureHandChamsRenderers(armsLodGroup);
+    if (handChamsRenderers.empty()) return;
+    if (weaponChamsMode == 3 && o_Material_SetFloat && g_il2cpp.string_new) {
+        o_Material_SetFloat(replacement, g_il2cpp.string_new("_Metallic"), weaponChamsMetallic);
+        o_Material_SetFloat(replacement, g_il2cpp.string_new("_Glossiness"), weaponChamsSmoothness);
+    }
+    o_Material_set_color(replacement, GetWeaponChamsDisplayColor());
+    for (const HandChamsRenderer& entry : handChamsRenderers) {
+        if (!entry.renderer) continue;
+        __try { o_Renderer_set_material(entry.renderer, replacement); }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+}
+
 static void CaptureWeaponChamsRenderers(uintptr_t weaponController)
 {
     RestoreWeaponChams();
@@ -1619,6 +1710,8 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         if (currentWeapon) activeLocalWeaponController = currentWeapon;
         UpdateWeaponChams(currentWeapon ? currentWeapon : activeLocalWeaponController);
     }
+    if (InterlockedExchange(&pendingHandChamsRefresh, 0))
+        UpdateHandChams(GetCurrentLocalArmsLodGroup());
 
     AnimateWeaponChamsColor();
 
@@ -2662,18 +2755,27 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (ImGui::Combo("Chams Material", &weaponChamsMode, chamsModes, IM_ARRAYSIZE(chamsModes))) {
                 weaponChamsController = 0;
                 InterlockedExchange(&pendingWeaponChamsRefresh, 1);
+                InterlockedExchange(&pendingHandChamsRefresh, 1);
             }
-            if (ImGui::ColorEdit3("Chams Color", weaponChamsColor)) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
-            if ((weaponChamsMode == 1 || weaponChamsMode == 4) && ImGui::SliderFloat("Transparency", &weaponChamsGlassAlpha, 0.05f, 0.95f, "%.2f"))
+            if (ImGui::ColorEdit3("Chams Color", weaponChamsColor)) {
                 InterlockedExchange(&pendingWeaponChamsRefresh, 1);
+                InterlockedExchange(&pendingHandChamsRefresh, 1);
+            }
+            if ((weaponChamsMode == 1 || weaponChamsMode == 4) && ImGui::SliderFloat("Transparency", &weaponChamsGlassAlpha, 0.05f, 0.95f, "%.2f"))
+                { InterlockedExchange(&pendingWeaponChamsRefresh, 1); InterlockedExchange(&pendingHandChamsRefresh, 1); }
             if (weaponChamsMode == 3) {
-                if (ImGui::SliderFloat("Metallic", &weaponChamsMetallic, 0.0f, 1.0f, "%.2f")) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
-                if (ImGui::SliderFloat("Smoothness", &weaponChamsSmoothness, 0.0f, 1.0f, "%.2f")) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
+                if (ImGui::SliderFloat("Metallic", &weaponChamsMetallic, 0.0f, 1.0f, "%.2f")) { InterlockedExchange(&pendingWeaponChamsRefresh, 1); InterlockedExchange(&pendingHandChamsRefresh, 1); }
+                if (ImGui::SliderFloat("Smoothness", &weaponChamsSmoothness, 0.0f, 1.0f, "%.2f")) { InterlockedExchange(&pendingWeaponChamsRefresh, 1); InterlockedExchange(&pendingHandChamsRefresh, 1); }
             }
             if (weaponChamsMode == 5 || weaponChamsMode == 6)
                 ImGui::SliderFloat("Animation Speed", &weaponChamsAnimationSpeed, 0.2f, 5.0f, "%.1f");
-            ImGui::TextWrapped("Status: %s", weaponChamsStatus);
+            ImGui::TextWrapped("Weapon status: %s", weaponChamsStatus);
         }
+        if (ImGui::Checkbox("Hand Chams", &handChamsEnabled)) {
+            strcpy_s(handChamsStatus, handChamsEnabled ? "Applying to arms and gloves" : "Restoring original hand materials");
+            InterlockedExchange(&pendingHandChamsRefresh, 1);
+        }
+        if (handChamsEnabled) ImGui::TextWrapped("Hand status: %s", handChamsStatus);
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
         if (bulletTracerEnabled) {
             ImGui::ColorEdit3("Tracer Start Color", bulletTracerStartColor);
@@ -2853,6 +2955,10 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS));
     MH_CreateHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE), hk_HUDView_Update, (LPVOID*)&o_HUDView_Update);
     MH_EnableHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE));
+
+    // Reapply hand chams when the local glove/arms model changes.
+    MH_CreateHook((LPVOID)(base + OFFSET_GLOVES_SET_ARMS), hk_Gloves_SetArms, (LPVOID*)&o_Gloves_SetArms);
+    MH_EnableHook((LPVOID)(base + OFFSET_GLOVES_SET_ARMS));
 
     // Actual equip transition for every slot, including knives.
     MH_CreateHook((LPVOID)(base + OFFSET_WEAPONRY_TAKE_WEAPON), hk_Weaponry_TakeWeapon, (LPVOID*)&o_Weaponry_TakeWeapon);
