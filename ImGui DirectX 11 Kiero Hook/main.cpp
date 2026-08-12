@@ -214,6 +214,7 @@ struct Matrix16 {
 #define OFFSET_HUDVIEW_UPDATE                       0xA68C60
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xA5D6C0
 #define OFFSET_PLAYERCONTROLLER_COMMAND             0x83D210
+#define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xA6E220
 #define OFFSET_TRANSFORM_GET_EULERANGLES            0x2F066B0
 #define OFFSET_TRANSFORM_SET_EULERANGLES            0x2F07020
 #define OFFSET_COMPONENT_GET_GAMEOBJECT             0x2EF2CA0
@@ -332,6 +333,7 @@ bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool silentAntiAimEnabled = false;
 bool silentAntiAimHookReady = false;
+volatile LONG silentAntiAimInputBuildCalls = 0;
 volatile LONG silentAntiAimCommandCalls = 0;
 volatile LONG silentAntiAimAppliedCalls = 0;
 bool silentAntiAimRealViewValid = false;
@@ -825,6 +827,7 @@ bool(__fastcall* o_GameObject_get_activeInHierarchy)(uintptr_t) = nullptr;
 void(__fastcall* o_CanvasGroup_set_alpha)(uintptr_t, float) = nullptr;
 void(__fastcall* o_HUDView_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_PlayerController_Command)(uintptr_t, uintptr_t, float, const Il2CppMethod*) = nullptr;
+uintptr_t(__fastcall* o_KeyboardControl_BuildCommand)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 
 
 
@@ -1534,23 +1537,15 @@ static void FixAntiAimMovement(uintptr_t command, float realYaw, float fakeYaw)
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
-void __fastcall hk_PlayerController_Command(uintptr_t player, uintptr_t command, float deltaTime, const Il2CppMethod* method)
+static bool ApplySilentAntiAimToBuiltCommand(uintptr_t player, uintptr_t command)
 {
-    InterlockedIncrement(&silentAntiAimCommandCalls);
     if (!silentAntiAimEnabled || !player || !command ||
-        player != liveHudLocalPlayer || !o_Transform_get_eulerAngles ||
-        !o_Transform_set_eulerAngles) {
-        o_PlayerController_Command(player, command, deltaTime, method);
-        return;
-    }
+        !o_Transform_get_eulerAngles || !o_Transform_set_eulerAngles)
+        return false;
 
     uintptr_t aimController = 0;
     uintptr_t aimingData = 0;
     uintptr_t cameraTransform = 0;
-    Vector3 realCameraEuler;
-    Vector3 savedAimAngle;
-    Vector3 savedAimEuler;
-    bool aimPatched = false;
     __try {
         aimController = *reinterpret_cast<uintptr_t*>(player + 0xC8);
         aimingData = aimController ? *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
@@ -1561,25 +1556,20 @@ void __fastcall hk_PlayerController_Command(uintptr_t player, uintptr_t command,
                 o_Component_get_transform(cameraHolder) : 0;
         }
         if (!aimingData || !cameraTransform) {
-            strcpy_s(silentAntiAimStatus, "Command hook active; waiting for aim/camera data");
-            o_PlayerController_Command(player, command, deltaTime, method);
-            return;
+            strcpy_s(silentAntiAimStatus, "Input hook active; waiting for aim/camera data");
+            return false;
         }
 
-        realCameraEuler = o_Transform_get_eulerAngles(cameraTransform);
-        savedAimAngle = *reinterpret_cast<Vector3*>(aimingData + 0x18);
-        savedAimEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
-
-        // blr.bzyf +0x21 is fire. AimingData remains fake between normal
-        // ticks, so firing must explicitly write real camera angles back before
-        // the original command handler; merely skipping the fake write is wrong.
-        const bool firing = *reinterpret_cast<bool*>(command + 0x21);
+        const Vector3 realCameraEuler = o_Transform_get_eulerAngles(cameraTransform);
         const float realPitch = NormalizeAngle180(realCameraEuler.x);
         const float realYaw = NormalizeAngle360(realCameraEuler.y);
+        // Verified blr field: bzyf at +0x21 is fire.
+        const bool firing = *reinterpret_cast<bool*>(command + 0x21);
         const float commandPitch = firing ? realPitch : 70.0f;
         const float commandYaw = firing ? realYaw : NormalizeAngle360(realYaw + 180.0f);
-        Vector3 commandAimAngle = savedAimAngle;
-        Vector3 commandAimEuler = savedAimEuler;
+
+        Vector3 commandAimAngle = *reinterpret_cast<Vector3*>(aimingData + 0x18);
+        Vector3 commandAimEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
         commandAimAngle.x = commandPitch;
         commandAimAngle.y = commandYaw;
         commandAimEuler.x = commandPitch;
@@ -1587,33 +1577,47 @@ void __fastcall hk_PlayerController_Command(uintptr_t player, uintptr_t command,
         *reinterpret_cast<Vector3*>(aimingData + 0x18) = commandAimAngle;
         *reinterpret_cast<Vector3*>(aimingData + 0x24) = commandAimEuler;
         if (!firing) FixAntiAimMovement(command, realYaw, commandYaw);
-        aimPatched = true;
-        InterlockedIncrement(&silentAntiAimAppliedCalls);
 
         silentAntiAimRealCameraEuler = realCameraEuler;
         silentAntiAimCameraTransform = cameraTransform;
         silentAntiAimRealViewValid = true;
-        o_PlayerController_Command(player, command, deltaTime, method);
-
-        // Immediate restore plus a late restore in HUD.Update. The latter is
-        // required because AimController can consume fake AimingData again after
-        // command processing but before rendering.
-        o_Transform_set_eulerAngles(cameraTransform, realCameraEuler);
+        InterlockedIncrement(&silentAntiAimAppliedCalls);
         strcpy_s(silentAntiAimStatus, firing ?
-            "Active: real angles while firing" : "Active: command backward + down");
+            "Active from input builder: real aim while firing" :
+            "Active from input builder: backward + down");
+        return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        // If the command path faults before original, restore data and execute
-        // original once. Never leave a half-written aim state.
-        __try {
-            if (aimPatched && aimingData) {
-                *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAimAngle;
-                *reinterpret_cast<Vector3*>(aimingData + 0x24) = savedAimEuler;
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-        strcpy_s(silentAntiAimStatus, "Command hook hit; aim update failed safely");
+        strcpy_s(silentAntiAimStatus, "Input builder called; mutation failed safely");
+        return false;
     }
+}
+
+uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
+    uintptr_t keyboardControl, uintptr_t player, const Il2CppMethod* method)
+{
+    // This is KeyboardControl.bbft(PlayerController), the actual PC path that
+    // constructs and returns blr before PlayerControls dispatches it.
+    const uintptr_t command = o_KeyboardControl_BuildCommand(
+        keyboardControl, player, method);
+    InterlockedIncrement(&silentAntiAimInputBuildCalls);
+    if (silentAntiAimEnabled && player && command) {
+        liveHudLocalPlayer = player;
+        ApplySilentAntiAimToBuiltCommand(player, command);
+    }
+    return command;
+}
+
+void __fastcall hk_PlayerController_Command(
+    uintptr_t player, uintptr_t command, float deltaTime, const Il2CppMethod* method)
+{
+    // Retained only as a fallback/diagnostic. Some game modes may call qhq,
+    // while desktop bot matches demonstrably do not.
+    InterlockedIncrement(&silentAntiAimCommandCalls);
+    if (silentAntiAimEnabled && player && command &&
+        InterlockedCompareExchange(&silentAntiAimInputBuildCalls, 0, 0) == 0)
+        ApplySilentAntiAimToBuiltCommand(player, command);
+    o_PlayerController_Command(player, command, deltaTime, method);
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -3576,20 +3580,22 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Separator();
         ImGui::Spacing();
         if (ImGui::Checkbox("Silent Backward + Down", &silentAntiAimEnabled)) {
+            InterlockedExchange(&silentAntiAimInputBuildCalls, 0);
             InterlockedExchange(&silentAntiAimCommandCalls, 0);
             InterlockedExchange(&silentAntiAimAppliedCalls, 0);
             silentAntiAimRealViewValid = false;
             silentAntiAimCameraTransform = 0;
             strcpy_s(silentAntiAimStatus, !silentAntiAimEnabled ? "Disabled" :
-                (silentAntiAimHookReady ? "Command hook installed; waiting for local input" : "Command hook failed to install"));
+                (silentAntiAimHookReady ? "Input builder hook installed; waiting for first command" : "Input builder hook failed to install"));
         }
         ImGui::TextWrapped("Status: %s", silentAntiAimStatus);
         if (silentAntiAimEnabled)
-            ImGui::Text("Command calls: %ld | Applied: %ld",
-                InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
-                InterlockedCompareExchange(&silentAntiAimAppliedCalls, 0, 0));
+            ImGui::Text("Input builds: %ld | Applied: %ld | qhq fallback: %ld",
+                InterlockedCompareExchange(&silentAntiAimInputBuildCalls, 0, 0),
+                InterlockedCompareExchange(&silentAntiAimAppliedCalls, 0, 0),
+                InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0));
         ImGui::Spacing();
-        ImGui::TextWrapped("Runs in the local blr command path. Movement is corrected, real aim is used while firing, and the local camera is restored after each command.");
+        ImGui::TextWrapped("Hooks the desktop input builder that returns blr before dispatch. Movement is corrected, shots keep real aim, and HUD update restores the local camera.");
         ImGui::EndChild();
     }
     else if (currentTab == 2) { // VISUALS
@@ -3946,12 +3952,28 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS));
     MH_CreateHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE), hk_HUDView_Update, (LPVOID*)&o_HUDView_Update);
     MH_EnableHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE));
-    const MH_STATUS antiAimCreateStatus = MH_CreateHook((LPVOID)(base + OFFSET_PLAYERCONTROLLER_COMMAND), hk_PlayerController_Command, (LPVOID*)&o_PlayerController_Command);
-    const MH_STATUS antiAimEnableStatus = antiAimCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_PLAYERCONTROLLER_COMMAND)) : antiAimCreateStatus;
-    silentAntiAimHookReady = antiAimCreateStatus == MH_OK && antiAimEnableStatus == MH_OK;
-    LINDY_LOG("[anti-aim] PlayerController.qhq command hook create=%d enable=%d ready=%d",
-        (int)antiAimCreateStatus, (int)antiAimEnableStatus, silentAntiAimHookReady ? 1 : 0);
+    const MH_STATUS antiAimInputCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND),
+        hk_KeyboardControl_BuildCommand,
+        (LPVOID*)&o_KeyboardControl_BuildCommand);
+    const MH_STATUS antiAimInputEnableStatus = antiAimInputCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND)) :
+        antiAimInputCreateStatus;
+    silentAntiAimHookReady = antiAimInputCreateStatus == MH_OK &&
+        antiAimInputEnableStatus == MH_OK;
+
+    const MH_STATUS antiAimFallbackCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_PLAYERCONTROLLER_COMMAND),
+        hk_PlayerController_Command,
+        (LPVOID*)&o_PlayerController_Command);
+    const MH_STATUS antiAimFallbackEnableStatus =
+        antiAimFallbackCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_PLAYERCONTROLLER_COMMAND)) :
+        antiAimFallbackCreateStatus;
+    LINDY_LOG("[anti-aim] KeyboardControl.bbft create=%d enable=%d ready=%d; qhq fallback create=%d enable=%d",
+        (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
+        silentAntiAimHookReady ? 1 : 0,
+        (int)antiAimFallbackCreateStatus, (int)antiAimFallbackEnableStatus);
 
     // Capture the live ArmsLodGroup directly whenever its first-person visibility is enabled.
     MH_CreateHook((LPVOID)(base + OFFSET_ARMSLOD_SET_VISIBLE), hk_ArmsLod_SetVisible, (LPVOID*)&o_ArmsLod_SetVisible);
