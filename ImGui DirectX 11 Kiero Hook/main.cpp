@@ -164,7 +164,6 @@ struct Matrix16 {
 #define OFFSET_CHARACTERCONTROLLER_MOVE            0x2F4DD80
 
 #define OFFSET_CHARACTERCONTROLLER_GET_VELOCITY    0x2F4DF80
-#define OFFSET_TIME_GET_DELTATIME                   0x2F048A0
 
 #define OFFSET_TRANSFORM_GET_POSITION              0x2F06CE0
 #define OFFSET_TRANSFORM_GET_FORWARD               0x2F06780
@@ -360,7 +359,6 @@ std::vector<WeaponChamsRenderer> weaponChamsRenderers;
 uintptr_t weaponChamsController = 0;
 uintptr_t activeLocalWeaponController = 0;
 uintptr_t chamsObservedLocalPlayer = 0;
-uintptr_t chamsObservedCharacterController = 0;
 uintptr_t weaponChamsMaterials[7] = {};
 uint32_t weaponChamsMaterialHandles[7] = {};
 char weaponChamsStatus[128] = "Select Flat or Glass";
@@ -708,7 +706,6 @@ bool(__fastcall* o_CC_get_isGrounded)(uintptr_t) = nullptr;
 int(__fastcall* o_CC_Move)(uintptr_t, Vector3) = nullptr;
 
 Vector3(__fastcall* o_CC_get_velocity)(uintptr_t) = nullptr;
-float(__fastcall* o_Time_get_deltaTime)() = nullptr;
 
 Vector3(__fastcall* o_Transform_get_position)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_forward)(uintptr_t) = nullptr;
@@ -1522,32 +1519,16 @@ Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
         vel.y = 0.0f;
     }
 
-    // This getter can be consumed by game movement code, but the authoritative
-    // physical cap is also enforced on CharacterController.Move below.
+    // Limit the game's actual reported horizontal velocity. CharacterController.Move
+    // is intentionally left untouched because this game does not pass a simple
+    // velocity*deltaTime displacement there; clamping it slows normal walking/jumps.
+    const float horizontalBeforeLimit = sqrtf(vel.x * vel.x + vel.z * vel.z);
     if (velocityLimiterEnabled) vel = ApplyVelocityLimit(vel);
     velocityLimiterCurrentHorizontalSpeed = sqrtf(vel.x * vel.x + vel.z * vel.z);
+    velocityLimiterLastAppliedScale = horizontalBeforeLimit > 0.00001f
+        ? velocityLimiterCurrentHorizontalSpeed / horizontalBeforeLimit : 1.0f;
     lastSpeed = sqrtf(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
     return vel;
-}
-
-static Vector3 ApplyVelocityLimitToMotion(const Vector3& motion)
-{
-    velocityLimiterLastAppliedScale = 1.0f;
-    if (!velocityLimiterEnabled || velocityLimit <= 0.0f) return motion;
-
-    float deltaTime = o_Time_get_deltaTime ? o_Time_get_deltaTime() : (1.0f / 60.0f);
-    if (!isfinite(deltaTime) || deltaTime < (1.0f / 240.0f) || deltaTime > 0.1f)
-        deltaTime = 1.0f / 60.0f;
-
-    Vector3 result = motion;
-    const float horizontalMotion = sqrtf(result.x * result.x + result.z * result.z);
-    const float maxHorizontalMotion = velocityLimit * deltaTime;
-    if (horizontalMotion > maxHorizontalMotion && horizontalMotion > 0.00001f) {
-        velocityLimiterLastAppliedScale = maxHorizontalMotion / horizontalMotion;
-        result.x *= velocityLimiterLastAppliedScale;
-        result.z *= velocityLimiterLastAppliedScale;
-    }
-    return result;
 }
 
 static void RestoreWeaponChams()
@@ -1698,7 +1679,7 @@ static uintptr_t DiscoverLiveArmsLodGroup(bool forceScan)
 {
     if (!g_ArmsLodGroupClass || !g_il2cpp.class_get_type || !g_il2cpp.type_get_object || !o_Resources_FindObjectsOfTypeAll) return 0;
     const ULONGLONG now = GetTickCount64();
-    if (!forceScan && now - armsLodGroupLastScanTick < 1000) return 0;
+    if (armsLodGroupLastScanTick && now - armsLodGroupLastScanTick < 10000) return 0;
     armsLodGroupLastScanTick = now;
     __try {
         const Il2CppType* armsType = g_il2cpp.class_get_type(g_ArmsLodGroupClass);
@@ -1734,8 +1715,9 @@ static uintptr_t DiscoverLiveArmsLodGroup(bool forceScan)
 static uintptr_t GetCurrentLocalArmsLodGroup()
 {
     __try {
-        const uintptr_t discoveredArms = DiscoverLiveArmsLodGroup(false);
-        if (discoveredArms) return discoveredArms;
+        // Never run the global Unity Resources scan while a captured model is live.
+        const uintptr_t cachedArms = armChamsArmsLodGroup ? armChamsArmsLodGroup : gloveChamsArmsLodGroup;
+        if (cachedArms) return cachedArms;
 
         // GlovesManager owns the current local first-person ArmsLodGroup at +0x38.
         // This exists independently of PlayerManager/GetPlayerController and is the
@@ -1744,13 +1726,14 @@ static uintptr_t GetCurrentLocalArmsLodGroup()
         const uintptr_t managerArms = glovesManager ? *(uintptr_t*)(glovesManager + 0x38) : 0;
         if (managerArms) return managerArms;
 
-        const uintptr_t cachedArms = armChamsArmsLodGroup ? armChamsArmsLodGroup : gloveChamsArmsLodGroup;
-        if (cachedArms) return cachedArms;
-
         // Last-resort fallback for builds/states where GlovesManager is not created yet.
         uintptr_t localPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
         if (!localPlayer) localPlayer = GetPlayerController();
-        return localPlayer ? *(uintptr_t*)(localPlayer + 0x138) : 0;
+        const uintptr_t playerArms = localPlayer ? *(uintptr_t*)(localPlayer + 0x138) : 0;
+        if (playerArms) return playerArms;
+
+        // Expensive global Unity search is used only when every direct source failed.
+        return DiscoverLiveArmsLodGroup(false);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
@@ -1765,7 +1748,6 @@ static void RestoreArmChams()
         }
     }
     armChamsRenderers.clear();
-    armChamsArmsLodGroup = 0;
 }
 
 static void CaptureArmChamsRenderers(uintptr_t armsLodGroup)
@@ -1887,7 +1869,6 @@ static void RestoreGloveChams()
         }
     }
     gloveChamsRenderers.clear();
-    gloveChamsArmsLodGroup = 0;
 }
 
 static void CaptureGloveChamsRenderers(uintptr_t armsLodGroup)
@@ -2033,13 +2014,11 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 
     const uintptr_t currentLocalPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
     const bool localPlayerChanged = currentLocalPlayer && currentLocalPlayer != chamsObservedLocalPlayer;
-    const bool characterControllerChanged = instance && instance != chamsObservedCharacterController;
-    if (localPlayerChanged || characterControllerChanged) {
+    if (localPlayerChanged) {
         // A different local PlayerController means a new match/respawn scene.
         // Old Unity renderer pointers may already be destroyed, so abandon them
         // without attempting Restore* on stale objects and rediscover everything.
         chamsObservedLocalPlayer = currentLocalPlayer;
-        chamsObservedCharacterController = instance;
         weaponChamsRenderers.clear();
         armChamsRenderers.clear();
         gloveChamsRenderers.clear();
@@ -2057,14 +2036,12 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     const bool armRefreshRequested = InterlockedExchange(&pendingArmChamsRefresh, 0) != 0;
     const bool gloveRefreshRequested = InterlockedExchange(&pendingGloveChamsRefresh, 0) != 0;
     const ULONGLONG chamsNow = GetTickCount64();
-    const bool maintenanceDue = chamsNow - armGloveChamsLastMaintenanceTick >= 100;
+    const bool maintenanceDue = chamsNow - armGloveChamsLastMaintenanceTick >= 500;
     if (weaponRefreshRequested || armRefreshRequested || gloveRefreshRequested || maintenanceDue) {
         if (maintenanceDue) armGloveChamsLastMaintenanceTick = chamsNow;
         if (weaponRefreshRequested || (maintenanceDue && weaponChamsEnabled))
             UpdateWeaponChams(GetCurrentLocalWeaponController());
-        uintptr_t liveArmsLodGroup = 0;
-        if (armRefreshRequested || gloveRefreshRequested) liveArmsLodGroup = DiscoverLiveArmsLodGroup(true);
-        if (!liveArmsLodGroup) liveArmsLodGroup = GetCurrentLocalArmsLodGroup();
+        const uintptr_t liveArmsLodGroup = GetCurrentLocalArmsLodGroup();
         if (armRefreshRequested || (maintenanceDue && armChamsEnabled)) UpdateArmChams(liveArmsLodGroup);
         if (gloveRefreshRequested || (maintenanceDue && gloveChamsEnabled)) UpdateGloveChams(liveArmsLodGroup);
     }
@@ -2092,10 +2069,6 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 
     if (keyValidated) {
         motion = EdgeBug::ApplyDownwardPull(motion, edgeBugEnabled, edgeBugPullForce);
-        // CharacterController.Move receives per-frame displacement. Convert the
-        // configured units/second limit using the real Unity deltaTime and clamp
-        // every movement call, regardless of BunnyHop/Surf state.
-        motion = ApplyVelocityLimitToMotion(motion);
     }
 
     return o_CC_Move(instance, motion);
@@ -3300,7 +3273,6 @@ DWORD WINAPI HackThread(LPVOID)
     o_Component_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_TRANSFORM);
 
     o_Camera_get_main = (uintptr_t(__fastcall*)())(base + OFFSET_CAMERA_MAIN);
-    o_Time_get_deltaTime = (float(__fastcall*)())(base + OFFSET_TIME_GET_DELTATIME);
 
     MH_CreateHook((LPVOID)(base + OFFSET_CAMERA_SET_FIELDOFVIEW), hk_Camera_set_fieldOfView, (LPVOID*)&o_Camera_set_fieldOfView);
 
