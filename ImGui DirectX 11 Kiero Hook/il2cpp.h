@@ -23,6 +23,8 @@ typedef Il2CppField*(*t_il2cpp_class_get_field_from_name)(Il2CppClass* klass, co
 typedef Il2CppMethod*(*t_il2cpp_class_get_method_from_name)(Il2CppClass* klass, const char* name, int argsCount);
 typedef void(*t_il2cpp_field_static_get_value)(Il2CppField* field, void* value);
 typedef Il2CppClass*(*t_il2cpp_class_get_parent)(Il2CppClass* klass);
+typedef const Il2CppType*(*t_il2cpp_class_get_type)(Il2CppClass* klass);
+typedef Il2CppObject*(*t_il2cpp_type_get_object)(const Il2CppType* type);
 typedef const char*(*t_il2cpp_class_get_name)(Il2CppClass* klass);
 typedef const char*(*t_il2cpp_image_get_name)(const Il2CppImage* image);
 typedef Il2CppObject*(*t_il2cpp_object_new)(Il2CppClass* klass);
@@ -44,6 +46,8 @@ struct IL2CPP_API {
     t_il2cpp_class_get_method_from_name    class_get_method_from_name = nullptr;
     t_il2cpp_field_static_get_value        field_static_get_value = nullptr;
     t_il2cpp_class_get_parent              class_get_parent = nullptr;
+    t_il2cpp_class_get_type                class_get_type = nullptr;
+    t_il2cpp_type_get_object               type_get_object = nullptr;
     t_il2cpp_class_get_name                class_get_name = nullptr;
     t_il2cpp_image_get_name                image_get_name = nullptr;
     t_il2cpp_object_new                    object_new = nullptr;
@@ -66,6 +70,8 @@ struct IL2CPP_API {
         class_get_method_from_name    = (t_il2cpp_class_get_method_from_name)GetProcAddress(ga, "il2cpp_class_get_method_from_name");
         field_static_get_value        = (t_il2cpp_field_static_get_value)    GetProcAddress(ga, "il2cpp_field_static_get_value");
         class_get_parent              = (t_il2cpp_class_get_parent)          GetProcAddress(ga, "il2cpp_class_get_parent");
+        class_get_type                = (t_il2cpp_class_get_type)            GetProcAddress(ga, "il2cpp_class_get_type");
+        type_get_object               = (t_il2cpp_type_get_object)           GetProcAddress(ga, "il2cpp_type_get_object");
         class_get_name                = (t_il2cpp_class_get_name)            GetProcAddress(ga, "il2cpp_class_get_name");
         image_get_name                = (t_il2cpp_image_get_name)            GetProcAddress(ga, "il2cpp_image_get_name");
         object_new                    = (t_il2cpp_object_new)                GetProcAddress(ga, "il2cpp_object_new");

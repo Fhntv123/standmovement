@@ -194,6 +194,9 @@ struct Matrix16 {
 #define OFFSET_RENDERSETTINGS_GET_SKYBOX            0x2ED8D60
 #define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x2ED8D90
 #define OFFSET_GLOVES_SET_ARMS                    0x8F8110
+#define OFFSET_ARMSLOD_SET_VISIBLE                 0x81F1E0
+#define OFFSET_RESOURCES_FIND_OBJECTS_ALL          0x2EFFB30
+#define OFFSET_RENDERER_GET_ENABLED                0x2ED9330
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0x8491C0
 #define OFFSET_GUNCONTROLLER_FIRE                  0x996BE0
 #define OFFSET_HITCASTER_CAST                      0x99FBB0
@@ -395,6 +398,8 @@ uintptr_t gloveChamsArmsLodGroup = 0;
 char gloveChamsStatus[128] = "Disabled";
 volatile LONG pendingGloveChamsRefresh = 0;
 ULONGLONG armGloveChamsLastMaintenanceTick = 0;
+ULONGLONG armsLodGroupLastScanTick = 0;
+Il2CppClass* g_ArmsLodGroupClass = nullptr;
 
 struct BulletTracerEntry {
     Vector3 start;
@@ -738,6 +743,9 @@ Matrix16(__fastcall* o_Camera_get_projectionMatrix)(uintptr_t) = nullptr;
 
 short(__fastcall* o_GunController_GetCurrentAmmo)(uintptr_t) = nullptr;
 void(__fastcall* o_Gloves_SetArms)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_ArmsLod_SetVisible)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
+Il2CppArray*(__fastcall* o_Resources_FindObjectsOfTypeAll)(Il2CppObject*, const Il2CppMethod*) = nullptr;
+bool(__fastcall* o_Renderer_get_enabled)(uintptr_t) = nullptr;
 void(__fastcall* o_Weaponry_TakeWeapon)(uintptr_t, uint8_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float, uintptr_t, const Il2CppMethod*) = nullptr;
@@ -1099,6 +1107,7 @@ static uintptr_t GetCurrentLocalWeaponController();
 static void UpdateWeaponChams(uintptr_t knownWeaponController = 0);
 static void UpdateArmChams(uintptr_t knownArmsLodGroup = 0);
 static void UpdateGloveChams(uintptr_t knownArmsLodGroup = 0);
+static uintptr_t DiscoverLiveArmsLodGroup(bool forceScan = false);
 
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
@@ -1152,6 +1161,16 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
     return result;
+}
+
+void __fastcall hk_ArmsLod_SetVisible(uintptr_t instance, bool visible, const Il2CppMethod* method)
+{
+    o_ArmsLod_SetVisible(instance, visible, method);
+    if (!instance || !visible) return;
+    armChamsArmsLodGroup = instance;
+    gloveChamsArmsLodGroup = instance;
+    if (armChamsEnabled) UpdateArmChams(instance);
+    if (gloveChamsEnabled) UpdateGloveChams(instance);
 }
 
 void __fastcall hk_Gloves_SetArms(uintptr_t instance, uintptr_t armsLodGroup, const Il2CppMethod* method)
@@ -1645,9 +1664,49 @@ static void AnimateArmChamsColor()
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
+static uintptr_t DiscoverLiveArmsLodGroup(bool forceScan)
+{
+    if (!g_ArmsLodGroupClass || !g_il2cpp.class_get_type || !g_il2cpp.type_get_object || !o_Resources_FindObjectsOfTypeAll) return 0;
+    const ULONGLONG now = GetTickCount64();
+    if (!forceScan && now - armsLodGroupLastScanTick < 1000) return 0;
+    armsLodGroupLastScanTick = now;
+    __try {
+        const Il2CppType* armsType = g_il2cpp.class_get_type(g_ArmsLodGroupClass);
+        Il2CppObject* reflectionType = armsType ? g_il2cpp.type_get_object(armsType) : nullptr;
+        Il2CppArray* objects = reflectionType ? o_Resources_FindObjectsOfTypeAll(reflectionType, nullptr) : nullptr;
+        const uintptr_t array = reinterpret_cast<uintptr_t>(objects);
+        const size_t count = array ? *(size_t*)(array + 0x18) : 0;
+        if (!count || count > 256) return 0;
+        uintptr_t best = 0;
+        int bestScore = -1;
+        for (size_t i = 0; i < count; ++i) {
+            const uintptr_t candidate = *(uintptr_t*)(array + 0x20 + i * sizeof(uintptr_t));
+            if (!candidate) continue;
+            const uintptr_t armsRenderer = *(uintptr_t*)(candidate + 0x60);
+            const uintptr_t gloveRenderer = *(uintptr_t*)(candidate + 0x68);
+            if (!armsRenderer && !gloveRenderer) continue;
+            int score = (armsRenderer ? 2 : 0) + (gloveRenderer ? 2 : 0);
+            if (o_Renderer_get_enabled) {
+                if (armsRenderer && o_Renderer_get_enabled(armsRenderer)) score += 4;
+                if (gloveRenderer && o_Renderer_get_enabled(gloveRenderer)) score += 4;
+            }
+            if (score > bestScore) { bestScore = score; best = candidate; }
+        }
+        if (best) {
+            armChamsArmsLodGroup = best;
+            gloveChamsArmsLodGroup = best;
+        }
+        return best;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
 static uintptr_t GetCurrentLocalArmsLodGroup()
 {
     __try {
+        const uintptr_t discoveredArms = DiscoverLiveArmsLodGroup(false);
+        if (discoveredArms) return discoveredArms;
+
         // GlovesManager owns the current local first-person ArmsLodGroup at +0x38.
         // This exists independently of PlayerManager/GetPlayerController and is the
         // authoritative immediate source after injecting into an active match.
@@ -1947,7 +2006,9 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     const bool maintenanceDue = chamsNow - armGloveChamsLastMaintenanceTick >= 100;
     if (armRefreshRequested || gloveRefreshRequested || maintenanceDue) {
         if (maintenanceDue) armGloveChamsLastMaintenanceTick = chamsNow;
-        const uintptr_t liveArmsLodGroup = GetCurrentLocalArmsLodGroup();
+        uintptr_t liveArmsLodGroup = 0;
+        if (armRefreshRequested || gloveRefreshRequested) liveArmsLodGroup = DiscoverLiveArmsLodGroup(true);
+        if (!liveArmsLodGroup) liveArmsLodGroup = GetCurrentLocalArmsLodGroup();
         if (armRefreshRequested || (maintenanceDue && armChamsEnabled)) UpdateArmChams(liveArmsLodGroup);
         if (gloveRefreshRequested || (maintenanceDue && gloveChamsEnabled)) UpdateGloveChams(liveArmsLodGroup);
     }
@@ -3154,6 +3215,8 @@ DWORD WINAPI HackThread(LPVOID)
                 g_PlayerManagerInstanceField = g_il2cpp.class_get_field_from_name(g_PlayerManagerClass, "cgxr");
             }
         }
+        g_ArmsLodGroupClass = g_il2cpp.find_class("Axlebolt.Standoff.Player", "ArmsLodGroup");
+        LINDY_LOG("[init] ArmsLodGroupClass=%p", (void*)g_ArmsLodGroupClass);
         g_GlovesManagerClass = g_il2cpp.find_class("Axlebolt.Standoff.Main.Inventory.Gloves", "GlovesManager");
         LINDY_LOG("[init] GlovesManagerClass=%p", (void*)g_GlovesManagerClass);
         if (g_GlovesManagerClass) {
@@ -3200,6 +3263,8 @@ DWORD WINAPI HackThread(LPVOID)
     o_Material_set_mainTexture = (void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_MATERIAL_SET_MAINTEXTURE);
     o_Renderer_get_material = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_GET_MATERIAL);
     o_Renderer_set_material = (void(__fastcall*)(uintptr_t, uintptr_t))(base + OFFSET_RENDERER_SET_MATERIAL);
+    o_Renderer_get_enabled = (bool(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_GET_ENABLED);
+    o_Resources_FindObjectsOfTypeAll = (Il2CppArray*(__fastcall*)(Il2CppObject*, const Il2CppMethod*))(base + OFFSET_RESOURCES_FIND_OBJECTS_ALL);
     o_Material_get_color = (Color(__fastcall*)(uintptr_t))(base + OFFSET_MATERIAL_GET_COLOR);
     o_Material_set_color = (void(__fastcall*)(uintptr_t, Color))(base + OFFSET_MATERIAL_SET_COLOR);
     o_Material_set_renderQueue = (void(__fastcall*)(uintptr_t, int))(base + OFFSET_MATERIAL_SET_RENDERQUEUE);
@@ -3243,7 +3308,11 @@ DWORD WINAPI HackThread(LPVOID)
     MH_CreateHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE), hk_HUDView_Update, (LPVOID*)&o_HUDView_Update);
     MH_EnableHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE));
 
-    // Reapply hand chams when the local glove/arms model changes.
+    // Capture the live ArmsLodGroup directly whenever its first-person visibility is enabled.
+    MH_CreateHook((LPVOID)(base + OFFSET_ARMSLOD_SET_VISIBLE), hk_ArmsLod_SetVisible, (LPVOID*)&o_ArmsLod_SetVisible);
+    MH_EnableHook((LPVOID)(base + OFFSET_ARMSLOD_SET_VISIBLE));
+
+    // Reapply arm/glove chams when the local glove model changes.
     MH_CreateHook((LPVOID)(base + OFFSET_GLOVES_SET_ARMS), hk_Gloves_SetArms, (LPVOID*)&o_Gloves_SetArms);
     MH_EnableHook((LPVOID)(base + OFFSET_GLOVES_SET_ARMS));
 
