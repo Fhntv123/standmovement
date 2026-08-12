@@ -191,6 +191,7 @@ struct Matrix16 {
 #define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
 #define OFFSET_COMPONENT_GET_GAMEOBJECT             0x2EF2CA0
 #define OFFSET_GAMEOBJECT_SETACTIVE                 0x2EF6620
+#define OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY     0x2EF6A20
 
 #define OFFSET_WORLDTOSCREENPOINT                  0x2EC0950
 
@@ -317,6 +318,7 @@ bool infinityAmmo = false;
 bool bulletTracerEnabled = false;
 bool noSpreadEnabled = false;
 bool removeScopeBorders = false;
+bool customScopeReticleVisible = false;
 float bulletTracerColor[3] = { 1.0f, 0.25f, 0.05f };
 float bulletTracerDuration = 1.5f;
 float bulletTracerThickness = 2.5f;
@@ -653,6 +655,7 @@ thread_local bool insideLocalGunFire = false;
 void(__fastcall* o_AimView_UpdateSniperPanels)(uintptr_t, float, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Component_get_gameObject)(uintptr_t) = nullptr;
 void(__fastcall* o_GameObject_SetActive)(uintptr_t, bool) = nullptr;
+bool(__fastcall* o_GameObject_get_activeInHierarchy)(uintptr_t) = nullptr;
 
 
 
@@ -955,28 +958,38 @@ uintptr_t GetPlayerController() {
 
 // Hook на GunController::gcloafhgkcb() - возвращает текущие патроны
 
-static void SetScopeBorderPanels(uintptr_t aimView, bool active)
+static void UpdateScopeOverlay(uintptr_t aimView)
 {
-    if (!aimView || !o_Component_get_gameObject || !o_GameObject_SetActive) return;
+    if (!aimView || !o_GameObject_SetActive || !o_GameObject_get_activeInHierarchy) return;
     __try {
-        const uintptr_t leftPanel = *(uintptr_t*)(aimView + 0xC0);
-        const uintptr_t rightPanel = *(uintptr_t*)(aimView + 0xB8);
-        if (leftPanel) {
-            const uintptr_t leftObject = o_Component_get_gameObject(leftPanel);
-            if (leftObject) o_GameObject_SetActive(leftObject, active);
-        }
-        if (rightPanel) {
-            const uintptr_t rightObject = o_Component_get_gameObject(rightPanel);
-            if (rightObject) o_GameObject_SetActive(rightObject, active);
-        }
+        const uintptr_t sniperSight = *(uintptr_t*)(aimView + 0x48);
+        if (!sniperSight) return;
+        const bool currentlyVisible = o_GameObject_get_activeInHierarchy(sniperSight);
+        customScopeReticleVisible = removeScopeBorders && currentlyVisible;
+        if (customScopeReticleVisible) o_GameObject_SetActive(sniperSight, false);
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __except (EXCEPTION_EXECUTE_HANDLER) { customScopeReticleVisible = false; }
 }
 
 void __fastcall hk_AimView_UpdateSniperPanels(uintptr_t instance, float a, float b, const Il2CppMethod* method)
 {
     o_AimView_UpdateSniperPanels(instance, a, b, method);
-    SetScopeBorderPanels(instance, !removeScopeBorders);
+    UpdateScopeOverlay(instance);
+}
+
+void DrawBorderlessScopeReticle()
+{
+    if (!removeScopeBorders || !customScopeReticleVisible) return;
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const ImVec2 center(display.x * 0.5f, display.y * 0.5f);
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    const ImU32 shadow = IM_COL32(255, 255, 255, 90);
+    const ImU32 line = IM_COL32(0, 0, 0, 235);
+    draw->AddLine(ImVec2(0.0f, center.y + 1.0f), ImVec2(display.x, center.y + 1.0f), shadow, 1.0f);
+    draw->AddLine(ImVec2(center.x + 1.0f, 0.0f), ImVec2(center.x + 1.0f, display.y), shadow, 1.0f);
+    draw->AddLine(ImVec2(0.0f, center.y), ImVec2(display.x, center.y), line, 1.0f);
+    draw->AddLine(ImVec2(center.x, 0.0f), ImVec2(center.x, display.y), line, 1.0f);
+    draw->AddCircleFilled(center, 2.0f, line);
 }
 
 uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float maxDistance, uintptr_t hitParameters, const Il2CppMethod* method)
@@ -2405,6 +2418,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     ImGui::PopFont();
 
     DrawBulletTracers();
+    DrawBorderlessScopeReticle();
 
     ImGui::Render();
 
@@ -2505,6 +2519,7 @@ DWORD WINAPI HackThread(LPVOID)
 
     o_Component_get_gameObject = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_GAMEOBJECT);
     o_GameObject_SetActive = (void(__fastcall*)(uintptr_t, bool))(base + OFFSET_GAMEOBJECT_SETACTIVE);
+    o_GameObject_get_activeInHierarchy = (bool(__fastcall*)(uintptr_t))(base + OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY);
     MH_CreateHook((LPVOID)(base + OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS), hk_AimView_UpdateSniperPanels, (LPVOID*)&o_AimView_UpdateSniperPanels);
     MH_EnableHook((LPVOID)(base + OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS));
 
