@@ -2621,22 +2621,14 @@ static void UpdateAimbotAutoFire()
     insideAutoFireRequest = false;
 
     const ULONGLONG nativeInterval = GetNativeAutoFireIntervalMs(activeLocalWeaponController);
-    if (autoFireTargetAccepted) {
-        // A real targeted shot was accepted: wait exactly for native weapon cadence.
-        aimbotAutoFireNextRequestAt = now + nativeInterval;
-    } else if (autoFireCastReached) {
-        // Native Fire reached HitCaster but no visible target qualified. Recheck at
-        // 20 Hz; this avoids expensive cast spam while keeping response under 50 ms.
-        InterlockedIncrement(&aimbotAutoFireRejected);
-        aimbotAutoFireNextRequestAt = now + 50;
-    } else {
-        // Weapon rejected the request before HitCaster (cooldown/reload/state).
-        // Never hammer Fire every movement callback; retry at half native cadence.
-        InterlockedIncrement(&aimbotAutoFireBusy);
-        ULONGLONG retry = nativeInterval / 2;
-        if (retry < 20) retry = 20;
-        if (retry > 100) retry = 100;
-        aimbotAutoFireNextRequestAt = now + retry;
+    // Every call to GunController.Fire can touch the weapon's internal cooldown,
+    // even when it exits before HitCaster or when an automatic cast is suppressed.
+    // Retrying earlier than the full native interval can therefore keep the gun
+    // permanently busy. Always wait one complete weapon cycle after every request.
+    aimbotAutoFireNextRequestAt = now + nativeInterval + 2;
+    if (!autoFireTargetAccepted) {
+        if (autoFireCastReached) InterlockedIncrement(&aimbotAutoFireRejected);
+        else InterlockedIncrement(&aimbotAutoFireBusy);
     }
 }
 
