@@ -587,6 +587,21 @@ Il2CppObject* g_PlayerControllerReflectionType = nullptr;
 std::vector<void*> g_LivePlayerRegistry;
 SRWLOCK g_LivePlayerRegistryLock = SRWLOCK_INIT;
 
+std::unordered_map<uintptr_t, int> g_LiveHealthByState;
+std::unordered_map<uintptr_t, int> g_LiveHealthByPlayer;
+std::unordered_map<uintptr_t, int> g_ConfirmedHealthByPlayer;
+SRWLOCK g_LiveHealthLock = SRWLOCK_INIT;
+volatile LONG boxEspHealthUpdates = 0;
+volatile LONG boxEspHealthPlayerMatches = 0;
+volatile LONG boxEspHealthLastA = -1;
+volatile LONG boxEspHealthLastB = -1;
+volatile LONG boxEspHealthLastRead = -1;
+volatile LONG boxEspConfirmedHits = 0;
+volatile LONG boxEspConfirmedHealth = -1;
+volatile LONG boxEspConfirmedFieldA = -1;
+volatile LONG boxEspConfirmedFieldB = -1;
+volatile LONG boxEspConfirmedFieldC = -1;
+
 typedef void(__fastcall* t_PlayerManagerPlayerEvent)(uintptr_t, void*, const Il2CppMethod*);
 t_PlayerManagerPlayerEvent o_PlayerManagerPlayerEventA = nullptr;
 t_PlayerManagerPlayerEvent o_PlayerManagerPlayerEventB = nullptr;
@@ -625,20 +640,6 @@ void __fastcall hk_PlayerManagerPlayerEventC(uintptr_t instance, void* player, c
     o_PlayerManagerPlayerEventC(instance, player, method);
 }
 
-std::unordered_map<uintptr_t, int> g_LiveHealthByState;
-std::unordered_map<uintptr_t, int> g_LiveHealthByPlayer;
-std::unordered_map<uintptr_t, int> g_ConfirmedHealthByPlayer;
-SRWLOCK g_LiveHealthLock = SRWLOCK_INIT;
-volatile LONG boxEspHealthUpdates = 0;
-volatile LONG boxEspHealthPlayerMatches = 0;
-volatile LONG boxEspHealthLastA = -1;
-volatile LONG boxEspHealthLastB = -1;
-volatile LONG boxEspHealthLastRead = -1;
-volatile LONG boxEspConfirmedHits = 0;
-volatile LONG boxEspConfirmedHealth = -1;
-volatile LONG boxEspConfirmedFieldA = -1;
-volatile LONG boxEspConfirmedFieldB = -1;
-volatile LONG boxEspConfirmedFieldC = -1;
 using t_HealthApplyA = void(__fastcall*)(uintptr_t, int, int, bool, bool, float, const Il2CppMethod*);
 using t_HealthApplyB = void(__fastcall*)(uintptr_t, int, int, bool, bool, float, void*, const Il2CppMethod*);
 using t_HealthApplyC = void(__fastcall*)(uintptr_t, int, bool, const Il2CppMethod*);
