@@ -729,27 +729,32 @@ static unsigned char GetPCTeam(void* pc) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
-static std::string Il2CppStringToUtf8(void* stringObject) {
-    if (!stringObject) return {};
+static bool Il2CppStringToUtf8(void* stringObject, char* output, int outputSize) {
+    if (!output || outputSize <= 1) return false;
+    output[0] = '\0';
+    if (!stringObject) return false;
     __try {
         const int length = *reinterpret_cast<int*>(reinterpret_cast<uintptr_t>(stringObject) + 0x10);
-        if (length <= 0 || length > 128) return {};
+        if (length <= 0 || length > 128) return false;
         const wchar_t* chars = reinterpret_cast<const wchar_t*>(reinterpret_cast<uintptr_t>(stringObject) + 0x14);
-        const int bytes = WideCharToMultiByte(CP_UTF8, 0, chars, length, nullptr, 0, nullptr, nullptr);
-        if (bytes <= 0 || bytes > 512) return {};
-        std::string result(bytes, '\0');
-        WideCharToMultiByte(CP_UTF8, 0, chars, length, result.data(), bytes, nullptr, nullptr);
-        return result;
-    } __except (EXCEPTION_EXECUTE_HANDLER) { return {}; }
+        const int bytes = WideCharToMultiByte(CP_UTF8, 0, chars, length, output, outputSize - 1, nullptr, nullptr);
+        if (bytes <= 0 || bytes >= outputSize) { output[0] = '\0'; return false; }
+        output[bytes] = '\0';
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { output[0] = '\0'; return false; }
 }
 
-static std::string GetPCName(void* pc) {
-    if (!pc) return "Enemy";
+static void GetPCName(void* pc, char* output, int outputSize) {
+    if (!output || outputSize <= 1) return;
+    strcpy_s(output, outputSize, "Enemy");
+    if (!pc) return;
     __try {
-        std::string name = Il2CppStringToUtf8(*reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pc) + 0x158));
-        if (name.empty()) name = Il2CppStringToUtf8(*reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pc) + 0x160));
-        return name.empty() ? "Enemy" : name;
-    } __except (EXCEPTION_EXECUTE_HANDLER) { return "Enemy"; }
+        void* primary = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pc) + 0x158);
+        if (Il2CppStringToUtf8(primary, output, outputSize)) return;
+        void* fallback = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pc) + 0x160);
+        if (!Il2CppStringToUtf8(fallback, output, outputSize))
+            strcpy_s(output, outputSize, "Enemy");
+    } __except (EXCEPTION_EXECUTE_HANDLER) { strcpy_s(output, outputSize, "Enemy"); }
 }
 
 static int GetPCHealth(void* pc) {
@@ -3178,11 +3183,12 @@ void BoxEsp() {
         }
 
         if (espShowName) {
-            const std::string name = GetPCName(player);
-            const ImVec2 size = ImGui::CalcTextSize(name.c_str());
+            char playerName[513];
+            GetPCName(player, playerName, sizeof(playerName));
+            const ImVec2 size = ImGui::CalcTextSize(playerName);
             const ImVec2 pos(centerX - size.x * 0.5f, top - size.y - 3.0f);
-            draw->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 255), name.c_str());
-            draw->AddText(pos, EspColorAt(0.0f), name.c_str());
+            draw->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 255), playerName);
+            draw->AddText(pos, EspColorAt(0.0f), playerName);
         }
 
         if (espShowHealth) {
