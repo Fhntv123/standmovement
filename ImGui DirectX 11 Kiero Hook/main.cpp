@@ -406,6 +406,11 @@ volatile LONG pendingSkyboxCommand = 0;
 bool infinityAmmo = false;
 uintptr_t frozenAmmoWeapon = 0;
 short frozenAmmoValue = -1;
+volatile LONG infinityAmmoFireCalls = 0;
+volatile LONG infinityAmmoGetterCalls = 0;
+volatile LONG infinityAmmoRestores = 0;
+volatile LONG infinityAmmoLastField = -1;
+volatile LONG infinityAmmoLastGetter = -1;
 bool aimbotEnabled = false;              // silent shot redirection (kept unchanged)
 bool visibleAimbotEnabled = false;       // visibly turns the real camera, then restores it
 bool aimbotVisibleCheck = true;
@@ -2491,9 +2496,15 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     // or call set_material from this hook. Only remember the live gun and queue
     // maintenance for the normal movement/game loop after the shot.
     bool isLocalGun = false;
-    __try { isLocalGun = instance && liveHudLocalPlayer && *(uintptr_t*)(instance + 0x20) == liveHudLocalPlayer; }
+    __try {
+        const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
+        const uintptr_t owner = instance ? *reinterpret_cast<uintptr_t*>(instance + 0x20) : 0;
+        isLocalGun = instance && ((currentWeapon && instance == currentWeapon) ||
+            (liveHudLocalPlayer && owner == liveHudLocalPlayer));
+    }
     __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
     if (isLocalGun) activeLocalWeaponController = instance;
+    if (isLocalGun && infinityAmmo) InterlockedIncrement(&infinityAmmoFireCalls);
     short ammoBeforeShot = -1;
     if (isLocalGun && infinityAmmo) {
         __try {
@@ -2510,7 +2521,14 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     o_GunController_Fire(instance, playSound, method);
     insideLocalGunFire = false;
     if (isLocalGun && infinityAmmo && ammoBeforeShot >= 0) {
-        __try { *reinterpret_cast<short*>(instance + OFFSET_CURRENT_AMMO) = ammoBeforeShot; }
+        __try {
+            *reinterpret_cast<short*>(instance + OFFSET_CURRENT_AMMO) = ammoBeforeShot;
+            using SetAmmoFn = void(__fastcall*)(uintptr_t, short, const Il2CppMethod*);
+            reinterpret_cast<SetAmmoFn>(base + 0x999160)(instance, ammoBeforeShot, nullptr);
+            *reinterpret_cast<short*>(instance + OFFSET_CURRENT_AMMO) = ammoBeforeShot;
+            InterlockedExchange(&infinityAmmoLastField, ammoBeforeShot);
+            InterlockedIncrement(&infinityAmmoRestores);
+        }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
     if (isLocalGun && weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
@@ -2545,72 +2563,61 @@ static void UpdateAimbotAutoFire()
 }
 
 short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
-
 {
-
-    short currentAmmo = o_GunController_GetCurrentAmmo(instance);
-
+    const short nativeAmmo = o_GunController_GetCurrentAmmo(instance);
+    if (!keyValidated || !instance) return nativeAmmo;
     bool isLocalGun = false;
-    __try { isLocalGun = keyValidated && instance && liveHudLocalPlayer && *(uintptr_t*)(instance + 0x20) == liveHudLocalPlayer; }
-    __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
-    if (isLocalGun && instance != activeLocalWeaponController) {
-        activeLocalWeaponController = instance;
-        if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
+    __try {
+        const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
+        const uintptr_t owner = *reinterpret_cast<uintptr_t*>(instance + 0x20);
+        isLocalGun = (currentWeapon && instance == currentWeapon) ||
+            (liveHudLocalPlayer && owner == liveHudLocalPlayer);
     }
-
-
-
-    return currentAmmo;
-
+    __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
+    if (!isLocalGun) return nativeAmmo;
+    activeLocalWeaponController = instance;
+    InterlockedIncrement(&infinityAmmoGetterCalls);
+    InterlockedExchange(&infinityAmmoLastGetter, nativeAmmo);
+    if (infinityAmmo) {
+        if (instance != frozenAmmoWeapon || frozenAmmoValue < 0) {
+            frozenAmmoWeapon = instance;
+            frozenAmmoValue = nativeAmmo;
+        }
+        if (frozenAmmoValue >= 0 && frozenAmmoValue < 1000) return frozenAmmoValue;
+    }
+    return nativeAmmo;
 }
 
 
 
-void InfinityAmmoLoop() {
-
+void InfinityAmmoLoop()
+{
     if (!keyValidated || !base) return;
-
-
-
     __try {
-
-        uintptr_t localPlayer = GetPlayerController();
-
-        if (!localPlayer) return;
-
-
-
-        uintptr_t weaponryController = *(uintptr_t*)(localPlayer + OFFSET_WEAPONRYCONTROLLER);
-
-        if (!weaponryController) return;
-
-
-
-        uintptr_t weaponController = *(uintptr_t*)(weaponryController + OFFSET_WEAPONCONTROLLER);
-
+        const uintptr_t weaponController = GetCurrentLocalWeaponController();
         if (!weaponController) return;
-
-
-
         if (!infinityAmmo) {
             frozenAmmoWeapon = 0;
             frozenAmmoValue = -1;
             return;
         }
         const short currentAmmo = *reinterpret_cast<short*>(weaponController + OFFSET_CURRENT_AMMO);
+        InterlockedExchange(&infinityAmmoLastField, currentAmmo);
         if (weaponController != frozenAmmoWeapon || frozenAmmoValue < 0) {
-            if (currentAmmo >= 0 && currentAmmo < 1000) {
+            const short nativeAmmo = o_GunController_GetCurrentAmmo ?
+                o_GunController_GetCurrentAmmo(weaponController) : currentAmmo;
+            if (nativeAmmo >= 0 && nativeAmmo < 1000) {
                 frozenAmmoWeapon = weaponController;
-                frozenAmmoValue = currentAmmo;
+                frozenAmmoValue = nativeAmmo;
             }
-        } else if (frozenAmmoValue < 1000) {
+        }
+        if (frozenAmmoValue >= 0 && frozenAmmoValue < 1000) {
+            using SetAmmoFn = void(__fastcall*)(uintptr_t, short, const Il2CppMethod*);
+            reinterpret_cast<SetAmmoFn>(base + 0x999160)(weaponController, frozenAmmoValue, nullptr);
             *reinterpret_cast<short*>(weaponController + OFFSET_CURRENT_AMMO) = frozenAmmoValue;
         }
-
     }
-
     __except (EXCEPTION_EXECUTE_HANDLER) {}
-
 }
 
 
@@ -4586,7 +4593,21 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Separator();
         ImGui::Spacing();
         
-        ImGui::Checkbox("Infinity Ammo", &infinityAmmo);
+        if (ImGui::Checkbox("Infinity Ammo", &infinityAmmo)) {
+            frozenAmmoWeapon = 0;
+            frozenAmmoValue = -1;
+            InterlockedExchange(&infinityAmmoFireCalls, 0);
+            InterlockedExchange(&infinityAmmoGetterCalls, 0);
+            InterlockedExchange(&infinityAmmoRestores, 0);
+        }
+        if (infinityAmmo)
+            ImGui::Text("Ammo freeze: %d | field/getter: %ld/%ld | fire/get/restore: %ld/%ld/%ld",
+                static_cast<int>(frozenAmmoValue),
+                InterlockedCompareExchange(&infinityAmmoLastField, 0, 0),
+                InterlockedCompareExchange(&infinityAmmoLastGetter, 0, 0),
+                InterlockedCompareExchange(&infinityAmmoFireCalls, 0, 0),
+                InterlockedCompareExchange(&infinityAmmoGetterCalls, 0, 0),
+                InterlockedCompareExchange(&infinityAmmoRestores, 0, 0));
         ImGui::Checkbox("No Spread", &noSpreadEnabled);
         if (ImGui::Checkbox("Remove Scope Borders", &removeScopeBorders)) InterlockedExchange(&pendingScopeOverlayRefresh, 1);
         if (ImGui::Checkbox("Weapon Chams", &weaponChamsEnabled)) {
