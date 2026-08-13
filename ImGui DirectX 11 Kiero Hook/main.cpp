@@ -224,6 +224,9 @@ struct Matrix16 {
 #define OFFSET_PLAYER_HEALTH_APPLY_B                   0x8B6F90  // bqw.scv(...)
 #define OFFSET_PLAYER_HEALTH_APPLY_C                   0x8B7210  // bqw.scw(...)
 #define OFFSET_PLAYER_HEALTH_APPLY_D                   0x8B7660  // bqw.scx(...)
+#define OFFSET_PLAYER_HIT_CONFIRMED_A                  0x87A690  // PlayerHitController.ria(boo)
+#define OFFSET_PLAYER_HIT_CONFIRMED_B                  0x87A890  // PlayerHitController.rib(boo)
+#define OFFSET_DAMAGE_RESULT_GET_HEALTH                0x880990  // boo.rfu() / dcxl
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xA6E220
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0x86C0E0
 #define OFFSET_AIMINGDATA_CLONE                      0x86F9C0
@@ -615,12 +618,18 @@ void __fastcall hk_PlayerManagerPlayerEventC(uintptr_t instance, void* player, c
 
 std::unordered_map<uintptr_t, int> g_LiveHealthByState;
 std::unordered_map<uintptr_t, int> g_LiveHealthByPlayer;
+std::unordered_map<uintptr_t, int> g_ConfirmedHealthByPlayer;
 SRWLOCK g_LiveHealthLock = SRWLOCK_INIT;
 volatile LONG boxEspHealthUpdates = 0;
 volatile LONG boxEspHealthPlayerMatches = 0;
 volatile LONG boxEspHealthLastA = -1;
 volatile LONG boxEspHealthLastB = -1;
 volatile LONG boxEspHealthLastRead = -1;
+volatile LONG boxEspConfirmedHits = 0;
+volatile LONG boxEspConfirmedHealth = -1;
+volatile LONG boxEspConfirmedFieldA = -1;
+volatile LONG boxEspConfirmedFieldB = -1;
+volatile LONG boxEspConfirmedFieldC = -1;
 using t_HealthApplyA = void(__fastcall*)(uintptr_t, int, int, bool, bool, float, const Il2CppMethod*);
 using t_HealthApplyB = void(__fastcall*)(uintptr_t, int, int, bool, bool, float, void*, const Il2CppMethod*);
 using t_HealthApplyC = void(__fastcall*)(uintptr_t, int, bool, const Il2CppMethod*);
@@ -669,6 +678,43 @@ void __fastcall hk_HealthApplyC(uintptr_t state, int a, bool b, const Il2CppMeth
 void __fastcall hk_HealthApplyD(uintptr_t state, int a, bool b, const Il2CppMethod* method) {
     o_HealthApplyD(state, a, b, method);
     InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, -1); CacheUpdatedHealth(state);
+}
+
+using t_PlayerHitConfirmed = void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*);
+t_PlayerHitConfirmed o_PlayerHitConfirmedA = nullptr;
+t_PlayerHitConfirmed o_PlayerHitConfirmedB = nullptr;
+
+static void CacheConfirmedDamageResult(uintptr_t hitController, uintptr_t result) {
+    if (!hitController || !result || !base) return;
+    int fieldA = -1, fieldB = -1, fieldC = -1, hp = -1;
+    uintptr_t player = 0;
+    __try {
+        player = *reinterpret_cast<uintptr_t*>(hitController + 0x90); // HitController.cara
+        fieldA = *reinterpret_cast<int*>(result + 0x18);              // boq.carn
+        fieldB = *reinterpret_cast<int*>(result + 0x1C);              // boq.caro
+        fieldC = *reinterpret_cast<int*>(result + 0x20);              // boq.carp
+        using GetResultHealthFn = int(__fastcall*)(uintptr_t, const Il2CppMethod*);
+        static GetResultHealthFn getResultHealth = nullptr;
+        if (!getResultHealth) getResultHealth = reinterpret_cast<GetResultHealthFn>(base + OFFSET_DAMAGE_RESULT_GET_HEALTH);
+        hp = getResultHealth(result, nullptr); // the same value KillerDetailsView uses for its health bar
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+    InterlockedExchange(&boxEspConfirmedFieldA, fieldA);
+    InterlockedExchange(&boxEspConfirmedFieldB, fieldB);
+    InterlockedExchange(&boxEspConfirmedFieldC, fieldC);
+    InterlockedExchange(&boxEspConfirmedHealth, hp);
+    InterlockedIncrement(&boxEspConfirmedHits);
+    if (!player || hp < 0 || hp > 100) return;
+    AcquireSRWLockExclusive(&g_LiveHealthLock);
+    g_ConfirmedHealthByPlayer[player] = hp;
+    ReleaseSRWLockExclusive(&g_LiveHealthLock);
+}
+void __fastcall hk_PlayerHitConfirmedA(uintptr_t hitController, uintptr_t result, const Il2CppMethod* method) {
+    o_PlayerHitConfirmedA(hitController, result, method);
+    CacheConfirmedDamageResult(hitController, result);
+}
+void __fastcall hk_PlayerHitConfirmedB(uintptr_t hitController, uintptr_t result, const Il2CppMethod* method) {
+    o_PlayerHitConfirmedB(hitController, result, method);
+    CacheConfirmedDamageResult(hitController, result);
 }
 Il2CppClass* g_GlovesManagerClass = nullptr;
 Il2CppField* g_GlovesManagerInstanceField = nullptr;
@@ -835,6 +881,12 @@ static int GetPCHealth(void* pc) {
         if (hit) states[2] = *reinterpret_cast<uintptr_t*>(hit + 0x50);
     } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
     AcquireSRWLockShared(&g_LiveHealthLock);
+    const auto confirmedIt = g_ConfirmedHealthByPlayer.find(reinterpret_cast<uintptr_t>(pc));
+    if (confirmedIt != g_ConfirmedHealthByPlayer.end()) {
+        const int hp = confirmedIt->second;
+        ReleaseSRWLockShared(&g_LiveHealthLock);
+        return hp;
+    }
     const auto playerIt = g_LiveHealthByPlayer.find(reinterpret_cast<uintptr_t>(pc));
     if (playerIt != g_LiveHealthByPlayer.end()) {
         const int hp = playerIt->second;
@@ -4213,6 +4265,12 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 InterlockedCompareExchange(&boxEspHealthLastA, 0, 0),
                 InterlockedCompareExchange(&boxEspHealthLastB, 0, 0),
                 InterlockedCompareExchange(&boxEspHealthLastRead, 0, 0));
+            ImGui::Text("Confirmed hits: %ld | HP: %ld | result: %ld/%ld/%ld",
+                InterlockedCompareExchange(&boxEspConfirmedHits, 0, 0),
+                InterlockedCompareExchange(&boxEspConfirmedHealth, 0, 0),
+                InterlockedCompareExchange(&boxEspConfirmedFieldA, 0, 0),
+                InterlockedCompareExchange(&boxEspConfirmedFieldB, 0, 0),
+                InterlockedCompareExchange(&boxEspConfirmedFieldC, 0, 0));
             ImGui::Text("Sources - dict: %ld | unity: %ld | hooks: %ld",
                 InterlockedCompareExchange(&boxEspDictionaryCount, 0, 0),
                 InterlockedCompareExchange(&boxEspUnityCount, 0, 0),
@@ -4537,6 +4595,11 @@ DWORD WINAPI HackThread(LPVOID)
     if (healthCCreate == MH_OK || healthCCreate == MH_ERROR_ALREADY_CREATED) MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HEALTH_APPLY_C));
     const MH_STATUS healthDCreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYER_HEALTH_APPLY_D), hk_HealthApplyD, (LPVOID*)&o_HealthApplyD);
     if (healthDCreate == MH_OK || healthDCreate == MH_ERROR_ALREADY_CREATED) MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HEALTH_APPLY_D));
+
+    const MH_STATUS hitConfirmedACreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYER_HIT_CONFIRMED_A), hk_PlayerHitConfirmedA, (LPVOID*)&o_PlayerHitConfirmedA);
+    if (hitConfirmedACreate == MH_OK || hitConfirmedACreate == MH_ERROR_ALREADY_CREATED) MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HIT_CONFIRMED_A));
+    const MH_STATUS hitConfirmedBCreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYER_HIT_CONFIRMED_B), hk_PlayerHitConfirmedB, (LPVOID*)&o_PlayerHitConfirmedB);
+    if (hitConfirmedBCreate == MH_OK || hitConfirmedBCreate == MH_ERROR_ALREADY_CREATED) MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HIT_CONFIRMED_B));
 
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
     o_Transform_get_forward = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_FORWARD);
