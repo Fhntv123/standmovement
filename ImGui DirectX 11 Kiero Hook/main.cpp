@@ -592,8 +592,17 @@ t_PlayerManagerPlayerEvent o_PlayerManagerPlayerEventA = nullptr;
 t_PlayerManagerPlayerEvent o_PlayerManagerPlayerEventB = nullptr;
 t_PlayerManagerPlayerEvent o_PlayerManagerPlayerEventC = nullptr;
 
+static void ForgetCachedHealthForPlayer(void* player) {
+    if (!player) return;
+    AcquireSRWLockExclusive(&g_LiveHealthLock);
+    g_LiveHealthByPlayer.erase(reinterpret_cast<uintptr_t>(player));
+    g_ConfirmedHealthByPlayer.erase(reinterpret_cast<uintptr_t>(player));
+    ReleaseSRWLockExclusive(&g_LiveHealthLock);
+}
+
 static void RememberLivePlayer(void* player) {
     if (!player) return;
+    ForgetCachedHealthForPlayer(player);
     AcquireSRWLockExclusive(&g_LivePlayerRegistryLock);
     if (std::find(g_LivePlayerRegistry.begin(), g_LivePlayerRegistry.end(), player) == g_LivePlayerRegistry.end()) {
         g_LivePlayerRegistry.push_back(player);
@@ -880,29 +889,20 @@ static int GetPCHealth(void* pc) {
         const uintptr_t hit = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pc) + 0xF0);
         if (hit) states[2] = *reinterpret_cast<uintptr_t*>(hit + 0x50);
     } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+    // Deliberately no cross-frame cache here: a hashmap keyed by pointer breaks the moment
+    // Unity/Il2Cpp reuses a PlayerController/bqw address for a respawned or newly joined
+    // player, silently showing that address's last (possibly dead) value on a full-health
+    // player who was never hit. The state pointer is recomputed from pc every call, so a
+    // respawn/rejoin naturally resolves to a brand-new bqw with its own fresh value.
+    int bestHp = 101;
+    for (uintptr_t state : states) { const int hp = ReadHealthStateNow(state); if (hp >= 0 && hp < bestHp) bestHp = hp; }
+    if (bestHp <= 100) { InterlockedExchange(&boxEspHealthLastRead, bestHp); return bestHp; }
     AcquireSRWLockShared(&g_LiveHealthLock);
     const auto confirmedIt = g_ConfirmedHealthByPlayer.find(reinterpret_cast<uintptr_t>(pc));
-    if (confirmedIt != g_ConfirmedHealthByPlayer.end()) {
-        const int hp = confirmedIt->second;
-        ReleaseSRWLockShared(&g_LiveHealthLock);
-        return hp;
-    }
-    const auto playerIt = g_LiveHealthByPlayer.find(reinterpret_cast<uintptr_t>(pc));
-    if (playerIt != g_LiveHealthByPlayer.end()) {
-        const int hp = playerIt->second;
-        ReleaseSRWLockShared(&g_LiveHealthLock);
-        InterlockedIncrement(&boxEspHealthPlayerMatches);
-        return hp;
-    }
-    int bestHp = 101;
-    for (uintptr_t state : states) {
-        const auto it = g_LiveHealthByState.find(state);
-        if (state && it != g_LiveHealthByState.end() && it->second < bestHp) bestHp = it->second;
-    }
+    const bool hasConfirmed = confirmedIt != g_ConfirmedHealthByPlayer.end();
+    const int confirmedHp = hasConfirmed ? confirmedIt->second : -1;
     ReleaseSRWLockShared(&g_LiveHealthLock);
-    if (bestHp <= 100) return bestHp;
-    for (uintptr_t state : states) { const int hp = ReadHealthStateNow(state); if (hp >= 0 && hp < bestHp) bestHp = hp; }
-    return bestHp <= 100 ? bestHp : -1;
+    return hasConfirmed ? confirmedHp : -1;
 }
 
 static const char* WeaponNameFromId(unsigned char id) {
