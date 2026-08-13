@@ -537,6 +537,9 @@ BYTE* NewEnemyCordsFunc = nullptr;
 
 
 int espCount = 10;
+volatile LONG boxEspEnumerated = 0;
+volatile LONG boxEspProjected = 0;
+volatile LONG boxEspDrawn = 0;
 
 // IL2CPP runtime bindings (init in HackThread)
 IL2CPP_API g_il2cpp;
@@ -579,29 +582,41 @@ static void* GetGlovesManagerInstance() {
 //   Entry: 0x00 hashCode(int32) 0x04 next(int32) 0x08 key 0x10 value ... size = 0x18 for <int,ref>
 //   0x20 count(int32)
 // This is empirical and may vary; if it crashes, fall back to key-string dict at 0x50 or use ToArray via method invocation.
+static void CollectPlayersFromDictionary(uintptr_t dict, void** out, int maxN, int& outN) {
+    if (!dict || !out || maxN <= 0) return;
+    __try {
+        const uintptr_t entries = *reinterpret_cast<uintptr_t*>(dict + 0x18);
+        const int count = *reinterpret_cast<int*>(dict + 0x20);
+        if (!entries || count <= 0 || count > 256) return;
+        const int entrySize = 0x18;
+        for (int i = 0; i < count && outN < maxN; ++i) {
+            const uintptr_t entry = entries + 0x20 + static_cast<uintptr_t>(i) * entrySize;
+            if (*reinterpret_cast<int*>(entry + 0x00) < 0) continue;
+            void* player = *reinterpret_cast<void**>(entry + 0x10);
+            if (!player) continue;
+            bool duplicate = false;
+            for (int existing = 0; existing < outN; ++existing) {
+                if (out[existing] == player) { duplicate = true; break; }
+            }
+            if (!duplicate) out[outN++] = player;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 static void CollectPlayers(void** out, int maxN, int& outN) {
     outN = 0;
     void* pm = GetPlayerManagerInstance();
     if (!pm) return;
-    uintptr_t dict = *(uintptr_t*)((uintptr_t)pm + PM_PLAYERS_DICT);
-    if (!dict) return;
     __try {
-        uintptr_t entries = *(uintptr_t*)(dict + 0x18);
-        int count = *(int*)(dict + 0x20);
-        if (!entries || count <= 0 || count > 256) return;
-        // il2cpp array header: 0x10 -> length, 0x20 -> first element (approximate)
-        uintptr_t arr = entries + 0x20;
-        const int ENTRY_SIZE = 0x18;
-        for (int i = 0; i < count && outN < maxN; ++i) {
-            uintptr_t e = arr + (uintptr_t)i * ENTRY_SIZE;
-            int hash = *(int*)(e + 0x00);
-            if (hash < 0) continue;
-            void* pc = *(void**)(e + 0x10);
-            if (pc) out[outN++] = pc;
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        outN = 0;
+        // Current dump: PlayerManager.bzze Dictionary<int, PlayerController> +0x28.
+        CollectPlayersFromDictionary(*reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pm) + 0x28), out, maxN, outN);
+        // Runtime fallback: bzzj Dictionary<string, PlayerController> +0x50.
+        // This also survives builds where the integer dictionary is not populated in offline mode.
+        if (outN <= 1)
+            CollectPlayersFromDictionary(*reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pm) + 0x50), out, maxN, outN);
     }
+    __except (EXCEPTION_EXECUTE_HANDLER) { outN = 0; }
 }
 
 static bool GetPCPosition(void* pc, Vector3& outPos) {
@@ -2910,64 +2925,84 @@ void UpdateTrail() {
 
 
 void BoxEsp() {
-    static int __log_ctr = 0; ++__log_ctr;
-    bool __do_log = (__log_ctr % 120) == 1;
-    if (!g_il2cpp.ga || !g_PlayerManagerInstanceField) { if (__do_log) LINDY_LOG("[BoxEsp] blocked ga=%p field=%p", (void*)g_il2cpp.ga, (void*)g_PlayerManagerInstanceField); return; }
-    if (__do_log) {
-        void* __pm = GetPlayerManagerInstance();
-        void* __localPC = GetLocalPC();
-        Vector3 __mp(0,0,0); if (__localPC) GetPCPosition(__localPC, __mp);
-        LINDY_LOG("[BoxEsp] probe pm=%p localPC=%p myPos=(%.2f,%.2f,%.2f)", __pm, __localPC, __mp.x, __mp.y, __mp.z);
-    }
-
     void* localPC = GetLocalPC();
-    Vector3 MyPos(0,0,0);
-    if (localPC) {
-        GetPCPosition(localPC, MyPos);
-    } else {
-        MyPos = GetPlayerPosition();
-    }
-
-    Matrix16 vpMatrix;
-    if (!GetViewProjectionMatrix(vpMatrix)) return;
-    g_ViewProjectionMatrix = vpMatrix;
-    g_MatrixValid = true;
+    Vector3 localPosition;
+    const bool haveLocalPosition = localPC && GetPCPosition(localPC, localPosition);
 
     void* players[64];
-    int nPlayers = 0;
-    CollectPlayers(players, 64, nPlayers);
-    if (nPlayers <= 0) return;
+    int playerCount = 0;
+    CollectPlayers(players, 64, playerCount);
+    InterlockedExchange(&boxEspEnumerated, playerCount);
+    if (playerCount <= 0 || !o_WorldToScreenPoint) {
+        InterlockedExchange(&boxEspProjected, 0);
+        InterlockedExchange(&boxEspDrawn, 0);
+        return;
+    }
 
-    ImDrawList* draw_list = ImGui::GetBackgroundDrawList();
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    int projected = 0;
     int drawn = 0;
-    for (int i = 0; i < nPlayers && drawn < espCount; ++i) {
-        void* pc = players[i];
-        if (!pc || pc == localPC) continue;
-        Vector3 EnemyPos;
-        if (!GetPCPosition(pc, EnemyPos)) continue;
-        Vector2 ScreenPos;
-        if (!WorldToScreen(EnemyPos, ScreenPos, vpMatrix)) continue;
-        float distance = (EnemyPos - MyPos).Length();
-        if (distance > espMaxDistance || distance < 0.5f) continue;
-        float scale = (10.0f / distance);
-        float dynamicThickness = fmaxf(1.0f, fminf(3.0f, (2.5f * scale * 2)));
-        float fW = 75.f * scale;
-        float fH = 150.f * scale;
-        ImVec2 box_min = ImVec2(ScreenPos.x - fW * 0.5f, ScreenPos.y - fH * 0.5f);
-        ImVec2 box_max = ImVec2(ScreenPos.x + fW * 0.5f, ScreenPos.y + fH * 0.5f);
-        ImU32 color = IsBotPC(pc) ? IM_COL32(0, 255, 0, 255) : IM_COL32(255, 0, 0, 255);
-        draw_list->AddRect(box_min, box_max, color, 2.5f, 0, dynamicThickness);
-        char distText[32];
-        snprintf(distText, sizeof(distText), "%.0fm", distance);
-        ImVec2 textSize = ImGui::CalcTextSize(distText);
-        ImVec2 textPos = ImVec2(ScreenPos.x - textSize.x * 0.5f, box_max.y + 2);
-        draw_list->AddText(ImVec2(textPos.x - 1, textPos.y), IM_COL32(0, 0, 0, 255), distText);
-        draw_list->AddText(ImVec2(textPos.x + 1, textPos.y), IM_COL32(0, 0, 0, 255), distText);
-        draw_list->AddText(ImVec2(textPos.x, textPos.y - 1), IM_COL32(0, 0, 0, 255), distText);
-        draw_list->AddText(ImVec2(textPos.x, textPos.y + 1), IM_COL32(0, 0, 0, 255), distText);
-        draw_list->AddText(textPos, IM_COL32(255, 255, 255, 255), distText);
+    for (int i = 0; i < playerCount && drawn < espCount; ++i) {
+        void* player = players[i];
+        if (!player || player == localPC) continue;
+
+        Vector3 basePosition;
+        if (!GetPCPosition(player, basePosition)) continue;
+        if (haveLocalPosition) {
+            const float distance = basePosition.Distance(localPosition);
+            if (distance < 0.5f || distance > espMaxDistance) continue;
+        }
+
+        Vector3 headPosition = basePosition;
+        Vector3 feetPosition = basePosition;
+        bool haveHead = false;
+        bool haveFeet = false;
+        __try {
+            const uintptr_t biped = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(player) + 0x118);
+            if (biped && o_Transform_get_position) {
+                const uintptr_t head = *reinterpret_cast<uintptr_t*>(biped + 0x20);
+                const uintptr_t leftFoot = *reinterpret_cast<uintptr_t*>(biped + 0xA0);
+                const uintptr_t rightFoot = *reinterpret_cast<uintptr_t*>(biped + 0xC0);
+                if (head) { headPosition = o_Transform_get_position(head); haveHead = true; }
+                if (leftFoot && rightFoot) {
+                    const Vector3 left = o_Transform_get_position(leftFoot);
+                    const Vector3 right = o_Transform_get_position(rightFoot);
+                    feetPosition = Vector3((left.x + right.x) * 0.5f, (left.y + right.y) * 0.5f, (left.z + right.z) * 0.5f);
+                    haveFeet = true;
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        if (!haveHead) headPosition.y += 1.75f;
+        if (!haveFeet) feetPosition.y -= 0.1f;
+
+        Vector2 headScreen, feetScreen;
+        if (!UnityWorldToScreen(headPosition, headScreen) || !UnityWorldToScreen(feetPosition, feetScreen)) continue;
+        ++projected;
+        float height = fabsf(feetScreen.y - headScreen.y);
+        if (height < 8.0f || height > ImGui::GetIO().DisplaySize.y * 1.5f) continue;
+        const float width = height * 0.48f;
+        const float centerX = (headScreen.x + feetScreen.x) * 0.5f;
+        const float top = fminf(headScreen.y, feetScreen.y);
+        const float bottom = fmaxf(headScreen.y, feetScreen.y);
+        const ImVec2 boxMin(centerX - width * 0.5f, top);
+        const ImVec2 boxMax(centerX + width * 0.5f, bottom);
+        const ImU32 color = IsBotPC(player) ? IM_COL32(80, 255, 120, 255) : IM_COL32(255, 80, 80, 255);
+        draw->AddRect(boxMin, boxMax, IM_COL32(0, 0, 0, 220), 2.0f, 0, 3.5f);
+        draw->AddRect(boxMin, boxMax, color, 2.0f, 0, 1.5f);
+
+        if (haveLocalPosition) {
+            char distanceText[32];
+            sprintf_s(distanceText, "%.0fm", basePosition.Distance(localPosition));
+            const ImVec2 size = ImGui::CalcTextSize(distanceText);
+            const ImVec2 textPos(centerX - size.x * 0.5f, bottom + 3.0f);
+            draw->AddText(ImVec2(textPos.x + 1.0f, textPos.y + 1.0f), IM_COL32(0, 0, 0, 255), distanceText);
+            draw->AddText(textPos, IM_COL32(255, 255, 255, 255), distanceText);
+        }
         ++drawn;
     }
+    InterlockedExchange(&boxEspProjected, projected);
+    InterlockedExchange(&boxEspDrawn, drawn);
 }
 
 
@@ -3813,6 +3848,14 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Spacing();
         
         ImGui::Checkbox("Box ESP", &boxEsp);
+        if (boxEsp) {
+            ImGui::SliderInt("ESP Player Limit", &espCount, 1, 64);
+            ImGui::SliderFloat("ESP Max Distance", &espMaxDistance, 10.0f, 500.0f, "%.0f m");
+            ImGui::Text("ESP players: %ld | projected: %ld | drawn: %ld",
+                InterlockedCompareExchange(&boxEspEnumerated, 0, 0),
+                InterlockedCompareExchange(&boxEspProjected, 0, 0),
+                InterlockedCompareExchange(&boxEspDrawn, 0, 0));
+        }
         ImGui::Checkbox("Show Velocity", &showVelocity);
         ImGui::Checkbox("Show Trail", &showTrail);
         if (ImGui::Checkbox("World Color", &worldColorEnabled))
