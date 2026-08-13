@@ -614,8 +614,13 @@ void __fastcall hk_PlayerManagerPlayerEventC(uintptr_t instance, void* player, c
 }
 
 std::unordered_map<uintptr_t, int> g_LiveHealthByState;
+std::unordered_map<uintptr_t, int> g_LiveHealthByPlayer;
 SRWLOCK g_LiveHealthLock = SRWLOCK_INIT;
 volatile LONG boxEspHealthUpdates = 0;
+volatile LONG boxEspHealthPlayerMatches = 0;
+volatile LONG boxEspHealthLastA = -1;
+volatile LONG boxEspHealthLastB = -1;
+volatile LONG boxEspHealthLastRead = -1;
 using t_HealthApplyA = void(__fastcall*)(uintptr_t, int, int, bool, bool, float, const Il2CppMethod*);
 using t_HealthApplyB = void(__fastcall*)(uintptr_t, int, int, bool, bool, float, void*, const Il2CppMethod*);
 using t_HealthApplyC = void(__fastcall*)(uintptr_t, int, bool, const Il2CppMethod*);
@@ -637,23 +642,33 @@ static int ReadHealthStateNow(uintptr_t state) {
 static void CacheUpdatedHealth(uintptr_t state) {
     const int hp = ReadHealthStateNow(state);
     if (hp < 0) return;
+    uintptr_t player = 0;
+    __try { player = *reinterpret_cast<uintptr_t*>(state + 0x40); } // bqw.cbcu
+    __except (EXCEPTION_EXECUTE_HANDLER) { player = 0; }
     AcquireSRWLockExclusive(&g_LiveHealthLock);
     g_LiveHealthByState[state] = hp;
+    if (player) g_LiveHealthByPlayer[player] = hp;
     if (g_LiveHealthByState.size() > 256) g_LiveHealthByState.clear();
+    if (g_LiveHealthByPlayer.size() > 256) g_LiveHealthByPlayer.clear();
     ReleaseSRWLockExclusive(&g_LiveHealthLock);
+    InterlockedExchange(&boxEspHealthLastRead, hp);
     InterlockedIncrement(&boxEspHealthUpdates);
 }
 void __fastcall hk_HealthApplyA(uintptr_t state, int a, int b, bool c, bool d, float e, const Il2CppMethod* method) {
-    o_HealthApplyA(state, a, b, c, d, e, method); CacheUpdatedHealth(state);
+    o_HealthApplyA(state, a, b, c, d, e, method);
+    InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, b); CacheUpdatedHealth(state);
 }
 void __fastcall hk_HealthApplyB(uintptr_t state, int a, int b, bool c, bool d, float e, void* info, const Il2CppMethod* method) {
-    o_HealthApplyB(state, a, b, c, d, e, info, method); CacheUpdatedHealth(state);
+    o_HealthApplyB(state, a, b, c, d, e, info, method);
+    InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, b); CacheUpdatedHealth(state);
 }
 void __fastcall hk_HealthApplyC(uintptr_t state, int a, bool b, const Il2CppMethod* method) {
-    o_HealthApplyC(state, a, b, method); CacheUpdatedHealth(state);
+    o_HealthApplyC(state, a, b, method);
+    InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, -1); CacheUpdatedHealth(state);
 }
 void __fastcall hk_HealthApplyD(uintptr_t state, int a, bool b, const Il2CppMethod* method) {
-    o_HealthApplyD(state, a, b, method); CacheUpdatedHealth(state);
+    o_HealthApplyD(state, a, b, method);
+    InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, -1); CacheUpdatedHealth(state);
 }
 Il2CppClass* g_GlovesManagerClass = nullptr;
 Il2CppField* g_GlovesManagerInstanceField = nullptr;
@@ -820,15 +835,22 @@ static int GetPCHealth(void* pc) {
         if (hit) states[2] = *reinterpret_cast<uintptr_t*>(hit + 0x50);
     } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
     AcquireSRWLockShared(&g_LiveHealthLock);
+    const auto playerIt = g_LiveHealthByPlayer.find(reinterpret_cast<uintptr_t>(pc));
+    if (playerIt != g_LiveHealthByPlayer.end()) {
+        const int hp = playerIt->second;
+        ReleaseSRWLockShared(&g_LiveHealthLock);
+        InterlockedIncrement(&boxEspHealthPlayerMatches);
+        return hp;
+    }
+    int bestHp = 101;
     for (uintptr_t state : states) {
         const auto it = g_LiveHealthByState.find(state);
-        if (state && it != g_LiveHealthByState.end()) {
-            const int hp = it->second; ReleaseSRWLockShared(&g_LiveHealthLock); return hp;
-        }
+        if (state && it != g_LiveHealthByState.end() && it->second < bestHp) bestHp = it->second;
     }
     ReleaseSRWLockShared(&g_LiveHealthLock);
-    for (uintptr_t state : states) { const int hp = ReadHealthStateNow(state); if (hp >= 0) return hp; }
-    return -1;
+    if (bestHp <= 100) return bestHp;
+    for (uintptr_t state : states) { const int hp = ReadHealthStateNow(state); if (hp >= 0 && hp < bestHp) bestHp = hp; }
+    return bestHp <= 100 ? bestHp : -1;
 }
 
 static const char* WeaponNameFromId(unsigned char id) {
@@ -4186,6 +4208,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 InterlockedCompareExchange(&boxEspProjected, 0, 0),
                 InterlockedCompareExchange(&boxEspDrawn, 0, 0),
                 InterlockedCompareExchange(&boxEspHealthUpdates, 0, 0));
+            ImGui::Text("HP matched: %ld | last args: %ld/%ld | getter: %ld",
+                InterlockedCompareExchange(&boxEspHealthPlayerMatches, 0, 0),
+                InterlockedCompareExchange(&boxEspHealthLastA, 0, 0),
+                InterlockedCompareExchange(&boxEspHealthLastB, 0, 0),
+                InterlockedCompareExchange(&boxEspHealthLastRead, 0, 0));
             ImGui::Text("Sources - dict: %ld | unity: %ld | hooks: %ld",
                 InterlockedCompareExchange(&boxEspDictionaryCount, 0, 0),
                 InterlockedCompareExchange(&boxEspUnityCount, 0, 0),
