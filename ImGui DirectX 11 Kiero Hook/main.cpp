@@ -431,6 +431,11 @@ float visibleAimbotHoldMs = 140.0f;
 bool aimbotAutoFire = false;
 uintptr_t aimbotLastHitParameters = 0;
 volatile LONG aimbotAutoFired = 0;
+ULONGLONG aimbotAutoFireNextRequestAt = 0;
+thread_local bool autoFireCastReached = false;
+thread_local bool autoFireTargetAccepted = false;
+volatile LONG aimbotAutoFireRejected = 0;
+volatile LONG aimbotAutoFireBusy = 0;
 bool visibleAimbotCameraActive = false;
 uintptr_t visibleAimbotAimingData = 0;
 Vector3 visibleAimbotOriginalAimAngle;
@@ -2421,6 +2426,7 @@ static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t hitParameters, 
 
 uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float maxDistance, uintptr_t hitParameters, const Il2CppMethod* method)
 {
+    if (insideAutoFireRequest) autoFireCastReached = true;
     bool applyVisibleSnapAfterCast = false;
     Vector3 visibleSnapDirection;
     if (insideLocalGunFire && hitParameters) aimbotLastHitParameters = hitParameters;
@@ -2431,7 +2437,10 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
             // Silent mode keeps doing exactly what it did before. Visible mode uses
             // the same proven shot direction but also rotates the real rendered camera.
             direction = targetDirection;
-            if (insideAutoFireRequest) InterlockedIncrement(&aimbotAutoFired);
+            if (insideAutoFireRequest) {
+                autoFireTargetAccepted = true;
+                InterlockedIncrement(&aimbotAutoFired);
+            }
             if (visibleAimbotEnabled) {
                 visibleSnapDirection = targetDirection;
                 applyVisibleSnapAfterCast = true;
@@ -2576,14 +2585,59 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     if (isLocalGun && weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
 }
 
+static ULONGLONG GetNativeAutoFireIntervalMs(uintptr_t gun)
+{
+    if (!gun || !base) return 100;
+    __try {
+        const uintptr_t parameters = *reinterpret_cast<uintptr_t*>(gun + 0x188);
+        if (!parameters) return 100;
+        using GetFireRateFn = int(__fastcall*)(uintptr_t, const Il2CppMethod*);
+        const int fireRate = reinterpret_cast<GetFireRateFn>(base + 0x99E350)(parameters, nullptr);
+        // GunParameters._fireRate is rounds per minute. Match the weapon's own
+        // cadence and clamp corrupted/transitional values safely.
+        if (fireRate < 30 || fireRate > 3000) return 100;
+        ULONGLONG interval = static_cast<ULONGLONG>(60000 / fireRate);
+        if (interval < 20) interval = 20;
+        if (interval > 1000) interval = 1000;
+        return interval;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 100; }
+}
+
 static void UpdateAimbotAutoFire()
 {
     if (!keyValidated || !aimbotAutoFire || (!aimbotEnabled && !visibleAimbotEnabled) ||
-        !activeLocalWeaponController || !o_GunController_Fire)
+        !activeLocalWeaponController || !o_GunController_Fire) {
+        aimbotAutoFireNextRequestAt = 0;
         return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (insideAutoFireRequest || now < aimbotAutoFireNextRequestAt) return;
+
+    autoFireCastReached = false;
+    autoFireTargetAccepted = false;
     insideAutoFireRequest = true;
     hk_GunController_Fire(activeLocalWeaponController, Vector3(), nullptr);
     insideAutoFireRequest = false;
+
+    const ULONGLONG nativeInterval = GetNativeAutoFireIntervalMs(activeLocalWeaponController);
+    if (autoFireTargetAccepted) {
+        // A real targeted shot was accepted: wait exactly for native weapon cadence.
+        aimbotAutoFireNextRequestAt = now + nativeInterval;
+    } else if (autoFireCastReached) {
+        // Native Fire reached HitCaster but no visible target qualified. Recheck at
+        // 20 Hz; this avoids expensive cast spam while keeping response under 50 ms.
+        InterlockedIncrement(&aimbotAutoFireRejected);
+        aimbotAutoFireNextRequestAt = now + 50;
+    } else {
+        // Weapon rejected the request before HitCaster (cooldown/reload/state).
+        // Never hammer Fire every movement callback; retry at half native cadence.
+        InterlockedIncrement(&aimbotAutoFireBusy);
+        ULONGLONG retry = nativeInterval / 2;
+        if (retry < 20) retry = 20;
+        if (retry > 100) retry = 100;
+        aimbotAutoFireNextRequestAt = now + retry;
+    }
 }
 
 short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
@@ -3336,6 +3390,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         gloveChamsRenderers.clear();
         weaponChamsController = 0;
         activeLocalWeaponController = 0;
+        aimbotAutoFireNextRequestAt = 0;
         adminBhopObservedMovement = 0;
         adminBhopObservedJumpParameters = 0;
         adminBhopOriginalCaptured = false;
@@ -4463,7 +4518,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 InterlockedCompareExchange(&aimbotVisibleTargets, 0, 0),
                 InterlockedCompareExchange(&aimbotApplied, 0, 0));
         if (aimbotAutoFire)
-            ImGui::Text("Auto Fire uses native weapon cadence");
+            ImGui::Text("Auto Fire: %ld accepted | %ld no target | %ld weapon busy",
+                InterlockedCompareExchange(&aimbotAutoFired, 0, 0),
+                InterlockedCompareExchange(&aimbotAutoFireRejected, 0, 0),
+                InterlockedCompareExchange(&aimbotAutoFireBusy, 0, 0));
         ImGui::Spacing();
         ImGui::TextColored(accent, "Keybinds");
         ImGui::Separator();
