@@ -219,7 +219,11 @@ struct Matrix16 {
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_B          0x840DE0  // PlayerManager.qkc(PlayerController)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_C          0x840E10  // PlayerManager.qkd(PlayerController)
 #define OFFSET_WEAPONCONTROLLER_GET_ID                0x5409B0  // WeaponController.whs() -> glg
-#define OFFSET_PLAYERCONTROLLER_GET_HEALTH             0x83A960  // PlayerController.qgg() -> live HP
+#define OFFSET_PLAYER_HEALTH_GET_CURRENT               0x8B77E0  // bqw.scy() after network updates
+#define OFFSET_PLAYER_HEALTH_APPLY_A                   0x8B6B70  // bqw.scu(...)
+#define OFFSET_PLAYER_HEALTH_APPLY_B                   0x8B6F90  // bqw.scv(...)
+#define OFFSET_PLAYER_HEALTH_APPLY_C                   0x8B7210  // bqw.scw(...)
+#define OFFSET_PLAYER_HEALTH_APPLY_D                   0x8B7660  // bqw.scx(...)
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xA6E220
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0x86C0E0
 #define OFFSET_AIMINGDATA_CLONE                      0x86F9C0
@@ -608,6 +612,49 @@ void __fastcall hk_PlayerManagerPlayerEventC(uintptr_t instance, void* player, c
     RememberLivePlayer(player);
     o_PlayerManagerPlayerEventC(instance, player, method);
 }
+
+std::unordered_map<uintptr_t, int> g_LiveHealthByState;
+SRWLOCK g_LiveHealthLock = SRWLOCK_INIT;
+volatile LONG boxEspHealthUpdates = 0;
+using t_HealthApplyA = void(__fastcall*)(uintptr_t, int, int, bool, bool, float, const Il2CppMethod*);
+using t_HealthApplyB = void(__fastcall*)(uintptr_t, int, int, bool, bool, float, void*, const Il2CppMethod*);
+using t_HealthApplyC = void(__fastcall*)(uintptr_t, int, bool, const Il2CppMethod*);
+t_HealthApplyA o_HealthApplyA = nullptr;
+t_HealthApplyB o_HealthApplyB = nullptr;
+t_HealthApplyC o_HealthApplyC = nullptr;
+t_HealthApplyC o_HealthApplyD = nullptr;
+
+static int ReadHealthStateNow(uintptr_t state) {
+    if (!state || !base) return -1;
+    __try {
+        using GetHealthFn = int(__fastcall*)(uintptr_t, const Il2CppMethod*);
+        static GetHealthFn getHealth = nullptr;
+        if (!getHealth) getHealth = reinterpret_cast<GetHealthFn>(base + OFFSET_PLAYER_HEALTH_GET_CURRENT);
+        const int hp = getHealth(state, nullptr);
+        return hp >= 0 && hp <= 100 ? hp : -1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
+static void CacheUpdatedHealth(uintptr_t state) {
+    const int hp = ReadHealthStateNow(state);
+    if (hp < 0) return;
+    AcquireSRWLockExclusive(&g_LiveHealthLock);
+    g_LiveHealthByState[state] = hp;
+    if (g_LiveHealthByState.size() > 256) g_LiveHealthByState.clear();
+    ReleaseSRWLockExclusive(&g_LiveHealthLock);
+    InterlockedIncrement(&boxEspHealthUpdates);
+}
+void __fastcall hk_HealthApplyA(uintptr_t state, int a, int b, bool c, bool d, float e, const Il2CppMethod* method) {
+    o_HealthApplyA(state, a, b, c, d, e, method); CacheUpdatedHealth(state);
+}
+void __fastcall hk_HealthApplyB(uintptr_t state, int a, int b, bool c, bool d, float e, void* info, const Il2CppMethod* method) {
+    o_HealthApplyB(state, a, b, c, d, e, info, method); CacheUpdatedHealth(state);
+}
+void __fastcall hk_HealthApplyC(uintptr_t state, int a, bool b, const Il2CppMethod* method) {
+    o_HealthApplyC(state, a, b, method); CacheUpdatedHealth(state);
+}
+void __fastcall hk_HealthApplyD(uintptr_t state, int a, bool b, const Il2CppMethod* method) {
+    o_HealthApplyD(state, a, b, method); CacheUpdatedHealth(state);
+}
 Il2CppClass* g_GlovesManagerClass = nullptr;
 Il2CppField* g_GlovesManagerInstanceField = nullptr;
 
@@ -763,17 +810,25 @@ static void GetPCName(void* pc, char* output, int outputSize) {
 }
 
 static int GetPCHealth(void* pc) {
-    if (!pc || !base) return -1;
+    if (!pc) return -1;
+    uintptr_t states[3] = {};
     __try {
-        // PlayerController.qgg() is the public live-health property. It applies the
-        // replicated damage state; bqw.scy() alone only returns the 100 HP base value.
-        using GetLiveHealthFn = int(__fastcall*)(void*, const Il2CppMethod*);
-        static GetLiveHealthFn getLiveHealth = nullptr;
-        if (!getLiveHealth)
-            getLiveHealth = reinterpret_cast<GetLiveHealthFn>(base + OFFSET_PLAYERCONTROLLER_GET_HEALTH);
-        const int value = getLiveHealth(pc, nullptr);
-        return value >= 0 && value <= 100 ? value : -1;
+        states[0] = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pc) + 0x148);
+        const uintptr_t network = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pc) + 0x108);
+        if (network) states[1] = *reinterpret_cast<uintptr_t*>(network + 0xA0);
+        const uintptr_t hit = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pc) + 0xF0);
+        if (hit) states[2] = *reinterpret_cast<uintptr_t*>(hit + 0x50);
     } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+    AcquireSRWLockShared(&g_LiveHealthLock);
+    for (uintptr_t state : states) {
+        const auto it = g_LiveHealthByState.find(state);
+        if (state && it != g_LiveHealthByState.end()) {
+            const int hp = it->second; ReleaseSRWLockShared(&g_LiveHealthLock); return hp;
+        }
+    }
+    ReleaseSRWLockShared(&g_LiveHealthLock);
+    for (uintptr_t state : states) { const int hp = ReadHealthStateNow(state); if (hp >= 0) return hp; }
+    return -1;
 }
 
 static const char* WeaponNameFromId(unsigned char id) {
@@ -4126,10 +4181,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::ColorEdit3("ESP Health Color", espHealthColor);
             ImGui::Checkbox("ESP Health Gradient", &espHealthGradient);
             if (espHealthGradient) ImGui::ColorEdit3("ESP Health Gradient Color", espHealthBottomColor);
-            ImGui::Text("ESP players: %ld | projected: %ld | drawn: %ld",
+            ImGui::Text("ESP players: %ld | projected: %ld | drawn: %ld | HP updates: %ld",
                 InterlockedCompareExchange(&boxEspEnumerated, 0, 0),
                 InterlockedCompareExchange(&boxEspProjected, 0, 0),
-                InterlockedCompareExchange(&boxEspDrawn, 0, 0));
+                InterlockedCompareExchange(&boxEspDrawn, 0, 0),
+                InterlockedCompareExchange(&boxEspHealthUpdates, 0, 0));
             ImGui::Text("Sources - dict: %ld | unity: %ld | hooks: %ld",
                 InterlockedCompareExchange(&boxEspDictionaryCount, 0, 0),
                 InterlockedCompareExchange(&boxEspUnityCount, 0, 0),
@@ -4445,6 +4501,15 @@ DWORD WINAPI HackThread(LPVOID)
     LINDY_LOG("[BoxEsp] player event hooks A=%d/%d B=%d/%d C=%d/%d",
         (int)playerEventACreate, (int)playerEventAEnable, (int)playerEventBCreate,
         (int)playerEventBEnable, (int)playerEventCCreate, (int)playerEventCEnable);
+
+    const MH_STATUS healthACreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYER_HEALTH_APPLY_A), hk_HealthApplyA, (LPVOID*)&o_HealthApplyA);
+    if (healthACreate == MH_OK || healthACreate == MH_ERROR_ALREADY_CREATED) MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HEALTH_APPLY_A));
+    const MH_STATUS healthBCreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYER_HEALTH_APPLY_B), hk_HealthApplyB, (LPVOID*)&o_HealthApplyB);
+    if (healthBCreate == MH_OK || healthBCreate == MH_ERROR_ALREADY_CREATED) MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HEALTH_APPLY_B));
+    const MH_STATUS healthCCreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYER_HEALTH_APPLY_C), hk_HealthApplyC, (LPVOID*)&o_HealthApplyC);
+    if (healthCCreate == MH_OK || healthCCreate == MH_ERROR_ALREADY_CREATED) MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HEALTH_APPLY_C));
+    const MH_STATUS healthDCreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYER_HEALTH_APPLY_D), hk_HealthApplyD, (LPVOID*)&o_HealthApplyD);
+    if (healthDCreate == MH_OK || healthDCreate == MH_ERROR_ALREADY_CREATED) MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HEALTH_APPLY_D));
 
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
     o_Transform_get_forward = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_FORWARD);
