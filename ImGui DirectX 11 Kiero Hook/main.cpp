@@ -409,6 +409,11 @@ bool visibleAimbotEnabled = false;       // visibly turns the real camera, then 
 bool aimbotVisibleCheck = true;
 float aimbotFov = 360.0f;
 float visibleAimbotHoldMs = 140.0f;
+bool aimbotAutoFire = false;
+float aimbotAutoFireDelayMs = 110.0f;
+ULONGLONG aimbotNextAutoFireAt = 0;
+uintptr_t aimbotLastHitParameters = 0;
+volatile LONG aimbotAutoFired = 0;
 bool visibleAimbotCameraActive = false;
 uintptr_t visibleAimbotCameraTransform = 0;
 Vector3 visibleAimbotOriginalEuler;
@@ -2098,6 +2103,18 @@ static void UpdateVisibleAimbotCamera()
     }
 }
 
+static void CancelVisibleAimbotCamera()
+{
+    if (!visibleAimbotCameraActive) return;
+    __try {
+        if (visibleAimbotCameraTransform && o_Transform_set_eulerAngles)
+            o_Transform_set_eulerAngles(visibleAimbotCameraTransform, visibleAimbotOriginalEuler);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    visibleAimbotCameraActive = false;
+    visibleAimbotCameraTransform = 0;
+}
+
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
     __try {
@@ -2349,6 +2366,7 @@ static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t hitParameters, 
 
 uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float maxDistance, uintptr_t hitParameters, const Il2CppMethod* method)
 {
+    if (insideLocalGunFire && hitParameters) aimbotLastHitParameters = hitParameters;
     if (keyValidated && insideLocalGunFire && (aimbotEnabled || visibleAimbotEnabled)) {
         InterlockedIncrement(&aimbotShots);
         Vector3 targetDirection;
@@ -2460,6 +2478,34 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     o_GunController_Fire(instance, playSound, method);
     insideLocalGunFire = false;
     if (isLocalGun && weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
+}
+
+static void UpdateAimbotAutoFire()
+{
+    if (!keyValidated || !aimbotAutoFire || (!aimbotEnabled && !visibleAimbotEnabled) ||
+        !activeLocalWeaponController || !aimbotLastHitParameters || !o_GunController_Fire)
+        return;
+    const ULONGLONG now = GetTickCount64();
+    if (now < aimbotNextAutoFireAt) return;
+
+    Vector3 origin;
+    bool haveOrigin = false;
+    __try {
+        const uintptr_t camera = GetCamera();
+        const uintptr_t transform = camera && o_Component_get_transform ? o_Component_get_transform(camera) : 0;
+        if (transform && o_Transform_get_position) { origin = o_Transform_get_position(transform); haveOrigin = true; }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
+    if (!haveOrigin) return;
+
+    Vector3 visibleDirection;
+    if (!FindVisibleAimbotDirection(origin, aimbotLastHitParameters, visibleDirection)) return;
+
+    aimbotNextAutoFireAt = now + static_cast<ULONGLONG>(aimbotAutoFireDelayMs);
+    InterlockedIncrement(&aimbotAutoFired);
+    // Reuse the normal hooked fire path so silent/visible aim, hit marker, tracers,
+    // ammo and weapon maintenance behave exactly like a manual shot.
+    hk_GunController_Fire(activeLocalWeaponController, Vector3(), nullptr);
 }
 
 short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
@@ -3281,6 +3327,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     AnimateArmChamsColor();
     AnimateGloveChamsColor();
     AnimateWorldColor();
+    UpdateAimbotAutoFire();
 
     if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
 
@@ -4350,17 +4397,15 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             strcpy_s(aimbotStatus, (aimbotEnabled || visibleAimbotEnabled) ? "Enabled; waiting for local shot" : "Disabled");
         }
         if (ImGui::Checkbox("Visible Camera Snap", &visibleAimbotEnabled)) {
-            if (!visibleAimbotEnabled && visibleAimbotCameraActive && visibleAimbotCameraTransform && o_Transform_set_eulerAngles) {
-                __try { o_Transform_set_eulerAngles(visibleAimbotCameraTransform, visibleAimbotOriginalEuler); }
-                __except (EXCEPTION_EXECUTE_HANDLER) {}
-                visibleAimbotCameraActive = false;
-                visibleAimbotCameraTransform = 0;
-            }
+            if (!visibleAimbotEnabled) CancelVisibleAimbotCamera();
             strcpy_s(aimbotStatus, (aimbotEnabled || visibleAimbotEnabled) ? "Enabled; waiting for local shot" : "Disabled");
         }
         if (visibleAimbotEnabled)
             ImGui::SliderFloat("Camera Hold", &visibleAimbotHoldMs, 50.0f, 400.0f, "%.0f ms");
         ImGui::Checkbox("Visible Check", &aimbotVisibleCheck);
+        ImGui::Checkbox("Auto Fire", &aimbotAutoFire);
+        if (aimbotAutoFire)
+            ImGui::SliderFloat("Auto Fire Delay", &aimbotAutoFireDelayMs, 60.0f, 500.0f, "%.0f ms");
         ImGui::Text("FOV: %.0f degrees", aimbotFov);
         ImGui::TextWrapped("Status: %s", aimbotStatus);
         if (aimbotEnabled || visibleAimbotEnabled)
@@ -4369,6 +4414,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 InterlockedCompareExchange(&aimbotTargetsScanned, 0, 0),
                 InterlockedCompareExchange(&aimbotVisibleTargets, 0, 0),
                 InterlockedCompareExchange(&aimbotApplied, 0, 0));
+        if (aimbotAutoFire)
+            ImGui::Text("Auto-fired: %ld%s", InterlockedCompareExchange(&aimbotAutoFired, 0, 0),
+                aimbotLastHitParameters ? "" : " | fire once manually to initialize");
         ImGui::Spacing();
         ImGui::TextColored(accent, "Keybinds");
         ImGui::Separator();
