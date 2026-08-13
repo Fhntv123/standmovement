@@ -403,7 +403,8 @@ uintptr_t liveHitMarkerView = 0;
 Vector3 latestLocalCastEnd;
 ULONGLONG latestLocalCastAt = 0;
 struct HitMarkerEntry {
-    Vector3 worldPosition;
+    uintptr_t player;
+    Vector3 playerOffset;
     ULONGLONG triggeredAt;
 };
 std::vector<HitMarkerEntry> hitMarkers;
@@ -1710,9 +1711,36 @@ void __fastcall hk_HitMarkerView_Show(uintptr_t instance, bool value, bool playS
         // Correlate the game's confirmed-hit callback with the latest authoritative
         // local cast. Every confirmed hit gets its own lifetime and world position.
         if (latestLocalCastAt && now >= latestLocalCastAt && now - latestLocalCastAt <= 750) {
-            hitMarkers.push_back({ latestLocalCastEnd, now });
-            if (hitMarkers.size() > 64)
-                hitMarkers.erase(hitMarkers.begin(), hitMarkers.begin() + (hitMarkers.size() - 64));
+            // Bind the confirmed impact to the closest non-local player. Store the
+            // impact offset from that player's live anchor so the marker follows the
+            // player instead of remaining at a fixed world-space point.
+            void* players[64];
+            int playerCount = 0;
+            CollectPlayers(players, 64, playerCount);
+            void* localPlayer = GetLocalPC();
+            uintptr_t closestPlayer = 0;
+            Vector3 closestPosition;
+            float closestDistance = 3.5f;
+            for (int i = 0; i < playerCount; ++i) {
+                if (!players[i] || players[i] == localPlayer) continue;
+                Vector3 playerPosition;
+                if (!GetPCPosition(players[i], playerPosition)) continue;
+                const float distance = latestLocalCastEnd.Distance(playerPosition);
+                if (distance < closestDistance) {
+                    closestDistance = distance;
+                    closestPlayer = reinterpret_cast<uintptr_t>(players[i]);
+                    closestPosition = playerPosition;
+                }
+            }
+            if (closestPlayer) {
+                const Vector3 offset(
+                    latestLocalCastEnd.x - closestPosition.x,
+                    latestLocalCastEnd.y - closestPosition.y,
+                    latestLocalCastEnd.z - closestPosition.z);
+                hitMarkers.push_back({ closestPlayer, offset, now });
+                if (hitMarkers.size() > 64)
+                    hitMarkers.erase(hitMarkers.begin(), hitMarkers.begin() + (hitMarkers.size() - 64));
+            }
         }
         ReleaseSRWLockExclusive(&hitMarkerLock);
     }
@@ -1737,8 +1765,14 @@ void DrawHitMarker()
     for (const HitMarkerEntry& marker : snapshot) {
         const float elapsedMs = static_cast<float>(now - marker.triggeredAt);
         const float alpha = 1.0f - elapsedMs / durationMs;
+        Vector3 playerPosition;
+        if (!GetPCPosition(reinterpret_cast<void*>(marker.player), playerPosition)) continue;
+        const Vector3 worldPosition(
+            playerPosition.x + marker.playerOffset.x,
+            playerPosition.y + marker.playerOffset.y,
+            playerPosition.z + marker.playerOffset.z);
         ImVec2 center;
-        if (!ProjectTracerEnd(marker.worldPosition, center)) continue;
+        if (!ProjectTracerEnd(worldPosition, center)) continue;
 
         const ImU32 shadow = IM_COL32(0, 0, 0, static_cast<int>(190.0f * alpha));
         const ImU32 color = ImGui::ColorConvertFloat4ToU32(ImVec4(
