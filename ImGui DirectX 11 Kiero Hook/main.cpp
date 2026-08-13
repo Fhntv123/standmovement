@@ -219,7 +219,7 @@ struct Matrix16 {
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_B          0x840DE0  // PlayerManager.qkc(PlayerController)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_C          0x840E10  // PlayerManager.qkd(PlayerController)
 #define OFFSET_WEAPONCONTROLLER_GET_ID                0x5409B0  // WeaponController.whs() -> glg
-#define OFFSET_PLAYER_HEALTH_GET_CURRENT               0x8B77E0  // bqw.scy() -> current HP
+#define OFFSET_PLAYERCONTROLLER_GET_HEALTH             0x83A960  // PlayerController.qgg() -> live HP
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xA6E220
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0x86C0E0
 #define OFFSET_AIMINGDATA_CLONE                      0x86F9C0
@@ -546,10 +546,12 @@ bool espShowName = true;
 bool espShowHealth = true;
 bool espShowWeapon = true;
 bool espGradient = true;
+bool espHealthGradient = true;
 float espTopColor[3] = { 1.0f, 0.20f, 0.35f };
 float espBottomColor[3] = { 0.55f, 0.10f, 1.0f };
 float espNameColor[3] = { 1.0f, 0.25f, 0.55f };
 float espHealthColor[3] = { 0.20f, 1.0f, 0.25f };
+float espHealthBottomColor[3] = { 1.0f, 0.15f, 0.10f };
 volatile LONG boxEspEnumerated = 0;
 volatile LONG boxEspProjected = 0;
 volatile LONG boxEspDrawn = 0;
@@ -761,18 +763,16 @@ static void GetPCName(void* pc, char* output, int outputSize) {
 }
 
 static int GetPCHealth(void* pc) {
-    if (!pc) return -1;
+    if (!pc || !base) return -1;
     __try {
-        // PlayerController.bzxo (+0x148) is the replicated bqw health entity.
-        // Use its own scy() getter: it resolves the nullable network value and defaults correctly.
-        const uintptr_t healthState = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pc) + 0x148);
-        if (!healthState || !base) return -1;
-        using GetCurrentHealthFn = int(__fastcall*)(uintptr_t, const Il2CppMethod*);
-        static GetCurrentHealthFn getCurrentHealth = nullptr;
-        if (!getCurrentHealth)
-            getCurrentHealth = reinterpret_cast<GetCurrentHealthFn>(base + OFFSET_PLAYER_HEALTH_GET_CURRENT);
-        const int value = getCurrentHealth(healthState, nullptr);
-        return value >= 0 && value <= 500 ? value : -1;
+        // PlayerController.qgg() is the public live-health property. It applies the
+        // replicated damage state; bqw.scy() alone only returns the 100 HP base value.
+        using GetLiveHealthFn = int(__fastcall*)(void*, const Il2CppMethod*);
+        static GetLiveHealthFn getLiveHealth = nullptr;
+        if (!getLiveHealth)
+            getLiveHealth = reinterpret_cast<GetLiveHealthFn>(base + OFFSET_PLAYERCONTROLLER_GET_HEALTH);
+        const int value = getLiveHealth(pc, nullptr);
+        return value >= 0 && value <= 100 ? value : -1;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
 }
 
@@ -806,6 +806,31 @@ static const char* GetPCWeaponName(void* pc) {
 
 static ImU32 EspArrayColor(const float color[3], float alpha = 1.0f) {
     return ImGui::ColorConvertFloat4ToU32(ImVec4(color[0], color[1], color[2], alpha));
+}
+
+static ImU32 EspLerpColor(const float top[3], const float bottom[3], float t, float alpha = 1.0f) {
+    t = fmaxf(0.0f, fminf(1.0f, t));
+    return ImGui::ColorConvertFloat4ToU32(ImVec4(
+        top[0] + (bottom[0] - top[0]) * t,
+        top[1] + (bottom[1] - top[1]) * t,
+        top[2] + (bottom[2] - top[2]) * t, alpha));
+}
+
+static ImU32 EspHealthColorAt(float t) {
+    return espHealthGradient ? EspLerpColor(espHealthColor, espHealthBottomColor, t) : EspArrayColor(espHealthColor);
+}
+
+static void DrawAsciiGradientText(ImDrawList* draw, ImVec2 pos, const char* text) {
+    if (!draw || !text) return;
+    const size_t length = strlen(text);
+    float x = pos.x;
+    for (size_t i = 0; i < length; ++i) {
+        char glyph[2] = { text[i], '\0' };
+        const float t = length > 1 ? static_cast<float>(i) / static_cast<float>(length - 1) : 0.0f;
+        draw->AddText(ImVec2(x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 255), glyph);
+        draw->AddText(ImVec2(x, pos.y), EspHealthColorAt(t), glyph);
+        x += ImGui::CalcTextSize(glyph).x;
+    }
 }
 
 static ImU32 EspColorAt(float t, float alpha = 1.0f) {
@@ -3208,12 +3233,18 @@ void BoxEsp() {
                 const float barX = boxMin.x - 9.0f;
                 draw->AddRectFilled(ImVec2(barX - 1.0f, top - 1.0f), ImVec2(barX + 6.0f, bottom + 1.0f), IM_COL32(0, 0, 0, 235));
                 const float fillTop = bottom - height * healthFraction;
-                const ImU32 healthColor = EspArrayColor(espHealthColor);
-                draw->AddRectFilled(ImVec2(barX, fillTop), ImVec2(barX + 5.0f, bottom), healthColor);
+                constexpr int healthSegments = 24;
+                for (int segment = 0; segment < healthSegments; ++segment) {
+                    const float t0 = static_cast<float>(segment) / healthSegments;
+                    const float t1 = static_cast<float>(segment + 1) / healthSegments;
+                    const float segmentBottom = bottom - (bottom - fillTop) * t0;
+                    const float segmentTop = bottom - (bottom - fillTop) * t1;
+                    draw->AddRectFilled(ImVec2(barX, segmentTop), ImVec2(barX + 5.0f, segmentBottom),
+                        EspHealthColorAt(1.0f - (t0 + t1) * 0.5f));
+                }
                 char hpText[16]; sprintf_s(hpText, "%d HP", health);
                 const ImVec2 hpPos(boxMax.x + 5.0f, top);
-                draw->AddText(ImVec2(hpPos.x + 1.0f, hpPos.y + 1.0f), IM_COL32(0, 0, 0, 255), hpText);
-                draw->AddText(hpPos, healthColor, hpText);
+                DrawAsciiGradientText(draw, hpPos, hpText);
             }
         }
 
@@ -4093,6 +4124,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (espGradient) ImGui::ColorEdit3("ESP Box Gradient Color", espBottomColor);
             ImGui::ColorEdit3("ESP Name Color", espNameColor);
             ImGui::ColorEdit3("ESP Health Color", espHealthColor);
+            ImGui::Checkbox("ESP Health Gradient", &espHealthGradient);
+            if (espHealthGradient) ImGui::ColorEdit3("ESP Health Gradient Color", espHealthBottomColor);
             ImGui::Text("ESP players: %ld | projected: %ld | drawn: %ld",
                 InterlockedCompareExchange(&boxEspEnumerated, 0, 0),
                 InterlockedCompareExchange(&boxEspProjected, 0, 0),
