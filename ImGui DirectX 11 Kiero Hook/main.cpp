@@ -2437,18 +2437,14 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
             // Silent mode keeps doing exactly what it did before. Visible mode uses
             // the same proven shot direction but also rotates the real rendered camera.
             direction = targetDirection;
-            if (insideAutoFireRequest) {
-                autoFireTargetAccepted = true;
-                InterlockedIncrement(&aimbotAutoFired);
-            }
             if (visibleAimbotEnabled) {
                 visibleSnapDirection = targetDirection;
                 applyVisibleSnapAfterCast = true;
             }
             InterlockedIncrement(&aimbotApplied);
             strcpy_s(aimbotStatus, visibleAimbotEnabled ?
-                "Shot accepted; visible camera snap applied" :
-                "Silent lock applied; camera untouched");
+                "Target locked; waiting for native cast result" :
+                "Silent direction applied; waiting for cast result");
         } else {
             strcpy_s(aimbotStatus, insideAutoFireRequest ?
                 "Auto Fire: no visible target; cast suppressed" :
@@ -2467,10 +2463,21 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
     }
 
     const uintptr_t result = o_HitCaster_Cast(origin, direction, maxDistance, hitParameters, method);
+    if (insideAutoFireRequest && result && applyVisibleSnapAfterCast) {
+        autoFireTargetAccepted = true;
+        InterlockedIncrement(&aimbotAutoFired);
+    } else if (insideAutoFireRequest && result && aimbotEnabled) {
+        autoFireTargetAccepted = true;
+        InterlockedIncrement(&aimbotAutoFired);
+    }
     // Never mutate the live aim state before/during Fire. Only animate the camera
     // after the game has accepted and completed the real bullet cast.
-    if (result && applyVisibleSnapAfterCast)
+    if (result && applyVisibleSnapAfterCast) {
         BeginVisibleAimbotCameraSnap(visibleSnapDirection);
+        strcpy_s(aimbotStatus, "Shot confirmed; visible camera snap applied");
+    } else if (insideAutoFireRequest && !result) {
+        strcpy_s(aimbotStatus, "Auto Fire reached HitCaster, but native cast returned null");
+    }
     if (keyValidated && insideLocalGunFire && result && (hitMarkerEnabled || bulletTracerEnabled)) {
         __try {
             // cjr stores the authoritative cast start/end at 0x24/0x30.
@@ -2613,18 +2620,36 @@ static void UpdateAimbotAutoFire()
     }
     const ULONGLONG now = GetTickCount64();
     if (insideAutoFireRequest || now < aimbotAutoFireNextRequestAt) return;
+    const ULONGLONG nativeInterval = GetNativeAutoFireIntervalMs(activeLocalWeaponController);
+
+    // This is the last behavior the user confirmed actually fired: test with the
+    // game's cached live HitCaster parameters first, then call Fire only for a
+    // currently visible target. The native interval prevents the old Move-loop spam.
+    if (aimbotLastHitParameters) {
+        Vector3 origin;
+        bool haveOrigin = false;
+        __try {
+            const uintptr_t camera = GetCamera();
+            const uintptr_t transform = camera && o_Component_get_transform ? o_Component_get_transform(camera) : 0;
+            if (transform && o_Transform_get_position) {
+                origin = o_Transform_get_position(transform);
+                haveOrigin = true;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
+        Vector3 visibleDirection;
+        if (!haveOrigin || !FindVisibleAimbotDirection(origin, aimbotLastHitParameters, visibleDirection)) {
+            InterlockedIncrement(&aimbotAutoFireRejected);
+            aimbotAutoFireNextRequestAt = now + nativeInterval + 2;
+            return;
+        }
+    }
 
     autoFireCastReached = false;
     autoFireTargetAccepted = false;
     insideAutoFireRequest = true;
     hk_GunController_Fire(activeLocalWeaponController, Vector3(), nullptr);
     insideAutoFireRequest = false;
-
-    const ULONGLONG nativeInterval = GetNativeAutoFireIntervalMs(activeLocalWeaponController);
-    // Every call to GunController.Fire can touch the weapon's internal cooldown,
-    // even when it exits before HitCaster or when an automatic cast is suppressed.
-    // Retrying earlier than the full native interval can therefore keep the gun
-    // permanently busy. Always wait one complete weapon cycle after every request.
     aimbotAutoFireNextRequestAt = now + nativeInterval + 2;
     if (!autoFireTargetAccepted) {
         if (autoFireCastReached) InterlockedIncrement(&aimbotAutoFireRejected);
