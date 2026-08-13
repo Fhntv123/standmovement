@@ -266,8 +266,6 @@ struct Matrix16 {
 #define OFFSET_CURRENT_AMMO                        0xE4  // short cegx
 
 #define OFFSET_MAX_AMMO                            0xE6  // short cegy
-#define OFFSET_GUN_SET_CURRENT_AMMO                0x999160  // GunController.wyx(short)
-#define OFFSET_GUN_GET_MAX_AMMO                    0x999180  // GunController.wyy()
 
 
 
@@ -2468,38 +2466,22 @@ void __fastcall hk_Weaponry_TakeWeapon(uintptr_t instance, uint8_t slotIndex, co
     }
 }
 
-static bool RefillGunAmmo(uintptr_t gun)
-{
-    if (!gun || !base) return false;
-    __try {
-        using GetMaxAmmoFn = short(__fastcall*)(uintptr_t, const Il2CppMethod*);
-        static GetMaxAmmoFn getMaxAmmo = nullptr;
-        if (!getMaxAmmo) getMaxAmmo = reinterpret_cast<GetMaxAmmoFn>(base + OFFSET_GUN_GET_MAX_AMMO);
-        const short maxAmmo = getMaxAmmo(gun, nullptr);
-        if (maxAmmo <= 0 || maxAmmo >= 1000 || !o_GunController_SetCurrentAmmo) return false;
-        o_GunController_SetCurrentAmmo(gun, maxAmmo, nullptr);
-        *reinterpret_cast<short*>(gun + OFFSET_CURRENT_AMMO) = maxAmmo;
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
-
 void __fastcall hk_GunController_SetCurrentAmmo(uintptr_t instance, short value, const Il2CppMethod* method)
 {
     bool isLocalGun = false;
-    __try { isLocalGun = keyValidated && instance && liveHudLocalPlayer &&
-        *reinterpret_cast<uintptr_t*>(instance + 0x20) == liveHudLocalPlayer; }
-    __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
-    if (isLocalGun && infinityAmmo) {
-        __try {
-            using GetMaxAmmoFn = short(__fastcall*)(uintptr_t, const Il2CppMethod*);
-            static GetMaxAmmoFn getMaxAmmo = nullptr;
-            if (!getMaxAmmo) getMaxAmmo = reinterpret_cast<GetMaxAmmoFn>(base + OFFSET_GUN_GET_MAX_AMMO);
-            const short maxAmmo = getMaxAmmo(instance, nullptr);
-            if (maxAmmo > 0 && maxAmmo < 1000) value = maxAmmo;
+    __try {
+        isLocalGun = keyValidated && instance && liveHudLocalPlayer &&
+            *reinterpret_cast<uintptr_t*>(instance + 0x20) == liveHudLocalPlayer;
+        if (isLocalGun && infinityAmmo) {
+            const short currentAmmo = *reinterpret_cast<short*>(instance + OFFSET_CURRENT_AMMO);
+            // True freeze: never replace the count with max ammo. Reject only
+            // decreases caused by firing; equal/increased values (reload/pickup)
+            // are allowed and become the new frozen count.
+            if (currentAmmo >= 0 && currentAmmo < 1000 && value < currentAmmo)
+                value = currentAmmo;
         }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
+    __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
     o_GunController_SetCurrentAmmo(instance, value, method);
 }
 
@@ -2530,12 +2512,10 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     __try { isLocalGun = instance && liveHudLocalPlayer && *(uintptr_t*)(instance + 0x20) == liveHudLocalPlayer; }
     __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
     if (isLocalGun) activeLocalWeaponController = instance;
-    if (isLocalGun && infinityAmmo) RefillGunAmmo(instance);
     if (isLocalGun && visibleAimbotEnabled) PrepareVisibleAimbotBeforeFire(instance);
     insideLocalGunFire = isLocalGun;
     o_GunController_Fire(instance, playSound, method);
     insideLocalGunFire = false;
-    if (isLocalGun && infinityAmmo) RefillGunAmmo(instance);
     if (isLocalGun && weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
 }
 
@@ -2581,8 +2561,6 @@ short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
         if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
     }
 
-    if (isLocalGun && infinityAmmo && RefillGunAmmo(instance))
-        return *reinterpret_cast<short*>(instance + OFFSET_CURRENT_AMMO);
 
 
     return currentAmmo;
@@ -2617,7 +2595,8 @@ void InfinityAmmoLoop() {
 
 
 
-        if (infinityAmmo) RefillGunAmmo(weaponController);
+        // Ammo is frozen authoritatively in hk_GunController_SetCurrentAmmo.
+        // Do not write max/current values from this polling thread.
 
     }
 
@@ -4991,8 +4970,8 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_HITCASTER_CAST));
 
     // Intercept the authoritative magazine setter so every decrement is rejected.
-    MH_CreateHook((LPVOID)(base + OFFSET_GUN_SET_CURRENT_AMMO), hk_GunController_SetCurrentAmmo, (LPVOID*)&o_GunController_SetCurrentAmmo);
-    MH_EnableHook((LPVOID)(base + OFFSET_GUN_SET_CURRENT_AMMO));
+    MH_CreateHook((LPVOID)(base + 0x999160), hk_GunController_SetCurrentAmmo, (LPVOID*)&o_GunController_SetCurrentAmmo);
+    MH_EnableHook((LPVOID)(base + 0x999160));
 
     // Getter remains as a secondary HUD/state refresh path.
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_GETCURRENTAMMO), hk_GunController_GetCurrentAmmo, (LPVOID*)&o_GunController_GetCurrentAmmo);
