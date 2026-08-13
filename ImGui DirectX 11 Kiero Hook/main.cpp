@@ -266,6 +266,8 @@ struct Matrix16 {
 #define OFFSET_CURRENT_AMMO                        0xE4  // short cegx
 
 #define OFFSET_MAX_AMMO                            0xE6  // short cegy
+#define OFFSET_GUN_SET_CURRENT_AMMO                0x999160  // GunController.wyx(short)
+#define OFFSET_GUN_GET_MAX_AMMO                    0x999180  // GunController.wyy()
 
 
 
@@ -415,9 +417,10 @@ ULONGLONG aimbotNextAutoFireAt = 0;
 uintptr_t aimbotLastHitParameters = 0;
 volatile LONG aimbotAutoFired = 0;
 bool visibleAimbotCameraActive = false;
-uintptr_t visibleAimbotCameraTransform = 0;
-Vector3 visibleAimbotOriginalEuler;
-Vector3 visibleAimbotTargetEuler;
+uintptr_t visibleAimbotAimingData = 0;
+Vector3 visibleAimbotOriginalAimAngle;
+Vector3 visibleAimbotOriginalAimEuler;
+Vector3 visibleAimbotTargetAim;
 ULONGLONG visibleAimbotRestoreAt = 0;
 volatile LONG aimbotShots = 0;
 volatile LONG aimbotTargetsScanned = 0;
@@ -2067,52 +2070,52 @@ static Vector3 DirectionToCameraEuler(const Vector3& direction)
 
 static void BeginVisibleAimbotCameraSnap(const Vector3& targetDirection)
 {
-    if (!visibleAimbotEnabled || !o_Component_get_transform || !o_Transform_get_eulerAngles || !o_Transform_set_eulerAngles)
-        return;
+    if (!visibleAimbotEnabled || !liveHudLocalPlayer) return;
     __try {
-        const uintptr_t camera = GetCamera();
-        const uintptr_t transform = camera ? o_Component_get_transform(camera) : 0;
-        if (!transform) return;
-        visibleAimbotCameraTransform = transform;
-        visibleAimbotOriginalEuler = o_Transform_get_eulerAngles(transform);
-        visibleAimbotTargetEuler = DirectionToCameraEuler(targetDirection);
+        const uintptr_t aimController = *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
+        const uintptr_t aimingData = aimController ? *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
+        if (!aimingData) return;
+        visibleAimbotAimingData = aimingData;
+        visibleAimbotOriginalAimAngle = *reinterpret_cast<Vector3*>(aimingData + 0x18);
+        visibleAimbotOriginalAimEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
+        visibleAimbotTargetAim = DirectionToCameraEuler(targetDirection);
         visibleAimbotRestoreAt = GetTickCount64() + static_cast<ULONGLONG>(visibleAimbotHoldMs);
         visibleAimbotCameraActive = true;
-        o_Transform_set_eulerAngles(transform, visibleAimbotTargetEuler);
+        *reinterpret_cast<Vector3*>(aimingData + 0x18) = visibleAimbotTargetAim;
+        *reinterpret_cast<Vector3*>(aimingData + 0x24) = visibleAimbotTargetAim;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { visibleAimbotCameraActive = false; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { visibleAimbotCameraActive = false; visibleAimbotAimingData = 0; }
 }
 
 static void UpdateVisibleAimbotCamera()
 {
-    if (!visibleAimbotCameraActive || !visibleAimbotCameraTransform || !o_Transform_set_eulerAngles) return;
+    if (!visibleAimbotCameraActive || !visibleAimbotAimingData) return;
     __try {
         if (GetTickCount64() < visibleAimbotRestoreAt) {
-            // Camera controllers update every frame, so keep the visible lock alive
-            // until the short hold expires instead of letting it disappear before render.
-            o_Transform_set_eulerAngles(visibleAimbotCameraTransform, visibleAimbotTargetEuler);
+            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x18) = visibleAimbotTargetAim;
+            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x24) = visibleAimbotTargetAim;
         } else {
-            o_Transform_set_eulerAngles(visibleAimbotCameraTransform, visibleAimbotOriginalEuler);
+            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x18) = visibleAimbotOriginalAimAngle;
+            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x24) = visibleAimbotOriginalAimEuler;
             visibleAimbotCameraActive = false;
-            visibleAimbotCameraTransform = 0;
+            visibleAimbotAimingData = 0;
         }
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        visibleAimbotCameraActive = false;
-        visibleAimbotCameraTransform = 0;
-    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { visibleAimbotCameraActive = false; visibleAimbotAimingData = 0; }
 }
 
 static void CancelVisibleAimbotCamera()
 {
     if (!visibleAimbotCameraActive) return;
     __try {
-        if (visibleAimbotCameraTransform && o_Transform_set_eulerAngles)
-            o_Transform_set_eulerAngles(visibleAimbotCameraTransform, visibleAimbotOriginalEuler);
+        if (visibleAimbotAimingData) {
+            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x18) = visibleAimbotOriginalAimAngle;
+            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x24) = visibleAimbotOriginalAimEuler;
+        }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
     visibleAimbotCameraActive = false;
-    visibleAimbotCameraTransform = 0;
+    visibleAimbotAimingData = 0;
 }
 
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
@@ -2465,6 +2468,25 @@ void __fastcall hk_Weaponry_TakeWeapon(uintptr_t instance, uint8_t slotIndex, co
     }
 }
 
+static bool RefillGunAmmo(uintptr_t gun)
+{
+    if (!gun || !base) return false;
+    __try {
+        using GetMaxAmmoFn = short(__fastcall*)(uintptr_t, const Il2CppMethod*);
+        using SetAmmoFn = void(__fastcall*)(uintptr_t, short, const Il2CppMethod*);
+        static GetMaxAmmoFn getMaxAmmo = nullptr;
+        static SetAmmoFn setAmmo = nullptr;
+        if (!getMaxAmmo) getMaxAmmo = reinterpret_cast<GetMaxAmmoFn>(base + OFFSET_GUN_GET_MAX_AMMO);
+        if (!setAmmo) setAmmo = reinterpret_cast<SetAmmoFn>(base + OFFSET_GUN_SET_CURRENT_AMMO);
+        const short maxAmmo = getMaxAmmo(gun, nullptr);
+        if (maxAmmo <= 0 || maxAmmo >= 1000) return false;
+        setAmmo(gun, maxAmmo, nullptr);
+        *reinterpret_cast<short*>(gun + OFFSET_CURRENT_AMMO) = maxAmmo;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
 void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, const Il2CppMethod* method)
 {
     // Fire must remain latency-free: never create materials, inspect renderers,
@@ -2474,9 +2496,11 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     __try { isLocalGun = instance && liveHudLocalPlayer && *(uintptr_t*)(instance + 0x20) == liveHudLocalPlayer; }
     __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
     if (isLocalGun) activeLocalWeaponController = instance;
+    if (isLocalGun && infinityAmmo) RefillGunAmmo(instance);
     insideLocalGunFire = isLocalGun;
     o_GunController_Fire(instance, playSound, method);
     insideLocalGunFire = false;
+    if (isLocalGun && infinityAmmo) RefillGunAmmo(instance);
     if (isLocalGun && weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
 }
 
@@ -2522,32 +2546,8 @@ short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
         if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
     }
 
-    if (isLocalGun && infinityAmmo) {
-
-        __try {
-
-            // Читаем максимальные патроны из GunController
-
-            short maxAmmo = *(short*)(instance + OFFSET_MAX_AMMO);
-
-
-
-            // Всегда возвращаем максимум если патроны есть
-
-            if (maxAmmo > 0 && maxAmmo < 500) {
-
-                *(short*)(instance + OFFSET_CURRENT_AMMO) = maxAmmo;
-
-                return maxAmmo;
-
-            }
-
-        }
-
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-
-    }
-
+    if (isLocalGun && infinityAmmo && RefillGunAmmo(instance))
+        return *reinterpret_cast<short*>(instance + OFFSET_CURRENT_AMMO);
 
 
     return currentAmmo;
@@ -2582,21 +2582,7 @@ void InfinityAmmoLoop() {
 
 
 
-        // Проверяем что это GunController (не нож)
-
-        short maxAmmo = *(short*)(weaponController + OFFSET_MAX_AMMO);
-
-        if (maxAmmo > 0 && maxAmmo < 1000) {
-
-            // Infinity Ammo
-
-            if (infinityAmmo) {
-
-                *(short*)(weaponController + OFFSET_CURRENT_AMMO) = maxAmmo;
-
-            }
-
-        }
+        if (infinityAmmo) RefillGunAmmo(weaponController);
 
     }
 
