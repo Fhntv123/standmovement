@@ -714,6 +714,14 @@ static bool IsBotPC(void* pc) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+static unsigned char GetPCTeam(void* pc) {
+    if (!pc) return 0;
+    __try {
+        // cwf: None=0, Tr=1, Ct=2, Spectator=3.
+        return *reinterpret_cast<unsigned char*>(reinterpret_cast<uintptr_t>(pc) + PC_TEAM_ENUM);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
 static void* GetLocalPC() {
     void* pm = GetPlayerManagerInstance();
     __try {
@@ -3008,6 +3016,7 @@ void BoxEsp() {
     void* localPC = GetLocalPC();
     Vector3 localPosition;
     const bool haveLocalPosition = localPC && GetPCPosition(localPC, localPosition);
+    const unsigned char localTeam = GetPCTeam(localPC);
 
     void* players[64];
     int playerCount = 0;
@@ -3025,6 +3034,10 @@ void BoxEsp() {
     for (int i = 0; i < playerCount && drawn < espCount; ++i) {
         void* player = players[i];
         if (!player || player == localPC) continue;
+        const unsigned char playerTeam = GetPCTeam(player);
+        // Enemy-only ESP. Do not treat unassigned/spectator entries as enemies.
+        if (localTeam == 0 || localTeam == 3 || playerTeam == 0 || playerTeam == 3 || playerTeam == localTeam)
+            continue;
 
         Vector3 basePosition;
         if (!GetPCPosition(player, basePosition)) continue;
@@ -3067,7 +3080,7 @@ void BoxEsp() {
         const float bottom = fmaxf(headScreen.y, feetScreen.y);
         const ImVec2 boxMin(centerX - width * 0.5f, top);
         const ImVec2 boxMax(centerX + width * 0.5f, bottom);
-        const ImU32 color = IsBotPC(player) ? IM_COL32(80, 255, 120, 255) : IM_COL32(255, 80, 80, 255);
+        const ImU32 color = IM_COL32(255, 80, 80, 255);
         draw->AddRect(boxMin, boxMax, IM_COL32(0, 0, 0, 220), 2.0f, 0, 3.5f);
         draw->AddRect(boxMin, boxMax, color, 2.0f, 0, 1.5f);
 
