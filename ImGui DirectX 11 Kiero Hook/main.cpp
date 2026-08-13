@@ -553,9 +553,11 @@ static void LINDY_LOG(const char* fmt, ...) {
 
 // Forward-declare the transform function ptr (defined later near IL2CPP globals block).
 extern Vector3(__fastcall* o_Transform_get_position)(uintptr_t);
+extern Il2CppArray*(__fastcall* o_Object_FindObjectsOfType)(Il2CppObject*, bool, const Il2CppMethod*);
 
 Il2CppClass* g_PlayerManagerClass = nullptr;
 Il2CppField* g_PlayerManagerInstanceField = nullptr;
+Il2CppObject* g_PlayerControllerReflectionType = nullptr;
 Il2CppClass* g_GlovesManagerClass = nullptr;
 Il2CppField* g_GlovesManagerInstanceField = nullptr;
 
@@ -607,14 +609,34 @@ static void CollectPlayersFromDictionary(uintptr_t dict, void** out, int maxN, i
 static void CollectPlayers(void** out, int maxN, int& outN) {
     outN = 0;
     void* pm = GetPlayerManagerInstance();
-    if (!pm) return;
     __try {
-        // Current dump: PlayerManager.bzze Dictionary<int, PlayerController> +0x28.
-        CollectPlayersFromDictionary(*reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pm) + 0x28), out, maxN, outN);
-        // Runtime fallback: bzzj Dictionary<string, PlayerController> +0x50.
-        // This also survives builds where the integer dictionary is not populated in offline mode.
-        if (outN <= 1)
-            CollectPlayersFromDictionary(*reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pm) + 0x50), out, maxN, outN);
+        if (pm) {
+            // Current dump: PlayerManager.bzze Dictionary<int, PlayerController> +0x28.
+            CollectPlayersFromDictionary(*reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pm) + 0x28), out, maxN, outN);
+            // Runtime fallback: bzzj Dictionary<string, PlayerController> +0x50.
+            if (outN <= 1)
+                CollectPlayersFromDictionary(*reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pm) + 0x50), out, maxN, outN);
+        }
+        // Runtime evidence shows both dictionaries can be empty in offline matches.
+        // This fallback also works when the singleton lookup itself is unavailable.
+        if (outN <= 1 && g_PlayerControllerReflectionType && o_Object_FindObjectsOfType) {
+            Il2CppArray* objects = o_Object_FindObjectsOfType(g_PlayerControllerReflectionType, false, nullptr);
+            const uintptr_t array = reinterpret_cast<uintptr_t>(objects);
+            if (array) {
+                const uintptr_t length = *reinterpret_cast<uintptr_t*>(array + 0x18);
+                if (length > 0 && length <= 256) {
+                    for (uintptr_t i = 0; i < length && outN < maxN; ++i) {
+                        void* player = *reinterpret_cast<void**>(array + 0x20 + i * sizeof(uintptr_t));
+                        if (!player) continue;
+                        bool duplicate = false;
+                        for (int existing = 0; existing < outN; ++existing) {
+                            if (out[existing] == player) { duplicate = true; break; }
+                        }
+                        if (!duplicate) out[outN++] = player;
+                    }
+                }
+            }
+        }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { outN = 0; }
 }
@@ -4108,6 +4130,13 @@ DWORD WINAPI HackThread(LPVOID)
         g_PlayerManagerClass = g_il2cpp.find_class("", "PlayerManager");
         LINDY_LOG("[init] PlayerManagerClass=%p", (void*)g_PlayerManagerClass);
         if (g_PlayerManagerClass) {
+            Il2CppClass* playerControllerClass = g_il2cpp.find_class("Axlebolt.Standoff.Player", "PlayerController");
+            if (!playerControllerClass) playerControllerClass = g_il2cpp.find_class("", "PlayerController");
+            if (playerControllerClass && g_il2cpp.class_get_type && g_il2cpp.type_get_object) {
+                const Il2CppType* playerType = g_il2cpp.class_get_type(playerControllerClass);
+                g_PlayerControllerReflectionType = playerType ? g_il2cpp.type_get_object(playerType) : nullptr;
+            }
+            LINDY_LOG("[init] PlayerController reflection type=%p", (void*)g_PlayerControllerReflectionType);
             // The static instance field lives on the LazySingleton<PlayerManager> parent as 'cgxr'.
             Il2CppClass* parent = g_il2cpp.class_get_parent ? g_il2cpp.class_get_parent(g_PlayerManagerClass) : nullptr;
             if (parent) {
