@@ -404,9 +404,16 @@ uintptr_t originalSkyboxMaterial = 0;
 volatile LONG pendingSkyboxCommand = 0;
 
 bool infinityAmmo = false;
-bool aimbotEnabled = false;
+bool aimbotEnabled = false;              // silent shot redirection (kept unchanged)
+bool visibleAimbotEnabled = false;       // visibly turns the real camera, then restores it
 bool aimbotVisibleCheck = true;
 float aimbotFov = 360.0f;
+float visibleAimbotHoldMs = 140.0f;
+bool visibleAimbotCameraActive = false;
+uintptr_t visibleAimbotCameraTransform = 0;
+Vector3 visibleAimbotOriginalEuler;
+Vector3 visibleAimbotTargetEuler;
+ULONGLONG visibleAimbotRestoreAt = 0;
 volatile LONG aimbotShots = 0;
 volatile LONG aimbotTargetsScanned = 0;
 volatile LONG aimbotVisibleTargets = 0;
@@ -2045,6 +2052,52 @@ static void UpdateWeaponChams(uintptr_t knownWeaponController = 0);
 static void UpdateArmChams(uintptr_t knownArmsLodGroup = 0);
 static void UpdateGloveChams(uintptr_t knownArmsLodGroup = 0);
 
+static Vector3 DirectionToCameraEuler(const Vector3& direction)
+{
+    const float horizontal = sqrtf(direction.x * direction.x + direction.z * direction.z);
+    const float pitch = -atan2f(direction.y, horizontal) * 57.29577951308232f;
+    const float yaw = atan2f(direction.x, direction.z) * 57.29577951308232f;
+    return Vector3(NormalizeAngle360(pitch), NormalizeAngle360(yaw), 0.0f);
+}
+
+static void BeginVisibleAimbotCameraSnap(const Vector3& targetDirection)
+{
+    if (!visibleAimbotEnabled || !o_Component_get_transform || !o_Transform_get_eulerAngles || !o_Transform_set_eulerAngles)
+        return;
+    __try {
+        const uintptr_t camera = GetCamera();
+        const uintptr_t transform = camera ? o_Component_get_transform(camera) : 0;
+        if (!transform) return;
+        visibleAimbotCameraTransform = transform;
+        visibleAimbotOriginalEuler = o_Transform_get_eulerAngles(transform);
+        visibleAimbotTargetEuler = DirectionToCameraEuler(targetDirection);
+        visibleAimbotRestoreAt = GetTickCount64() + static_cast<ULONGLONG>(visibleAimbotHoldMs);
+        visibleAimbotCameraActive = true;
+        o_Transform_set_eulerAngles(transform, visibleAimbotTargetEuler);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { visibleAimbotCameraActive = false; }
+}
+
+static void UpdateVisibleAimbotCamera()
+{
+    if (!visibleAimbotCameraActive || !visibleAimbotCameraTransform || !o_Transform_set_eulerAngles) return;
+    __try {
+        if (GetTickCount64() < visibleAimbotRestoreAt) {
+            // Camera controllers update every frame, so keep the visible lock alive
+            // until the short hold expires instead of letting it disappear before render.
+            o_Transform_set_eulerAngles(visibleAimbotCameraTransform, visibleAimbotTargetEuler);
+        } else {
+            o_Transform_set_eulerAngles(visibleAimbotCameraTransform, visibleAimbotOriginalEuler);
+            visibleAimbotCameraActive = false;
+            visibleAimbotCameraTransform = 0;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        visibleAimbotCameraActive = false;
+        visibleAimbotCameraTransform = 0;
+    }
+}
+
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
     __try {
@@ -2055,6 +2108,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
+    UpdateVisibleAimbotCamera();
     if (thirdPersonEnabled && !InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0))
         ApplyCustomizedThirdPersonOffsets();
     if (InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0) && ApplyNativeThirdPersonState())
@@ -2295,13 +2349,18 @@ static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t hitParameters, 
 
 uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float maxDistance, uintptr_t hitParameters, const Il2CppMethod* method)
 {
-    if (keyValidated && insideLocalGunFire && aimbotEnabled) {
+    if (keyValidated && insideLocalGunFire && (aimbotEnabled || visibleAimbotEnabled)) {
         InterlockedIncrement(&aimbotShots);
         Vector3 targetDirection;
         if (FindVisibleAimbotDirection(origin, hitParameters, targetDirection)) {
+            // Silent mode keeps doing exactly what it did before. Visible mode uses
+            // the same proven shot direction but also rotates the real rendered camera.
             direction = targetDirection;
+            if (visibleAimbotEnabled) BeginVisibleAimbotCameraSnap(targetDirection);
             InterlockedIncrement(&aimbotApplied);
-            strcpy_s(aimbotStatus, "Locked visible target; shot redirected and restored");
+            strcpy_s(aimbotStatus, visibleAimbotEnabled ?
+                "Visible snap active; restoring original camera" :
+                "Silent lock applied; camera untouched");
         } else {
             strcpy_s(aimbotStatus, "No visible enemy; original shot kept");
         }
@@ -4283,17 +4342,28 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::TextColored(accent, "Aimbot");
         ImGui::Separator();
         ImGui::Spacing();
-        if (ImGui::Checkbox("Enable 360 Aimbot", &aimbotEnabled)) {
+        if (ImGui::Checkbox("Silent 360 Aimbot", &aimbotEnabled)) {
             InterlockedExchange(&aimbotShots, 0);
             InterlockedExchange(&aimbotTargetsScanned, 0);
             InterlockedExchange(&aimbotVisibleTargets, 0);
             InterlockedExchange(&aimbotApplied, 0);
-            strcpy_s(aimbotStatus, aimbotEnabled ? "Enabled; waiting for local shot" : "Disabled");
+            strcpy_s(aimbotStatus, (aimbotEnabled || visibleAimbotEnabled) ? "Enabled; waiting for local shot" : "Disabled");
         }
+        if (ImGui::Checkbox("Visible Camera Snap", &visibleAimbotEnabled)) {
+            if (!visibleAimbotEnabled && visibleAimbotCameraActive && visibleAimbotCameraTransform && o_Transform_set_eulerAngles) {
+                __try { o_Transform_set_eulerAngles(visibleAimbotCameraTransform, visibleAimbotOriginalEuler); }
+                __except (EXCEPTION_EXECUTE_HANDLER) {}
+                visibleAimbotCameraActive = false;
+                visibleAimbotCameraTransform = 0;
+            }
+            strcpy_s(aimbotStatus, (aimbotEnabled || visibleAimbotEnabled) ? "Enabled; waiting for local shot" : "Disabled");
+        }
+        if (visibleAimbotEnabled)
+            ImGui::SliderFloat("Camera Hold", &visibleAimbotHoldMs, 50.0f, 400.0f, "%.0f ms");
         ImGui::Checkbox("Visible Check", &aimbotVisibleCheck);
         ImGui::Text("FOV: %.0f degrees", aimbotFov);
         ImGui::TextWrapped("Status: %s", aimbotStatus);
-        if (aimbotEnabled)
+        if (aimbotEnabled || visibleAimbotEnabled)
             ImGui::Text("Shots: %ld | scanned: %ld | visible: %ld | applied: %ld",
                 InterlockedCompareExchange(&aimbotShots, 0, 0),
                 InterlockedCompareExchange(&aimbotTargetsScanned, 0, 0),
