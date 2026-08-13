@@ -117,16 +117,6 @@ struct Vector3 {
 
 #include "edge_bug.h"
 
-struct NativeRaycastHit {
-    Vector3 point;       // +0x00
-    Vector3 normal;      // +0x0C
-    uint32_t faceId;     // +0x18
-    float distance;      // +0x1C
-    float uvX;           // +0x20
-    float uvY;           // +0x24
-    int collider;        // +0x28
-};
-
 struct Vector2 {
 
     float x, y;
@@ -218,7 +208,6 @@ struct Matrix16 {
 #define OFFSET_ARMSLOD_SET_VISIBLE                 0x81F1E0
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0x8491C0
 #define OFFSET_GUNCONTROLLER_FIRE                  0x996BE0
-#define OFFSET_RAYCASTER_QMK                       0x8470C0
 #define OFFSET_HITCASTER_CAST                      0x99FBB0
 #define OFFSET_AIMVIEW_AWAKE                       0xA60AA0
 #define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
@@ -2382,66 +2371,6 @@ static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t hitParameters, 
     return found;
 }
 
-static bool FindIndependentVisibleAimbotDirection(Vector3 origin, Vector3& outDirection)
-{
-    void* localPlayer = GetLocalPC();
-    if (!localPlayer || !base) return false;
-    const unsigned char localTeam = GetPCTeam(localPlayer);
-    if (localTeam == 0 || localTeam == 3) return false;
-
-    using RaycasterFn = bool(__fastcall*)(Vector3, Vector3, float, NativeRaycastHit*, Il2CppArray*, const Il2CppMethod*);
-    static RaycasterFn raycaster = nullptr;
-    static Il2CppArray* emptyStringFilters = nullptr;
-    if (!raycaster) raycaster = reinterpret_cast<RaycasterFn>(base + OFFSET_RAYCASTER_QMK);
-    if (!emptyStringFilters && g_il2cpp.array_new) {
-        Il2CppClass* stringClass = g_il2cpp.find_class("System", "String");
-        if (stringClass) emptyStringFilters = g_il2cpp.array_new(stringClass, 0);
-    }
-
-    void* players[64] = {};
-    int playerCount = 0;
-    CollectPlayers(players, 64, playerCount);
-    InterlockedExchange(&aimbotTargetsScanned, playerCount);
-    bool found = false;
-    int visibleCount = 0;
-    float bestDistance = 3.402823466e+38F;
-    Vector3 bestDirection;
-    for (int i = 0; i < playerCount; ++i) {
-        void* player = players[i];
-        if (!player || player == localPlayer) continue;
-        const unsigned char team = GetPCTeam(player);
-        if (team == 0 || team == 3 || team == localTeam) continue;
-        Vector3 head;
-        if (!GetAimbotHead(player, head)) continue;
-        const Vector3 delta(head.x - origin.x, head.y - origin.y, head.z - origin.z);
-        const float distance = delta.Length();
-        if (distance < 0.5f || distance > 300.0f) continue;
-        const Vector3 candidate(delta.x / distance, delta.y / distance, delta.z / distance);
-
-        bool visible = !aimbotVisibleCheck;
-        if (aimbotVisibleCheck && raycaster) {
-            __try {
-                NativeRaycastHit hit = {};
-                const bool collided = raycaster(origin, candidate, distance + 0.35f,
-                    &hit, emptyStringFilters, nullptr);
-                visible = !collided || hit.point.Distance(head) <= 0.75f ||
-                    (hit.distance >= distance - 0.75f && hit.distance <= distance + 0.75f);
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) { visible = false; }
-        }
-        if (!visible) continue;
-        ++visibleCount;
-        if (distance < bestDistance) {
-            bestDistance = distance;
-            bestDirection = candidate;
-            found = true;
-        }
-    }
-    InterlockedExchange(&aimbotVisibleTargets, visibleCount);
-    if (found) outDirection = bestDirection;
-    return found;
-}
-
 uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float maxDistance, uintptr_t hitParameters, const Il2CppMethod* method)
 {
     if (insideLocalGunFire && hitParameters) aimbotLastHitParameters = hitParameters;
@@ -2544,7 +2473,7 @@ void __fastcall hk_Weaponry_TakeWeapon(uintptr_t instance, uint8_t slotIndex, co
 
 static bool PrepareVisibleAimbotBeforeFire(uintptr_t instance)
 {
-    if (!visibleAimbotEnabled || !instance) return false;
+    if (!visibleAimbotEnabled || !instance || !aimbotLastHitParameters) return false;
     Vector3 origin;
     bool haveOrigin = false;
     __try {
@@ -2555,7 +2484,7 @@ static bool PrepareVisibleAimbotBeforeFire(uintptr_t instance)
     __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
     if (!haveOrigin) return false;
     Vector3 targetDirection;
-    if (!FindIndependentVisibleAimbotDirection(origin, targetDirection)) return false;
+    if (!FindVisibleAimbotDirection(origin, aimbotLastHitParameters, targetDirection)) return false;
     BeginVisibleAimbotCameraSnap(targetDirection);
     return true;
 }
@@ -2607,11 +2536,8 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
 static void UpdateAimbotAutoFire()
 {
     if (!keyValidated || !aimbotAutoFire || (!aimbotEnabled && !visibleAimbotEnabled) ||
-        !activeLocalWeaponController || !o_GunController_Fire)
+        !activeLocalWeaponController || !aimbotLastHitParameters || !o_GunController_Fire)
         return;
-    const ULONGLONG now = GetTickCount64();
-    if (now < aimbotNextAutoFireAt) return;
-
     Vector3 origin;
     bool haveOrigin = false;
     __try {
@@ -2623,9 +2549,8 @@ static void UpdateAimbotAutoFire()
     if (!haveOrigin) return;
 
     Vector3 visibleDirection;
-    if (!FindIndependentVisibleAimbotDirection(origin, visibleDirection)) return;
+    if (!FindVisibleAimbotDirection(origin, aimbotLastHitParameters, visibleDirection)) return;
 
-    aimbotNextAutoFireAt = now + static_cast<ULONGLONG>(aimbotAutoFireDelayMs);
     InterlockedIncrement(&aimbotAutoFired);
     // Reuse the normal hooked fire path so silent/visible aim, hit marker, tracers,
     // ammo and weapon maintenance behave exactly like a manual shot.
@@ -4490,8 +4415,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Camera Hold", &visibleAimbotHoldMs, 50.0f, 400.0f, "%.0f ms");
         ImGui::Checkbox("Visible Check", &aimbotVisibleCheck);
         ImGui::Checkbox("Auto Fire", &aimbotAutoFire);
-        if (aimbotAutoFire)
-            ImGui::SliderFloat("Auto Fire Delay", &aimbotAutoFireDelayMs, 60.0f, 500.0f, "%.0f ms");
         ImGui::Text("FOV: %.0f degrees", aimbotFov);
         ImGui::TextWrapped("Status: %s", aimbotStatus);
         if (aimbotEnabled || visibleAimbotEnabled)
@@ -4501,8 +4424,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 InterlockedCompareExchange(&aimbotVisibleTargets, 0, 0),
                 InterlockedCompareExchange(&aimbotApplied, 0, 0));
         if (aimbotAutoFire)
-            ImGui::Text("Auto-fired: %ld | independent visibility",
-                InterlockedCompareExchange(&aimbotAutoFired, 0, 0));
+            ImGui::Text("Auto-fired: %ld%s", InterlockedCompareExchange(&aimbotAutoFired, 0, 0),
+                aimbotLastHitParameters ? "" : " | fire once manually to initialize");
         ImGui::Spacing();
         ImGui::TextColored(accent, "Keybinds");
         ImGui::Separator();
