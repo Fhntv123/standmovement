@@ -263,17 +263,16 @@ struct Matrix16 {
 
 // GunController fields (short ammo at 0xE4 / 0xE6)
 
-#define OFFSET_CURRENT_AMMO                        0xE4  // short cegx
+#define OFFSET_RESERVE_AMMO                        0xE4  // short cegx / wyw()
+#define OFFSET_CURRENT_AMMO                        0xE6  // short cegy / wyy()
 
-#define OFFSET_MAX_AMMO                            0xE6  // short cegy
 
 
 
 // GunController methods (wyw() / wyy())
 
-#define OFFSET_GUNCONTROLLER_GETCURRENTAMMO        0x9990E0  // get_ddtj -> cegx
+#define OFFSET_GUNCONTROLLER_GETCURRENTAMMO        0x999180  // wyy() -> cegy, current magazine
 
-#define OFFSET_GUNCONTROLLER_GETMAXAMMO            0x999160  // get_ddtk -> cegy
 
 
 
@@ -2524,7 +2523,7 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
         __try {
             *reinterpret_cast<short*>(instance + OFFSET_CURRENT_AMMO) = ammoBeforeShot;
             using SetAmmoFn = void(__fastcall*)(uintptr_t, short, const Il2CppMethod*);
-            reinterpret_cast<SetAmmoFn>(base + 0x999160)(instance, ammoBeforeShot, nullptr);
+            reinterpret_cast<SetAmmoFn>(base + 0x999190)(instance, ammoBeforeShot, nullptr);
             *reinterpret_cast<short*>(instance + OFFSET_CURRENT_AMMO) = ammoBeforeShot;
             InterlockedExchange(&infinityAmmoLastField, ammoBeforeShot);
             InterlockedIncrement(&infinityAmmoRestores);
@@ -2613,7 +2612,7 @@ void InfinityAmmoLoop()
         }
         if (frozenAmmoValue >= 0 && frozenAmmoValue < 1000) {
             using SetAmmoFn = void(__fastcall*)(uintptr_t, short, const Il2CppMethod*);
-            reinterpret_cast<SetAmmoFn>(base + 0x999160)(weaponController, frozenAmmoValue, nullptr);
+            reinterpret_cast<SetAmmoFn>(base + 0x999190)(weaponController, frozenAmmoValue, nullptr);
             *reinterpret_cast<short*>(weaponController + OFFSET_CURRENT_AMMO) = frozenAmmoValue;
         }
     }
@@ -4601,7 +4600,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&infinityAmmoRestores, 0);
         }
         if (infinityAmmo)
-            ImGui::Text("Ammo freeze: %d | field/getter: %ld/%ld | fire/get/restore: %ld/%ld/%ld",
+            ImGui::Text("Magazine freeze: %d | cegy/wyy: %ld/%ld | fire/get/restore: %ld/%ld/%ld",
                 static_cast<int>(frozenAmmoValue),
                 InterlockedCompareExchange(&infinityAmmoLastField, 0, 0),
                 InterlockedCompareExchange(&infinityAmmoLastGetter, 0, 0),
