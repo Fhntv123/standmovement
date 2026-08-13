@@ -219,6 +219,7 @@ struct Matrix16 {
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_B          0x840DE0  // PlayerManager.qkc(PlayerController)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_C          0x840E10  // PlayerManager.qkd(PlayerController)
 #define OFFSET_WEAPONCONTROLLER_GET_ID                0x5409B0  // WeaponController.whs() -> glg
+#define OFFSET_PLAYER_HEALTH_GET_CURRENT               0x8B77E0  // bqw.scy() -> current HP
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xA6E220
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0x86C0E0
 #define OFFSET_AIMINGDATA_CLONE                      0x86F9C0
@@ -762,14 +763,16 @@ static void GetPCName(void* pc, char* output, int outputSize) {
 static int GetPCHealth(void* pc) {
     if (!pc) return -1;
     __try {
-        // PlayerController.bzxo (+0x148) is bqw. bqw.cbcw Nullable<int> (+0x50)
-        // carries the replicated 0..100 health value.
+        // PlayerController.bzxo (+0x148) is the replicated bqw health entity.
+        // Use its own scy() getter: it resolves the nullable network value and defaults correctly.
         const uintptr_t healthState = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pc) + 0x148);
-        if (!healthState) return -1;
-        // Nullable<int> layout: hasValue at +0, then aligned int value at +4.
-        const bool hasValue = *reinterpret_cast<bool*>(healthState + 0x50);
-        const int value = *reinterpret_cast<int*>(healthState + 0x54);
-        return hasValue && value >= 0 && value <= 500 ? value : -1;
+        if (!healthState || !base) return -1;
+        using GetCurrentHealthFn = int(__fastcall*)(uintptr_t, const Il2CppMethod*);
+        static GetCurrentHealthFn getCurrentHealth = nullptr;
+        if (!getCurrentHealth)
+            getCurrentHealth = reinterpret_cast<GetCurrentHealthFn>(base + OFFSET_PLAYER_HEALTH_GET_CURRENT);
+        const int value = getCurrentHealth(healthState, nullptr);
+        return value >= 0 && value <= 500 ? value : -1;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
 }
 
@@ -3202,13 +3205,13 @@ void BoxEsp() {
             const int health = GetPCHealth(player);
             if (health >= 0) {
                 const float healthFraction = fmaxf(0.0f, fminf(1.0f, health / 100.0f));
-                const float barX = boxMin.x - 7.0f;
-                draw->AddRectFilled(ImVec2(barX - 1.0f, top - 1.0f), ImVec2(barX + 4.0f, bottom + 1.0f), IM_COL32(0, 0, 0, 220));
+                const float barX = boxMin.x - 9.0f;
+                draw->AddRectFilled(ImVec2(barX - 1.0f, top - 1.0f), ImVec2(barX + 6.0f, bottom + 1.0f), IM_COL32(0, 0, 0, 235));
                 const float fillTop = bottom - height * healthFraction;
                 const ImU32 healthColor = EspArrayColor(espHealthColor);
-                draw->AddRectFilled(ImVec2(barX, fillTop), ImVec2(barX + 3.0f, bottom), healthColor);
+                draw->AddRectFilled(ImVec2(barX, fillTop), ImVec2(barX + 5.0f, bottom), healthColor);
                 char hpText[16]; sprintf_s(hpText, "%d HP", health);
-                const ImVec2 hpPos(barX - 8.0f, fillTop - 13.0f);
+                const ImVec2 hpPos(boxMax.x + 5.0f, top);
                 draw->AddText(ImVec2(hpPos.x + 1.0f, hpPos.y + 1.0f), IM_COL32(0, 0, 0, 255), hpText);
                 draw->AddText(hpPos, healthColor, hpText);
             }
