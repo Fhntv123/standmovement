@@ -547,6 +547,8 @@ bool espShowWeapon = true;
 bool espGradient = true;
 float espTopColor[3] = { 1.0f, 0.20f, 0.35f };
 float espBottomColor[3] = { 0.55f, 0.10f, 1.0f };
+float espNameColor[3] = { 1.0f, 0.25f, 0.55f };
+float espHealthColor[3] = { 0.20f, 1.0f, 0.25f };
 volatile LONG boxEspEnumerated = 0;
 volatile LONG boxEspProjected = 0;
 volatile LONG boxEspDrawn = 0;
@@ -764,8 +766,9 @@ static int GetPCHealth(void* pc) {
         // carries the replicated 0..100 health value.
         const uintptr_t healthState = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pc) + 0x148);
         if (!healthState) return -1;
-        const int value = *reinterpret_cast<int*>(healthState + 0x50);
-        const bool hasValue = *reinterpret_cast<bool*>(healthState + 0x54);
+        // Nullable<int> layout: hasValue at +0, then aligned int value at +4.
+        const bool hasValue = *reinterpret_cast<bool*>(healthState + 0x50);
+        const int value = *reinterpret_cast<int*>(healthState + 0x54);
         return hasValue && value >= 0 && value <= 500 ? value : -1;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
 }
@@ -796,6 +799,10 @@ static const char* GetPCWeaponName(void* pc) {
         if (!getWeaponId && base) getWeaponId = reinterpret_cast<GetWeaponIdFn>(base + OFFSET_WEAPONCONTROLLER_GET_ID);
         return getWeaponId ? WeaponNameFromId(getWeaponId(weapon, nullptr)) : "Weapon";
     } __except (EXCEPTION_EXECUTE_HANDLER) { return "Weapon"; }
+}
+
+static ImU32 EspArrayColor(const float color[3], float alpha = 1.0f) {
+    return ImGui::ColorConvertFloat4ToU32(ImVec4(color[0], color[1], color[2], alpha));
 }
 
 static ImU32 EspColorAt(float t, float alpha = 1.0f) {
@@ -3188,7 +3195,7 @@ void BoxEsp() {
             const ImVec2 size = ImGui::CalcTextSize(playerName);
             const ImVec2 pos(centerX - size.x * 0.5f, top - size.y - 3.0f);
             draw->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 255), playerName);
-            draw->AddText(pos, EspColorAt(0.0f), playerName);
+            draw->AddText(pos, EspArrayColor(espNameColor), playerName);
         }
 
         if (espShowHealth) {
@@ -3198,11 +3205,12 @@ void BoxEsp() {
                 const float barX = boxMin.x - 7.0f;
                 draw->AddRectFilled(ImVec2(barX - 1.0f, top - 1.0f), ImVec2(barX + 4.0f, bottom + 1.0f), IM_COL32(0, 0, 0, 220));
                 const float fillTop = bottom - height * healthFraction;
-                const ImU32 healthColor = IM_COL32(static_cast<int>(255.0f * (1.0f - healthFraction)),
-                    static_cast<int>(255.0f * healthFraction), 65, 255);
+                const ImU32 healthColor = EspArrayColor(espHealthColor);
                 draw->AddRectFilled(ImVec2(barX, fillTop), ImVec2(barX + 3.0f, bottom), healthColor);
-                char hpText[16]; sprintf_s(hpText, "%d", health);
-                draw->AddText(ImVec2(barX - 5.0f, fillTop - 13.0f), IM_COL32(255, 255, 255, 255), hpText);
+                char hpText[16]; sprintf_s(hpText, "%d HP", health);
+                const ImVec2 hpPos(barX - 8.0f, fillTop - 13.0f);
+                draw->AddText(ImVec2(hpPos.x + 1.0f, hpPos.y + 1.0f), IM_COL32(0, 0, 0, 255), hpText);
+                draw->AddText(hpPos, healthColor, hpText);
             }
         }
 
@@ -4078,8 +4086,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::Checkbox("ESP Health", &espShowHealth);
             ImGui::Checkbox("ESP Weapons", &espShowWeapon);
             ImGui::Checkbox("ESP Gradient", &espGradient);
-            ImGui::ColorEdit3("ESP Top Color", espTopColor);
-            if (espGradient) ImGui::ColorEdit3("ESP Bottom Color", espBottomColor);
+            ImGui::ColorEdit3("ESP Box Color", espTopColor);
+            if (espGradient) ImGui::ColorEdit3("ESP Box Gradient Color", espBottomColor);
+            ImGui::ColorEdit3("ESP Name Color", espNameColor);
+            ImGui::ColorEdit3("ESP Health Color", espHealthColor);
             ImGui::Text("ESP players: %ld | projected: %ld | drawn: %ld",
                 InterlockedCompareExchange(&boxEspEnumerated, 0, 0),
                 InterlockedCompareExchange(&boxEspProjected, 0, 0),
