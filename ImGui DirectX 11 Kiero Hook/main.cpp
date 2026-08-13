@@ -404,6 +404,15 @@ uintptr_t originalSkyboxMaterial = 0;
 volatile LONG pendingSkyboxCommand = 0;
 
 bool infinityAmmo = false;
+bool aimbotEnabled = false;
+bool aimbotVisibleCheck = true;
+float aimbotFov = 360.0f;
+volatile LONG aimbotShots = 0;
+volatile LONG aimbotTargetsScanned = 0;
+volatile LONG aimbotVisibleTargets = 0;
+volatile LONG aimbotApplied = 0;
+char aimbotStatus[96] = "Disabled";
+
 bool hitMarkerEnabled = false;
 float hitMarkerColor[3] = { 1.0f, 1.0f, 1.0f };
 float hitMarkerDuration = 0.22f;
@@ -2214,9 +2223,90 @@ void DrawBorderlessScopeReticle()
     draw->AddCircleFilled(center, 2.0f, line);
 }
 
+static bool GetAimbotHead(void* player, Vector3& headPosition)
+{
+    if (!player || !o_Transform_get_position) return false;
+    __try {
+        const uintptr_t biped = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(player) + 0x118);
+        const uintptr_t head = biped ? *reinterpret_cast<uintptr_t*>(biped + 0x20) : 0;
+        if (!head) return false;
+        headPosition = o_Transform_get_position(head);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t hitParameters, Vector3& outDirection)
+{
+    void* localPlayer = GetLocalPC();
+    if (!localPlayer || !o_HitCaster_Cast) return false;
+    const unsigned char localTeam = GetPCTeam(localPlayer);
+    if (localTeam == 0 || localTeam == 3) return false;
+
+    void* players[64] = {};
+    int playerCount = 0;
+    CollectPlayers(players, 64, playerCount);
+    InterlockedExchange(&aimbotTargetsScanned, playerCount);
+
+    bool found = false;
+    int visibleCount = 0;
+    float bestDistance = 3.402823466e+38F;
+    Vector3 bestDirection;
+    for (int i = 0; i < playerCount; ++i) {
+        void* player = players[i];
+        if (!player || player == localPlayer) continue;
+        const unsigned char team = GetPCTeam(player);
+        if (team == 0 || team == 3 || team == localTeam) continue;
+
+        Vector3 head;
+        if (!GetAimbotHead(player, head)) continue;
+        const Vector3 delta(head.x - origin.x, head.y - origin.y, head.z - origin.z);
+        const float distance = delta.Length();
+        if (distance < 0.5f || distance > 300.0f) continue;
+        const Vector3 candidate(delta.x / distance, delta.y / distance, delta.z / distance);
+
+        bool visible = !aimbotVisibleCheck;
+        if (aimbotVisibleCheck) {
+            __try {
+                // Use the game's own bullet caster as the visibility test. Stop the
+                // probe just behind the head: unobstructed rays finish within 0.6 m of
+                // the target; walls stop the cast significantly earlier.
+                const uintptr_t probe = o_HitCaster_Cast(origin, candidate, distance + 0.35f, hitParameters, nullptr);
+                if (probe) {
+                    const Vector3 probeEnd = *reinterpret_cast<Vector3*>(probe + 0x30);
+                    visible = probeEnd.Distance(head) <= 0.60f;
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) { visible = false; }
+        }
+        if (!visible) continue;
+        ++visibleCount;
+        // 360-degree FOV: no screen-angle rejection. Select the nearest visible enemy.
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestDirection = candidate;
+            found = true;
+        }
+    }
+    InterlockedExchange(&aimbotVisibleTargets, visibleCount);
+    if (found) outDirection = bestDirection;
+    return found;
+}
+
 uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float maxDistance, uintptr_t hitParameters, const Il2CppMethod* method)
 {
-    if (keyValidated && noSpreadEnabled && insideLocalGunFire) {
+    if (keyValidated && insideLocalGunFire && aimbotEnabled) {
+        InterlockedIncrement(&aimbotShots);
+        Vector3 targetDirection;
+        if (FindVisibleAimbotDirection(origin, hitParameters, targetDirection)) {
+            direction = targetDirection;
+            InterlockedIncrement(&aimbotApplied);
+            strcpy_s(aimbotStatus, "Locked visible target; shot redirected and restored");
+        } else {
+            strcpy_s(aimbotStatus, "No visible enemy; original shot kept");
+        }
+    }
+    else if (keyValidated && noSpreadEnabled && insideLocalGunFire) {
         __try {
             const uintptr_t camera = GetCamera();
             const uintptr_t cameraTransform = camera && o_Component_get_transform ? o_Component_get_transform(camera) : 0;
@@ -4190,6 +4280,26 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::NextColumn();
         
         ImGui::BeginChild("Keybinds", ImVec2(0, 0), true);
+        ImGui::TextColored(accent, "Aimbot");
+        ImGui::Separator();
+        ImGui::Spacing();
+        if (ImGui::Checkbox("Enable 360 Aimbot", &aimbotEnabled)) {
+            InterlockedExchange(&aimbotShots, 0);
+            InterlockedExchange(&aimbotTargetsScanned, 0);
+            InterlockedExchange(&aimbotVisibleTargets, 0);
+            InterlockedExchange(&aimbotApplied, 0);
+            strcpy_s(aimbotStatus, aimbotEnabled ? "Enabled; waiting for local shot" : "Disabled");
+        }
+        ImGui::Checkbox("Visible Check", &aimbotVisibleCheck);
+        ImGui::Text("FOV: %.0f degrees", aimbotFov);
+        ImGui::TextWrapped("Status: %s", aimbotStatus);
+        if (aimbotEnabled)
+            ImGui::Text("Shots: %ld | scanned: %ld | visible: %ld | applied: %ld",
+                InterlockedCompareExchange(&aimbotShots, 0, 0),
+                InterlockedCompareExchange(&aimbotTargetsScanned, 0, 0),
+                InterlockedCompareExchange(&aimbotVisibleTargets, 0, 0),
+                InterlockedCompareExchange(&aimbotApplied, 0, 0));
+        ImGui::Spacing();
         ImGui::TextColored(accent, "Keybinds");
         ImGui::Separator();
         ImGui::Spacing();
