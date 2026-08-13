@@ -435,6 +435,9 @@ volatile LONG aimbotAutoFired = 0;
 volatile LONG aimbotAutoFireRejected = 0;
 volatile LONG aimbotAutoFireBusy = 0;
 volatile LONG aimbotAutoFireNativeCommands = 0;
+uintptr_t aimbotAutoFirePendingGun = 0;
+ULONGLONG aimbotAutoFirePendingUntil = 0;
+ULONGLONG aimbotAutoFireNextDecisionAt = 0;
 bool visibleAimbotCameraActive = false;
 uintptr_t visibleAimbotAimingData = 0;
 Vector3 visibleAimbotOriginalAimAngle;
@@ -2546,35 +2549,85 @@ void __fastcall hk_Weaponry_TakeWeapon(uintptr_t instance, uint8_t slotIndex, co
     }
 }
 
+static ULONGLONG GetNativeAutoFireIntervalMs(uintptr_t gun)
+{
+    if (!gun || !base) return 100;
+    __try {
+        const uintptr_t parameters = *reinterpret_cast<uintptr_t*>(gun + 0x188);
+        if (!parameters) return 100;
+        using GetFireRateFn = int(__fastcall*)(uintptr_t, const Il2CppMethod*);
+        const int fireRate = reinterpret_cast<GetFireRateFn>(base + 0x99E350)(parameters, nullptr);
+        if (fireRate < 30 || fireRate > 3000) return 100;
+        ULONGLONG interval = static_cast<ULONGLONG>(60000 / fireRate);
+        if (interval < 20) interval = 20;
+        if (interval > 1000) interval = 1000;
+        return interval;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 100; }
+}
+
+static bool HasVisibleTargetBeforeNativeFire()
+{
+    // No separate Raycaster and no background scanner: use the same live cjq
+    // parameters and exact target test as the real aimbot shot path.
+    if (!aimbotLastHitParameters) return true; // one native bootstrap command obtains cjq
+    Vector3 origin;
+    bool haveOrigin = false;
+    __try {
+        const uintptr_t camera = GetCamera();
+        const uintptr_t transform = camera && o_Component_get_transform ? o_Component_get_transform(camera) : 0;
+        if (transform && o_Transform_get_position) {
+            origin = o_Transform_get_position(transform);
+            haveOrigin = true;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
+    Vector3 direction;
+    return haveOrigin && FindVisibleAimbotDirection(origin, aimbotLastHitParameters, direction);
+}
+
 void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, float frameTime, float commandTime, const Il2CppMethod* method)
 {
     bool injectNativeFire = false;
     bool originalPrimaryFire = false;
+    const ULONGLONG now = GetTickCount64();
     __try {
         const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
         const uintptr_t owner = instance ? *reinterpret_cast<uintptr_t*>(instance + 0x20) : 0;
         const bool isLocalGun = instance && command &&
             ((currentWeapon && instance == currentWeapon) ||
              (liveHudLocalPlayer && owner == liveHudLocalPlayer));
-        injectNativeFire = keyValidated && isLocalGun && aimbotAutoFire &&
+        const bool wantsAutoFire = keyValidated && isLocalGun && aimbotAutoFire &&
             (aimbotEnabled || visibleAimbotEnabled);
-        if (injectNativeFire) {
-            // cil.cdyv (+0x10) is the native primary-fire command. Feed it into
-            // GunController.wfz so the game owns cadence, animation, ammo and networking.
-            originalPrimaryFire = *reinterpret_cast<bool*>(command + 0x10);
-            *reinterpret_cast<bool*>(command + 0x10) = true;
-            InterlockedIncrement(&aimbotAutoFireNativeCommands);
+        if (wantsAutoFire && now >= aimbotAutoFireNextDecisionAt) {
+            if (HasVisibleTargetBeforeNativeFire()) {
+                originalPrimaryFire = *reinterpret_cast<bool*>(command + 0x10);
+                *reinterpret_cast<bool*>(command + 0x10) = true;
+                injectNativeFire = true;
+                // Persist across this command call: some weapon states schedule the
+                // actual Fire/HitCaster after wfz returns.
+                aimbotAutoFirePendingGun = instance;
+                aimbotAutoFirePendingUntil = now + GetNativeAutoFireIntervalMs(instance) + 100;
+                aimbotAutoFireNextDecisionAt = now + GetNativeAutoFireIntervalMs(instance);
+                InterlockedIncrement(&aimbotAutoFireNativeCommands);
+            } else {
+                aimbotAutoFireNextDecisionAt = now + 50;
+                InterlockedIncrement(&aimbotAutoFireRejected);
+                strcpy_s(aimbotStatus, "Auto Fire blocked before weapon: target behind wall");
+            }
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { injectNativeFire = false; }
 
-    insideAutoFireRequest = injectNativeFire;
     o_GunController_Command(instance, command, frameTime, commandTime, method);
-    insideAutoFireRequest = false;
 
     if (injectNativeFire) {
         __try { *reinterpret_cast<bool*>(command + 0x10) = originalPrimaryFire; }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    if (aimbotAutoFirePendingUntil && now > aimbotAutoFirePendingUntil) {
+        aimbotAutoFirePendingGun = 0;
+        aimbotAutoFirePendingUntil = 0;
     }
 }
 
@@ -2604,9 +2657,18 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { ammoBeforeShot = -1; }
     }
+    const ULONGLONG fireNow = GetTickCount64();
+    const bool persistentAutoRequest = isLocalGun && instance == aimbotAutoFirePendingGun &&
+        fireNow <= aimbotAutoFirePendingUntil;
+    insideAutoFireRequest = persistentAutoRequest;
     insideLocalGunFire = isLocalGun;
     o_GunController_Fire(instance, playSound, method);
     insideLocalGunFire = false;
+    insideAutoFireRequest = false;
+    if (persistentAutoRequest) {
+        aimbotAutoFirePendingGun = 0;
+        aimbotAutoFirePendingUntil = 0;
+    }
     if (isLocalGun && infinityAmmo && ammoBeforeShot >= 0) {
         __try {
             *reinterpret_cast<short*>(instance + OFFSET_CURRENT_AMMO) = ammoBeforeShot;
@@ -3377,6 +3439,9 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         gloveChamsRenderers.clear();
         weaponChamsController = 0;
         activeLocalWeaponController = 0;
+        aimbotAutoFirePendingGun = 0;
+        aimbotAutoFirePendingUntil = 0;
+        aimbotAutoFireNextDecisionAt = 0;
         adminBhopObservedMovement = 0;
         adminBhopObservedJumpParameters = 0;
         adminBhopOriginalCaptured = false;
