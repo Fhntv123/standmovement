@@ -1216,6 +1216,7 @@ Matrix16(__fastcall* o_Camera_get_worldToCameraMatrix)(uintptr_t) = nullptr;
 Matrix16(__fastcall* o_Camera_get_projectionMatrix)(uintptr_t) = nullptr;
 
 short(__fastcall* o_GunController_GetCurrentAmmo)(uintptr_t) = nullptr;
+void(__fastcall* o_GunController_SetCurrentAmmo)(uintptr_t, short, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_Gloves_SetArms)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_ArmsLod_SetVisible)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_Weaponry_TakeWeapon)(uintptr_t, uint8_t, const Il2CppMethod*) = nullptr;
@@ -2377,7 +2378,6 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
             // Silent mode keeps doing exactly what it did before. Visible mode uses
             // the same proven shot direction but also rotates the real rendered camera.
             direction = targetDirection;
-            if (visibleAimbotEnabled) BeginVisibleAimbotCameraSnap(targetDirection);
             InterlockedIncrement(&aimbotApplied);
             strcpy_s(aimbotStatus, visibleAimbotEnabled ?
                 "Visible snap active; restoring original camera" :
@@ -2473,18 +2473,52 @@ static bool RefillGunAmmo(uintptr_t gun)
     if (!gun || !base) return false;
     __try {
         using GetMaxAmmoFn = short(__fastcall*)(uintptr_t, const Il2CppMethod*);
-        using SetAmmoFn = void(__fastcall*)(uintptr_t, short, const Il2CppMethod*);
         static GetMaxAmmoFn getMaxAmmo = nullptr;
-        static SetAmmoFn setAmmo = nullptr;
         if (!getMaxAmmo) getMaxAmmo = reinterpret_cast<GetMaxAmmoFn>(base + OFFSET_GUN_GET_MAX_AMMO);
-        if (!setAmmo) setAmmo = reinterpret_cast<SetAmmoFn>(base + OFFSET_GUN_SET_CURRENT_AMMO);
         const short maxAmmo = getMaxAmmo(gun, nullptr);
-        if (maxAmmo <= 0 || maxAmmo >= 1000) return false;
-        setAmmo(gun, maxAmmo, nullptr);
+        if (maxAmmo <= 0 || maxAmmo >= 1000 || !o_GunController_SetCurrentAmmo) return false;
+        o_GunController_SetCurrentAmmo(gun, maxAmmo, nullptr);
         *reinterpret_cast<short*>(gun + OFFSET_CURRENT_AMMO) = maxAmmo;
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+void __fastcall hk_GunController_SetCurrentAmmo(uintptr_t instance, short value, const Il2CppMethod* method)
+{
+    bool isLocalGun = false;
+    __try { isLocalGun = keyValidated && instance && liveHudLocalPlayer &&
+        *reinterpret_cast<uintptr_t*>(instance + 0x20) == liveHudLocalPlayer; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
+    if (isLocalGun && infinityAmmo) {
+        __try {
+            using GetMaxAmmoFn = short(__fastcall*)(uintptr_t, const Il2CppMethod*);
+            static GetMaxAmmoFn getMaxAmmo = nullptr;
+            if (!getMaxAmmo) getMaxAmmo = reinterpret_cast<GetMaxAmmoFn>(base + OFFSET_GUN_GET_MAX_AMMO);
+            const short maxAmmo = getMaxAmmo(instance, nullptr);
+            if (maxAmmo > 0 && maxAmmo < 1000) value = maxAmmo;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    o_GunController_SetCurrentAmmo(instance, value, method);
+}
+
+static bool PrepareVisibleAimbotBeforeFire(uintptr_t instance)
+{
+    if (!visibleAimbotEnabled || !instance || !aimbotLastHitParameters) return false;
+    Vector3 origin;
+    bool haveOrigin = false;
+    __try {
+        const uintptr_t camera = GetCamera();
+        const uintptr_t transform = camera && o_Component_get_transform ? o_Component_get_transform(camera) : 0;
+        if (transform && o_Transform_get_position) { origin = o_Transform_get_position(transform); haveOrigin = true; }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
+    if (!haveOrigin) return false;
+    Vector3 targetDirection;
+    if (!FindVisibleAimbotDirection(origin, aimbotLastHitParameters, targetDirection)) return false;
+    BeginVisibleAimbotCameraSnap(targetDirection);
+    return true;
 }
 
 void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, const Il2CppMethod* method)
@@ -2497,6 +2531,7 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
     if (isLocalGun) activeLocalWeaponController = instance;
     if (isLocalGun && infinityAmmo) RefillGunAmmo(instance);
+    if (isLocalGun && visibleAimbotEnabled) PrepareVisibleAimbotBeforeFire(instance);
     insideLocalGunFire = isLocalGun;
     o_GunController_Fire(instance, playSound, method);
     insideLocalGunFire = false;
@@ -4955,8 +4990,11 @@ DWORD WINAPI HackThread(LPVOID)
     MH_CreateHook((LPVOID)(base + OFFSET_HITCASTER_CAST), hk_HitCaster_Cast, (LPVOID*)&o_HitCaster_Cast);
     MH_EnableHook((LPVOID)(base + OFFSET_HITCASTER_CAST));
 
-    // GunController hook for infinity ammo
+    // Intercept the authoritative magazine setter so every decrement is rejected.
+    MH_CreateHook((LPVOID)(base + OFFSET_GUN_SET_CURRENT_AMMO), hk_GunController_SetCurrentAmmo, (LPVOID*)&o_GunController_SetCurrentAmmo);
+    MH_EnableHook((LPVOID)(base + OFFSET_GUN_SET_CURRENT_AMMO));
 
+    // Getter remains as a secondary HUD/state refresh path.
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_GETCURRENTAMMO), hk_GunController_GetCurrentAmmo, (LPVOID*)&o_GunController_GetCurrentAmmo);
 
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_GETCURRENTAMMO));
