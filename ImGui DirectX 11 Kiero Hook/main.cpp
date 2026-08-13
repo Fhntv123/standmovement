@@ -218,6 +218,7 @@ struct Matrix16 {
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_A          0x840BF0  // PlayerManager.qkb(PlayerController)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_B          0x840DE0  // PlayerManager.qkc(PlayerController)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_C          0x840E10  // PlayerManager.qkd(PlayerController)
+#define OFFSET_WEAPONCONTROLLER_GET_ID                0x5409B0  // WeaponController.whs() -> glg
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xA6E220
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0x86C0E0
 #define OFFSET_AIMINGDATA_CLONE                      0x86F9C0
@@ -540,6 +541,12 @@ BYTE* NewEnemyCordsFunc = nullptr;
 
 
 int espCount = 10;
+bool espShowName = true;
+bool espShowHealth = true;
+bool espShowWeapon = true;
+bool espGradient = true;
+float espTopColor[3] = { 1.0f, 0.20f, 0.35f };
+float espBottomColor[3] = { 0.55f, 0.10f, 1.0f };
 volatile LONG boxEspEnumerated = 0;
 volatile LONG boxEspProjected = 0;
 volatile LONG boxEspDrawn = 0;
@@ -720,6 +727,78 @@ static unsigned char GetPCTeam(void* pc) {
         // cwf: None=0, Tr=1, Ct=2, Spectator=3.
         return *reinterpret_cast<unsigned char*>(reinterpret_cast<uintptr_t>(pc) + PC_TEAM_ENUM);
     } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+static std::string Il2CppStringToUtf8(void* stringObject) {
+    if (!stringObject) return {};
+    __try {
+        const int length = *reinterpret_cast<int*>(reinterpret_cast<uintptr_t>(stringObject) + 0x10);
+        if (length <= 0 || length > 128) return {};
+        const wchar_t* chars = reinterpret_cast<const wchar_t*>(reinterpret_cast<uintptr_t>(stringObject) + 0x14);
+        const int bytes = WideCharToMultiByte(CP_UTF8, 0, chars, length, nullptr, 0, nullptr, nullptr);
+        if (bytes <= 0 || bytes > 512) return {};
+        std::string result(bytes, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, chars, length, result.data(), bytes, nullptr, nullptr);
+        return result;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return {}; }
+}
+
+static std::string GetPCName(void* pc) {
+    if (!pc) return "Enemy";
+    __try {
+        std::string name = Il2CppStringToUtf8(*reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pc) + 0x158));
+        if (name.empty()) name = Il2CppStringToUtf8(*reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pc) + 0x160));
+        return name.empty() ? "Enemy" : name;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return "Enemy"; }
+}
+
+static int GetPCHealth(void* pc) {
+    if (!pc) return -1;
+    __try {
+        // PlayerController.bzxo (+0x148) is bqw. bqw.cbcw Nullable<int> (+0x50)
+        // carries the replicated 0..100 health value.
+        const uintptr_t healthState = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pc) + 0x148);
+        if (!healthState) return -1;
+        const int value = *reinterpret_cast<int*>(healthState + 0x50);
+        const bool hasValue = *reinterpret_cast<bool*>(healthState + 0x54);
+        return hasValue && value >= 0 && value <= 500 ? value : -1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
+
+static const char* WeaponNameFromId(unsigned char id) {
+    switch (id) {
+    case 11: return "G22"; case 12: return "USP"; case 13: return "P350"; case 15: return "Deagle";
+    case 16: return "Tec-9"; case 17: return "Five-Seven"; case 18: return "Berettas";
+    case 32: return "UMP45"; case 33: return "Akimbo Uzi"; case 34: return "MP7"; case 35: return "P90";
+    case 36: return "MP5"; case 37: return "MAC10"; case 42: return "VAL"; case 43: return "M4A1";
+    case 44: return "AKR"; case 45: return "AKR12"; case 46: return "M4"; case 47: return "M16";
+    case 48: return "FAMAS"; case 49: return "FN FAL"; case 51: return "AWM"; case 52: return "M40";
+    case 53: return "M110"; case 54: return "Mallard"; case 62: return "SM1014"; case 63: return "FabM";
+    case 64: return "M60"; case 65: return "SPAS"; case 70: return "Knife"; case 89: return "Hands";
+    case 91: return "HE"; case 92: return "Smoke"; case 93: return "Flash"; case 94: return "Molotov";
+    case 95: return "Incendiary"; case 100: return "Bomb"; default: return id ? "Weapon" : "Unarmed";
+    }
+}
+
+static const char* GetPCWeaponName(void* pc) {
+    if (!pc) return "Unarmed";
+    __try {
+        const uintptr_t weaponry = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pc) + 0xD0);
+        const uintptr_t weapon = weaponry ? *reinterpret_cast<uintptr_t*>(weaponry + 0xA0) : 0;
+        if (!weapon) return "Unarmed";
+        using GetWeaponIdFn = unsigned char(__fastcall*)(uintptr_t, const Il2CppMethod*);
+        static GetWeaponIdFn getWeaponId = nullptr;
+        if (!getWeaponId && base) getWeaponId = reinterpret_cast<GetWeaponIdFn>(base + OFFSET_WEAPONCONTROLLER_GET_ID);
+        return getWeaponId ? WeaponNameFromId(getWeaponId(weapon, nullptr)) : "Weapon";
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return "Weapon"; }
+}
+
+static ImU32 EspColorAt(float t, float alpha = 1.0f) {
+    t = fmaxf(0.0f, fminf(1.0f, t));
+    const float r = espTopColor[0] + (espBottomColor[0] - espTopColor[0]) * t;
+    const float g = espTopColor[1] + (espBottomColor[1] - espTopColor[1]) * t;
+    const float b = espTopColor[2] + (espBottomColor[2] - espTopColor[2]) * t;
+    return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, alpha));
 }
 
 static void* GetLocalPC() {
@@ -3080,17 +3159,62 @@ void BoxEsp() {
         const float bottom = fmaxf(headScreen.y, feetScreen.y);
         const ImVec2 boxMin(centerX - width * 0.5f, top);
         const ImVec2 boxMax(centerX + width * 0.5f, bottom);
-        const ImU32 color = IM_COL32(255, 80, 80, 255);
-        draw->AddRect(boxMin, boxMax, IM_COL32(0, 0, 0, 220), 2.0f, 0, 3.5f);
-        draw->AddRect(boxMin, boxMax, color, 2.0f, 0, 1.5f);
+        draw->AddRect(boxMin, boxMax, IM_COL32(0, 0, 0, 220), 2.0f, 0, 4.0f);
+        if (espGradient) {
+            constexpr int gradientSegments = 32;
+            for (int segment = 0; segment < gradientSegments; ++segment) {
+                const float t0 = static_cast<float>(segment) / gradientSegments;
+                const float t1 = static_cast<float>(segment + 1) / gradientSegments;
+                const float y0 = top + height * t0;
+                const float y1 = top + height * t1;
+                const ImU32 color = EspColorAt((t0 + t1) * 0.5f);
+                draw->AddLine(ImVec2(boxMin.x, y0), ImVec2(boxMin.x, y1), color, 2.0f);
+                draw->AddLine(ImVec2(boxMax.x, y0), ImVec2(boxMax.x, y1), color, 2.0f);
+            }
+            draw->AddLine(boxMin, ImVec2(boxMax.x, boxMin.y), EspColorAt(0.0f), 2.0f);
+            draw->AddLine(ImVec2(boxMin.x, boxMax.y), boxMax, EspColorAt(1.0f), 2.0f);
+        } else {
+            draw->AddRect(boxMin, boxMax, EspColorAt(0.0f), 2.0f, 0, 1.7f);
+        }
 
+        if (espShowName) {
+            const std::string name = GetPCName(player);
+            const ImVec2 size = ImGui::CalcTextSize(name.c_str());
+            const ImVec2 pos(centerX - size.x * 0.5f, top - size.y - 3.0f);
+            draw->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 255), name.c_str());
+            draw->AddText(pos, EspColorAt(0.0f), name.c_str());
+        }
+
+        if (espShowHealth) {
+            const int health = GetPCHealth(player);
+            if (health >= 0) {
+                const float healthFraction = fmaxf(0.0f, fminf(1.0f, health / 100.0f));
+                const float barX = boxMin.x - 7.0f;
+                draw->AddRectFilled(ImVec2(barX - 1.0f, top - 1.0f), ImVec2(barX + 4.0f, bottom + 1.0f), IM_COL32(0, 0, 0, 220));
+                const float fillTop = bottom - height * healthFraction;
+                const ImU32 healthColor = IM_COL32(static_cast<int>(255.0f * (1.0f - healthFraction)),
+                    static_cast<int>(255.0f * healthFraction), 65, 255);
+                draw->AddRectFilled(ImVec2(barX, fillTop), ImVec2(barX + 3.0f, bottom), healthColor);
+                char hpText[16]; sprintf_s(hpText, "%d", health);
+                draw->AddText(ImVec2(barX - 5.0f, fillTop - 13.0f), IM_COL32(255, 255, 255, 255), hpText);
+            }
+        }
+
+        float infoY = bottom + 3.0f;
+        if (espShowWeapon) {
+            const char* weaponName = GetPCWeaponName(player);
+            const ImVec2 size = ImGui::CalcTextSize(weaponName);
+            const ImVec2 pos(centerX - size.x * 0.5f, infoY);
+            draw->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 255), weaponName);
+            draw->AddText(pos, EspColorAt(1.0f), weaponName);
+            infoY += size.y + 1.0f;
+        }
         if (haveLocalPosition) {
-            char distanceText[32];
-            sprintf_s(distanceText, "%.0fm", basePosition.Distance(localPosition));
+            char distanceText[32]; sprintf_s(distanceText, "%.0fm", basePosition.Distance(localPosition));
             const ImVec2 size = ImGui::CalcTextSize(distanceText);
-            const ImVec2 textPos(centerX - size.x * 0.5f, bottom + 3.0f);
-            draw->AddText(ImVec2(textPos.x + 1.0f, textPos.y + 1.0f), IM_COL32(0, 0, 0, 255), distanceText);
-            draw->AddText(textPos, IM_COL32(255, 255, 255, 255), distanceText);
+            const ImVec2 pos(centerX - size.x * 0.5f, infoY);
+            draw->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 255), distanceText);
+            draw->AddText(pos, IM_COL32(235, 235, 235, 255), distanceText);
         }
         ++drawn;
     }
@@ -3944,6 +4068,12 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (boxEsp) {
             ImGui::SliderInt("ESP Player Limit", &espCount, 1, 64);
             ImGui::SliderFloat("ESP Max Distance", &espMaxDistance, 10.0f, 500.0f, "%.0f m");
+            ImGui::Checkbox("ESP Names", &espShowName);
+            ImGui::Checkbox("ESP Health", &espShowHealth);
+            ImGui::Checkbox("ESP Weapons", &espShowWeapon);
+            ImGui::Checkbox("ESP Gradient", &espGradient);
+            ImGui::ColorEdit3("ESP Top Color", espTopColor);
+            if (espGradient) ImGui::ColorEdit3("ESP Bottom Color", espBottomColor);
             ImGui::Text("ESP players: %ld | projected: %ld | drawn: %ld",
                 InterlockedCompareExchange(&boxEspEnumerated, 0, 0),
                 InterlockedCompareExchange(&boxEspProjected, 0, 0),
