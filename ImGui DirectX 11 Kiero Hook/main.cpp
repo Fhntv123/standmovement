@@ -399,6 +399,8 @@ float hitMarkerSize = 9.0f;
 float hitMarkerGap = 4.0f;
 float hitMarkerThickness = 2.0f;
 volatile LONG hitMarkerCalls = 0;
+volatile LONG hitMarkerResolvedCalls = 0;
+volatile LONG hitMarkerFallbackCalls = 0;
 uintptr_t liveHitMarkerView = 0;
 Vector3 latestHitMarkerCastStart;
 Vector3 latestHitMarkerCastEnd;
@@ -407,6 +409,7 @@ ULONGLONG latestHitMarkerCastAt = 0;
 struct HitMarkerEntry {
     Vector3 worldPosition;
     ULONGLONG triggeredAt;
+    bool screenCenterFallback;
 };
 std::vector<HitMarkerEntry> hitMarkers;
 SRWLOCK hitMarkerLock = SRWLOCK_INIT;
@@ -1700,7 +1703,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
 
 static bool ProjectTracerEnd(const Vector3& pos, ImVec2& screen);
 
-static bool ResolveConfirmedPlayerImpact(Vector3& impactPoint)
+static bool ResolveConfirmedPlayerImpact(Vector3& impactPoint, Vector3& castEndFallback)
 {
     Vector3 castStart, castEnd;
     ULONGLONG castAt = 0;
@@ -1712,7 +1715,8 @@ static bool ResolveConfirmedPlayerImpact(Vector3& impactPoint)
     ReleaseSRWLockShared(&hitMarkerLock);
 
     const ULONGLONG now = GetTickCount64();
-    if (!castValid || !castAt || now < castAt || now - castAt > 750) return false;
+    if (!castValid || !castAt || now < castAt || now - castAt > 2000) return false;
+    castEndFallback = castEnd;
     const Vector3 segment = castEnd - castStart;
     const float segmentLengthSquared = segment.x * segment.x + segment.y * segment.y + segment.z * segment.z;
     if (segmentLengthSquared <= 0.0001f) return false;
@@ -1722,7 +1726,7 @@ static bool ResolveConfirmedPlayerImpact(Vector3& impactPoint)
     CollectPlayers(players, 64, playerCount);
     void* localPlayer = GetLocalPC();
     bool found = false;
-    float bestDistance = 2.25f;
+    float bestDistance = 6.0f;
     Vector3 bestPoint;
 
     for (int i = 0; i < playerCount; ++i) {
@@ -1749,8 +1753,7 @@ static bool ResolveConfirmedPlayerImpact(Vector3& impactPoint)
             const Vector3 toAnchor = anchors[anchorIndex] - castStart;
             float t = (toAnchor.x * segment.x + toAnchor.y * segment.y + toAnchor.z * segment.z) /
                 segmentLengthSquared;
-            if (t < 0.0f) t = 0.0f;
-            if (t > 1.0f) t = 1.0f;
+            if (t < 0.0f || t > 1.05f) continue;
             const Vector3 point(
                 castStart.x + segment.x * t,
                 castStart.y + segment.y * t,
@@ -1775,14 +1778,24 @@ void __fastcall hk_HitMarkerView_Show(uintptr_t instance, bool value, bool playS
     if (keyValidated && hitMarkerEnabled && instance && instance == liveHitMarkerView) {
         const ULONGLONG now = GetTickCount64();
         InterlockedIncrement(&hitMarkerCalls);
-        Vector3 impactPoint;
-        if (ResolveConfirmedPlayerImpact(impactPoint)) {
-            AcquireSRWLockExclusive(&hitMarkerLock);
-            hitMarkers.push_back({ impactPoint, now });
-            if (hitMarkers.size() > 64)
-                hitMarkers.erase(hitMarkers.begin(), hitMarkers.begin() + (hitMarkers.size() - 64));
-            ReleaseSRWLockExclusive(&hitMarkerLock);
-        }
+        Vector3 impactPoint, castEndFallback;
+        const bool resolved = ResolveConfirmedPlayerImpact(impactPoint, castEndFallback);
+        bool haveWorldFallback = false;
+        AcquireSRWLockShared(&hitMarkerLock);
+        haveWorldFallback = latestHitMarkerCastValid && latestHitMarkerCastAt &&
+            now >= latestHitMarkerCastAt && now - latestHitMarkerCastAt <= 2000;
+        ReleaseSRWLockShared(&hitMarkerLock);
+
+        AcquireSRWLockExclusive(&hitMarkerLock);
+        // A confirmed hit must always create a visible marker. Prefer the player
+        // intersection; if runtime player enumeration is unavailable, keep a visible
+        // diagnostic fallback rather than silently dropping the confirmed hit.
+        hitMarkers.push_back({ resolved ? impactPoint : castEndFallback, now,
+            !resolved && !haveWorldFallback });
+        if (hitMarkers.size() > 64)
+            hitMarkers.erase(hitMarkers.begin(), hitMarkers.begin() + (hitMarkers.size() - 64));
+        ReleaseSRWLockExclusive(&hitMarkerLock);
+        InterlockedIncrement(resolved ? &hitMarkerResolvedCalls : &hitMarkerFallbackCalls);
     }
     o_HitMarkerView_Show(instance, value, playSound, method);
 }
@@ -1806,7 +1819,13 @@ void DrawHitMarker()
         const float elapsedMs = static_cast<float>(now - marker.triggeredAt);
         const float alpha = 1.0f - elapsedMs / durationMs;
         ImVec2 center;
-        if (!ProjectTracerEnd(marker.worldPosition, center)) continue;
+        if (marker.screenCenterFallback) {
+            const ImVec2 display = ImGui::GetIO().DisplaySize;
+            center = ImVec2(display.x * 0.5f, display.y * 0.5f);
+        }
+        else if (!ProjectTracerEnd(marker.worldPosition, center)) {
+            continue;
+        }
 
         const ImU32 shadow = IM_COL32(0, 0, 0, static_cast<int>(190.0f * alpha));
         const ImU32 color = ImGui::ColorConvertFloat4ToU32(ImVec4(
@@ -3943,9 +3962,14 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Hit Marker Size", &hitMarkerSize, 3.0f, 24.0f, "%.0f px");
             ImGui::SliderFloat("Hit Marker Gap", &hitMarkerGap, 0.0f, 16.0f, "%.0f px");
             ImGui::SliderFloat("Hit Marker Thickness", &hitMarkerThickness, 1.0f, 6.0f, "%.1f px");
-            ImGui::Text("Confirmed marker calls: %ld | Active markers: %d",
-                InterlockedCompareExchange(&hitMarkerCalls, 0, 0),
-                static_cast<int>(hitMarkers.size()));
+            int activeMarkerCount = 0;
+            AcquireSRWLockShared(&hitMarkerLock);
+            activeMarkerCount = static_cast<int>(hitMarkers.size());
+            ReleaseSRWLockShared(&hitMarkerLock);
+            ImGui::Text("Confirmed: %ld | Active: %d | Resolved: %ld | Fallback: %ld",
+                InterlockedCompareExchange(&hitMarkerCalls, 0, 0), activeMarkerCount,
+                InterlockedCompareExchange(&hitMarkerResolvedCalls, 0, 0),
+                InterlockedCompareExchange(&hitMarkerFallbackCalls, 0, 0));
         }
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
         if (bulletTracerEnabled) {
