@@ -212,6 +212,7 @@ struct Matrix16 {
 #define OFFSET_AIMVIEW_AWAKE                       0xA60AA0
 #define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
 #define OFFSET_HUDVIEW_UPDATE                       0xA68C60
+#define OFFSET_HITMARKERVIEW_SHOW                    0xA6AFC0
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xA5D6C0
 #define OFFSET_PLAYERCONTROLLER_COMMAND             0x83D210
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xA6E220
@@ -391,6 +392,15 @@ uintptr_t originalSkyboxMaterial = 0;
 volatile LONG pendingSkyboxCommand = 0;
 
 bool infinityAmmo = false;
+bool hitMarkerEnabled = false;
+float hitMarkerColor[3] = { 1.0f, 1.0f, 1.0f };
+float hitMarkerDuration = 0.22f;
+float hitMarkerSize = 9.0f;
+float hitMarkerGap = 4.0f;
+float hitMarkerThickness = 2.0f;
+volatile LONG hitMarkerCalls = 0;
+ULONGLONG hitMarkerTriggeredAt = 0;
+uintptr_t liveHitMarkerView = 0;
 bool bulletTracerEnabled = false;
 bool noSpreadEnabled = false;
 bool removeScopeBorders = false;
@@ -831,6 +841,7 @@ void(__fastcall* o_GameObject_SetActive)(uintptr_t, bool) = nullptr;
 bool(__fastcall* o_GameObject_get_activeInHierarchy)(uintptr_t) = nullptr;
 void(__fastcall* o_CanvasGroup_set_alpha)(uintptr_t, float) = nullptr;
 void(__fastcall* o_HUDView_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_HitMarkerView_Show)(uintptr_t, bool, bool, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_PlayerController_Command)(uintptr_t, uintptr_t, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_KeyboardControl_BuildCommand)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_AimController_GetSnapshot)(uintptr_t, const Il2CppMethod*) = nullptr;
@@ -1665,16 +1676,65 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
 {
     __try {
         liveAimView = instance ? *(uintptr_t*)(instance + 0x38) : 0;
+        liveHitMarkerView = instance ? *(uintptr_t*)(instance + 0x48) : 0;
         liveHudLocalPlayer = instance ? *(uintptr_t*)(instance + 0xD0) : 0;
         sniperSightObject = liveAimView ? *(uintptr_t*)(liveAimView + 0x48) : 0;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
     if (thirdPersonEnabled && !InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0))
         ApplyCustomizedThirdPersonOffsets();
     if (InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0) && ApplyNativeThirdPersonState())
         InterlockedExchange(&pendingThirdPersonCommand, 0);
     ApplyScopeOverlayState();
+}
+
+void __fastcall hk_HitMarkerView_Show(uintptr_t instance, bool value, bool playSound, const Il2CppMethod* method)
+{
+    // HitMarkerView.bbcx is the game's confirmed marker-display path. Restrict the
+    // overlay to the marker owned by the active local HUD; remote HUD instances and
+    // raw world/surface casts cannot trigger it.
+    if (keyValidated && hitMarkerEnabled && instance && instance == liveHitMarkerView) {
+        InterlockedIncrement(&hitMarkerCalls);
+        InterlockedExchange64(reinterpret_cast<volatile LONG64*>(&hitMarkerTriggeredAt),
+            static_cast<LONG64>(GetTickCount64()));
+    }
+    o_HitMarkerView_Show(instance, value, playSound, method);
+}
+
+void DrawHitMarker()
+{
+    if (!keyValidated || !hitMarkerEnabled) return;
+    const ULONGLONG triggeredAt = static_cast<ULONGLONG>(InterlockedCompareExchange64(
+        reinterpret_cast<volatile LONG64*>(&hitMarkerTriggeredAt), 0, 0));
+    if (!triggeredAt) return;
+
+    const float durationMs = hitMarkerDuration * 1000.0f;
+    const float elapsedMs = static_cast<float>(GetTickCount64() - triggeredAt);
+    if (elapsedMs < 0.0f || elapsedMs >= durationMs) return;
+
+    const float alpha = 1.0f - elapsedMs / durationMs;
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const ImVec2 center(display.x * 0.5f, display.y * 0.5f);
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    const ImU32 shadow = IM_COL32(0, 0, 0, static_cast<int>(190.0f * alpha));
+    const ImU32 color = ImGui::ColorConvertFloat4ToU32(ImVec4(
+        hitMarkerColor[0], hitMarkerColor[1], hitMarkerColor[2], alpha));
+
+    const float inner = hitMarkerGap;
+    const float outer = hitMarkerGap + hitMarkerSize;
+    const ImVec2 starts[4] = {
+        ImVec2(center.x - inner, center.y - inner), ImVec2(center.x + inner, center.y - inner),
+        ImVec2(center.x - inner, center.y + inner), ImVec2(center.x + inner, center.y + inner)
+    };
+    const ImVec2 ends[4] = {
+        ImVec2(center.x - outer, center.y - outer), ImVec2(center.x + outer, center.y - outer),
+        ImVec2(center.x - outer, center.y + outer), ImVec2(center.x + outer, center.y + outer)
+    };
+    for (int i = 0; i < 4; ++i) {
+        draw->AddLine(starts[i], ends[i], shadow, hitMarkerThickness + 2.0f);
+        draw->AddLine(starts[i], ends[i], color, hitMarkerThickness);
+    }
 }
 
 void DrawBorderlessScopeReticle()
@@ -3774,6 +3834,15 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 ImGui::SliderFloat("Glove Animation Speed", &gloveChamsAnimationSpeed, 0.2f, 5.0f, "%.1f");
             ImGui::TextWrapped("Glove status: %s", gloveChamsStatus);
         }
+        ImGui::Checkbox("Hit Marker", &hitMarkerEnabled);
+        if (hitMarkerEnabled) {
+            ImGui::ColorEdit3("Hit Marker Color", hitMarkerColor);
+            ImGui::SliderFloat("Hit Marker Duration", &hitMarkerDuration, 0.08f, 1.0f, "%.2f s");
+            ImGui::SliderFloat("Hit Marker Size", &hitMarkerSize, 3.0f, 24.0f, "%.0f px");
+            ImGui::SliderFloat("Hit Marker Gap", &hitMarkerGap, 0.0f, 16.0f, "%.0f px");
+            ImGui::SliderFloat("Hit Marker Thickness", &hitMarkerThickness, 1.0f, 6.0f, "%.1f px");
+            ImGui::Text("Confirmed marker calls: %ld", InterlockedCompareExchange(&hitMarkerCalls, 0, 0));
+        }
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
         if (bulletTracerEnabled) {
             ImGui::ColorEdit3("Tracer Start Color", bulletTracerStartColor);
@@ -3836,6 +3905,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     ImGui::PopFont();
 
+    DrawHitMarker();
     DrawBulletTracers();
     DrawBorderlessScopeReticle();
 
@@ -3979,6 +4049,13 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS));
     MH_CreateHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE), hk_HUDView_Update, (LPVOID*)&o_HUDView_Update);
     MH_EnableHook((LPVOID)(base + OFFSET_HUDVIEW_UPDATE));
+    const MH_STATUS hitMarkerCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_HITMARKERVIEW_SHOW), hk_HitMarkerView_Show,
+        (LPVOID*)&o_HitMarkerView_Show);
+    const MH_STATUS hitMarkerEnableStatus = hitMarkerCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_HITMARKERVIEW_SHOW)) : hitMarkerCreateStatus;
+    if (hitMarkerCreateStatus != MH_OK || hitMarkerEnableStatus != MH_OK)
+        hitMarkerEnabled = false;
     o_AimingData_Clone = (uintptr_t(__fastcall*)(uintptr_t, const Il2CppMethod*))
         (base + OFFSET_AIMINGDATA_CLONE);
     const MH_STATUS antiAimSnapshotCreateStatus = MH_CreateHook(
