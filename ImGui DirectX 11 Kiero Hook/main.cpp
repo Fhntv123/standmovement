@@ -215,6 +215,9 @@ struct Matrix16 {
 #define OFFSET_HITMARKERVIEW_SHOW                    0xA6AFC0
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xA5D6C0
 #define OFFSET_PLAYERCONTROLLER_COMMAND             0x83D210
+#define OFFSET_PLAYERMANAGER_PLAYER_EVENT_A          0x840BF0  // PlayerManager.qkb(PlayerController)
+#define OFFSET_PLAYERMANAGER_PLAYER_EVENT_B          0x840DE0  // PlayerManager.qkc(PlayerController)
+#define OFFSET_PLAYERMANAGER_PLAYER_EVENT_C          0x840E10  // PlayerManager.qkd(PlayerController)
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xA6E220
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0x86C0E0
 #define OFFSET_AIMINGDATA_CLONE                      0x86F9C0
@@ -540,6 +543,9 @@ int espCount = 10;
 volatile LONG boxEspEnumerated = 0;
 volatile LONG boxEspProjected = 0;
 volatile LONG boxEspDrawn = 0;
+volatile LONG boxEspDictionaryCount = 0;
+volatile LONG boxEspUnityCount = 0;
+volatile LONG boxEspHookCount = 0;
 
 // IL2CPP runtime bindings (init in HackThread)
 IL2CPP_API g_il2cpp;
@@ -553,11 +559,43 @@ static void LINDY_LOG(const char* fmt, ...) {
 
 // Forward-declare the transform function ptr (defined later near IL2CPP globals block).
 extern Vector3(__fastcall* o_Transform_get_position)(uintptr_t);
+extern uintptr_t(__fastcall* o_GetPlayerController)();
 extern Il2CppArray*(__fastcall* o_Object_FindObjectsOfType)(Il2CppObject*, bool, const Il2CppMethod*);
 
 Il2CppClass* g_PlayerManagerClass = nullptr;
 Il2CppField* g_PlayerManagerInstanceField = nullptr;
 Il2CppObject* g_PlayerControllerReflectionType = nullptr;
+std::vector<void*> g_LivePlayerRegistry;
+SRWLOCK g_LivePlayerRegistryLock = SRWLOCK_INIT;
+
+typedef void(__fastcall* t_PlayerManagerPlayerEvent)(uintptr_t, void*, const Il2CppMethod*);
+t_PlayerManagerPlayerEvent o_PlayerManagerPlayerEventA = nullptr;
+t_PlayerManagerPlayerEvent o_PlayerManagerPlayerEventB = nullptr;
+t_PlayerManagerPlayerEvent o_PlayerManagerPlayerEventC = nullptr;
+
+static void RememberLivePlayer(void* player) {
+    if (!player) return;
+    AcquireSRWLockExclusive(&g_LivePlayerRegistryLock);
+    if (std::find(g_LivePlayerRegistry.begin(), g_LivePlayerRegistry.end(), player) == g_LivePlayerRegistry.end()) {
+        g_LivePlayerRegistry.push_back(player);
+        if (g_LivePlayerRegistry.size() > 128)
+            g_LivePlayerRegistry.erase(g_LivePlayerRegistry.begin(), g_LivePlayerRegistry.begin() + (g_LivePlayerRegistry.size() - 128));
+    }
+    ReleaseSRWLockExclusive(&g_LivePlayerRegistryLock);
+}
+
+void __fastcall hk_PlayerManagerPlayerEventA(uintptr_t instance, void* player, const Il2CppMethod* method) {
+    RememberLivePlayer(player);
+    o_PlayerManagerPlayerEventA(instance, player, method);
+}
+void __fastcall hk_PlayerManagerPlayerEventB(uintptr_t instance, void* player, const Il2CppMethod* method) {
+    RememberLivePlayer(player);
+    o_PlayerManagerPlayerEventB(instance, player, method);
+}
+void __fastcall hk_PlayerManagerPlayerEventC(uintptr_t instance, void* player, const Il2CppMethod* method) {
+    RememberLivePlayer(player);
+    o_PlayerManagerPlayerEventC(instance, player, method);
+}
 Il2CppClass* g_GlovesManagerClass = nullptr;
 Il2CppField* g_GlovesManagerInstanceField = nullptr;
 
@@ -608,19 +646,18 @@ static void CollectPlayersFromDictionary(uintptr_t dict, void** out, int maxN, i
 
 static void CollectPlayers(void** out, int maxN, int& outN) {
     outN = 0;
+    int dictionaryCount = 0;
+    int unityCount = 0;
     void* pm = GetPlayerManagerInstance();
     __try {
         if (pm) {
-            // Current dump: PlayerManager.bzze Dictionary<int, PlayerController> +0x28.
             CollectPlayersFromDictionary(*reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pm) + 0x28), out, maxN, outN);
-            // Runtime fallback: bzzj Dictionary<string, PlayerController> +0x50.
             if (outN <= 1)
                 CollectPlayersFromDictionary(*reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pm) + 0x50), out, maxN, outN);
+            dictionaryCount = outN;
         }
-        // Runtime evidence shows both dictionaries can be empty in offline matches.
-        // This fallback also works when the singleton lookup itself is unavailable.
         if (outN <= 1 && g_PlayerControllerReflectionType && o_Object_FindObjectsOfType) {
-            Il2CppArray* objects = o_Object_FindObjectsOfType(g_PlayerControllerReflectionType, false, nullptr);
+            Il2CppArray* objects = o_Object_FindObjectsOfType(g_PlayerControllerReflectionType, true, nullptr);
             const uintptr_t array = reinterpret_cast<uintptr_t>(objects);
             if (array) {
                 const uintptr_t length = *reinterpret_cast<uintptr_t*>(array + 0x18);
@@ -629,16 +666,35 @@ static void CollectPlayers(void** out, int maxN, int& outN) {
                         void* player = *reinterpret_cast<void**>(array + 0x20 + i * sizeof(uintptr_t));
                         if (!player) continue;
                         bool duplicate = false;
-                        for (int existing = 0; existing < outN; ++existing) {
+                        for (int existing = 0; existing < outN; ++existing)
                             if (out[existing] == player) { duplicate = true; break; }
-                        }
                         if (!duplicate) out[outN++] = player;
                     }
                 }
             }
+            unityCount = outN - dictionaryCount;
         }
+        // Definitive source: PlayerManager's own live player callbacks. This bypasses
+        // all generic Dictionary/FindObjectsOfType layout and overload differences.
+        AcquireSRWLockShared(&g_LivePlayerRegistryLock);
+        const int hookRegistrySize = static_cast<int>(g_LivePlayerRegistry.size());
+        for (void* player : g_LivePlayerRegistry) {
+            if (outN >= maxN) break;
+            bool duplicate = false;
+            for (int existing = 0; existing < outN; ++existing)
+                if (out[existing] == player) { duplicate = true; break; }
+            if (!duplicate) out[outN++] = player;
+        }
+        ReleaseSRWLockShared(&g_LivePlayerRegistryLock);
+        InterlockedExchange(&boxEspDictionaryCount, dictionaryCount);
+        InterlockedExchange(&boxEspUnityCount, unityCount);
+        InterlockedExchange(&boxEspHookCount, hookRegistrySize);
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { outN = 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        outN = 0;
+        InterlockedExchange(&boxEspDictionaryCount, 0);
+        InterlockedExchange(&boxEspUnityCount, 0);
+    }
 }
 
 static bool GetPCPosition(void* pc, Vector3& outPos) {
@@ -660,9 +716,11 @@ static bool IsBotPC(void* pc) {
 
 static void* GetLocalPC() {
     void* pm = GetPlayerManagerInstance();
-    if (!pm) return nullptr;
     __try {
-        return *(void**)((uintptr_t)pm + PM_LOCAL_PLAYER_BF);
+        void* local = pm ? *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pm) + PM_LOCAL_PLAYER_BF) : nullptr;
+        if (!local && o_GetPlayerController) local = reinterpret_cast<void*>(o_GetPlayerController());
+        RememberLivePlayer(local);
+        return local;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
 }
 
@@ -3877,6 +3935,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 InterlockedCompareExchange(&boxEspEnumerated, 0, 0),
                 InterlockedCompareExchange(&boxEspProjected, 0, 0),
                 InterlockedCompareExchange(&boxEspDrawn, 0, 0));
+            ImGui::Text("Sources - dict: %ld | unity: %ld | hooks: %ld",
+                InterlockedCompareExchange(&boxEspDictionaryCount, 0, 0),
+                InterlockedCompareExchange(&boxEspUnityCount, 0, 0),
+                InterlockedCompareExchange(&boxEspHookCount, 0, 0));
         }
         ImGui::Checkbox("Show Velocity", &showVelocity);
         ImGui::Checkbox("Show Trail", &showTrail);
@@ -4127,7 +4189,8 @@ DWORD WINAPI HackThread(LPVOID)
         g_GameControllerClass = g_il2cpp.find_class("Axlebolt.Standoff.Game", "GameController");
         if (g_GameControllerClass)
             g_GameControllerInstanceField = g_il2cpp.class_get_field_from_name(g_GameControllerClass, "<ceva>k__BackingField");
-        g_PlayerManagerClass = g_il2cpp.find_class("", "PlayerManager");
+        g_PlayerManagerClass = g_il2cpp.find_class("Axlebolt.Standoff.Player", "PlayerManager");
+        if (!g_PlayerManagerClass) g_PlayerManagerClass = g_il2cpp.find_class("", "PlayerManager");
         LINDY_LOG("[init] PlayerManagerClass=%p", (void*)g_PlayerManagerClass);
         if (g_PlayerManagerClass) {
             Il2CppClass* playerControllerClass = g_il2cpp.find_class("Axlebolt.Standoff.Player", "PlayerController");
@@ -4171,6 +4234,22 @@ DWORD WINAPI HackThread(LPVOID)
 
     o_CheatRuntime_SetThirdPerson = (void(__fastcall*)(uintptr_t, bool))(base + OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON);
     o_GetPlayerController = (uintptr_t(__fastcall*)())(base + OFFSET_GET_PLAYERCONTROLLER);
+
+    const MH_STATUS playerEventACreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYERMANAGER_PLAYER_EVENT_A),
+        hk_PlayerManagerPlayerEventA, (LPVOID*)&o_PlayerManagerPlayerEventA);
+    const MH_STATUS playerEventAEnable = playerEventACreate == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_PLAYERMANAGER_PLAYER_EVENT_A)) : playerEventACreate;
+    const MH_STATUS playerEventBCreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYERMANAGER_PLAYER_EVENT_B),
+        hk_PlayerManagerPlayerEventB, (LPVOID*)&o_PlayerManagerPlayerEventB);
+    const MH_STATUS playerEventBEnable = playerEventBCreate == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_PLAYERMANAGER_PLAYER_EVENT_B)) : playerEventBCreate;
+    const MH_STATUS playerEventCCreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYERMANAGER_PLAYER_EVENT_C),
+        hk_PlayerManagerPlayerEventC, (LPVOID*)&o_PlayerManagerPlayerEventC);
+    const MH_STATUS playerEventCEnable = playerEventCCreate == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_PLAYERMANAGER_PLAYER_EVENT_C)) : playerEventCCreate;
+    LINDY_LOG("[BoxEsp] player event hooks A=%d/%d B=%d/%d C=%d/%d",
+        (int)playerEventACreate, (int)playerEventAEnable, (int)playerEventBCreate,
+        (int)playerEventBEnable, (int)playerEventCCreate, (int)playerEventCEnable);
 
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
     o_Transform_get_forward = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_FORWARD);
