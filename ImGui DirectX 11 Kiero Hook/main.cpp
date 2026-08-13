@@ -401,6 +401,11 @@ float hitMarkerThickness = 2.0f;
 volatile LONG hitMarkerCalls = 0;
 ULONGLONG hitMarkerTriggeredAt = 0;
 uintptr_t liveHitMarkerView = 0;
+Vector3 latestLocalCastEnd;
+ULONGLONG latestLocalCastAt = 0;
+Vector3 confirmedHitMarkerWorldPosition;
+bool confirmedHitMarkerWorldPositionValid = false;
+SRWLOCK hitMarkerLock = SRWLOCK_INIT;
 bool bulletTracerEnabled = false;
 bool noSpreadEnabled = false;
 bool removeScopeBorders = false;
@@ -1689,15 +1694,25 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     ApplyScopeOverlayState();
 }
 
+static bool ProjectTracerEnd(const Vector3& pos, ImVec2& screen);
+
 void __fastcall hk_HitMarkerView_Show(uintptr_t instance, bool value, bool playSound, const Il2CppMethod* method)
 {
     // HitMarkerView.bbcx is the game's confirmed marker-display path. Restrict the
     // overlay to the marker owned by the active local HUD; remote HUD instances and
     // raw world/surface casts cannot trigger it.
     if (keyValidated && hitMarkerEnabled && instance && instance == liveHitMarkerView) {
+        const ULONGLONG now = GetTickCount64();
         InterlockedIncrement(&hitMarkerCalls);
-        InterlockedExchange64(reinterpret_cast<volatile LONG64*>(&hitMarkerTriggeredAt),
-            static_cast<LONG64>(GetTickCount64()));
+        AcquireSRWLockExclusive(&hitMarkerLock);
+        // Correlate the game's confirmed-hit callback with the latest authoritative
+        // local cast. The short window prevents an old wall impact from being reused.
+        confirmedHitMarkerWorldPositionValid = latestLocalCastAt &&
+            now >= latestLocalCastAt && now - latestLocalCastAt <= 750;
+        if (confirmedHitMarkerWorldPositionValid)
+            confirmedHitMarkerWorldPosition = latestLocalCastEnd;
+        hitMarkerTriggeredAt = now;
+        ReleaseSRWLockExclusive(&hitMarkerLock);
     }
     o_HitMarkerView_Show(instance, value, playSound, method);
 }
@@ -1705,17 +1720,23 @@ void __fastcall hk_HitMarkerView_Show(uintptr_t instance, bool value, bool playS
 void DrawHitMarker()
 {
     if (!keyValidated || !hitMarkerEnabled) return;
-    const ULONGLONG triggeredAt = static_cast<ULONGLONG>(InterlockedCompareExchange64(
-        reinterpret_cast<volatile LONG64*>(&hitMarkerTriggeredAt), 0, 0));
-    if (!triggeredAt) return;
+    ULONGLONG triggeredAt = 0;
+    Vector3 worldPosition;
+    bool worldPositionValid = false;
+    AcquireSRWLockShared(&hitMarkerLock);
+    triggeredAt = hitMarkerTriggeredAt;
+    worldPosition = confirmedHitMarkerWorldPosition;
+    worldPositionValid = confirmedHitMarkerWorldPositionValid;
+    ReleaseSRWLockShared(&hitMarkerLock);
+    if (!triggeredAt || !worldPositionValid) return;
 
     const float durationMs = hitMarkerDuration * 1000.0f;
     const float elapsedMs = static_cast<float>(GetTickCount64() - triggeredAt);
     if (elapsedMs < 0.0f || elapsedMs >= durationMs) return;
 
     const float alpha = 1.0f - elapsedMs / durationMs;
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    const ImVec2 center(display.x * 0.5f, display.y * 0.5f);
+    ImVec2 center;
+    if (!ProjectTracerEnd(worldPosition, center)) return;
     ImDrawList* draw = ImGui::GetForegroundDrawList();
     const ImU32 shadow = IM_COL32(0, 0, 0, static_cast<int>(190.0f * alpha));
     const ImU32 color = ImGui::ColorConvertFloat4ToU32(ImVec4(
@@ -1765,15 +1786,24 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
     }
 
     const uintptr_t result = o_HitCaster_Cast(origin, direction, maxDistance, hitParameters, method);
-    if (keyValidated && bulletTracerEnabled && insideLocalGunFire && result) {
+    if (keyValidated && insideLocalGunFire && result && (hitMarkerEnabled || bulletTracerEnabled)) {
         __try {
             // cjr stores the authoritative cast start/end at 0x24/0x30.
             const Vector3 actualStart = *(Vector3*)(result + 0x24);
             const Vector3 actualEnd = *(Vector3*)(result + 0x30);
-            AcquireSRWLockExclusive(&bulletTracerLock);
-            bulletTracers.push_back({ actualStart, actualEnd, GetTickCount64() });
-            if (bulletTracers.size() > 128) bulletTracers.erase(bulletTracers.begin(), bulletTracers.begin() + (bulletTracers.size() - 128));
-            ReleaseSRWLockExclusive(&bulletTracerLock);
+            const ULONGLONG now = GetTickCount64();
+            if (hitMarkerEnabled) {
+                AcquireSRWLockExclusive(&hitMarkerLock);
+                latestLocalCastEnd = actualEnd;
+                latestLocalCastAt = now;
+                ReleaseSRWLockExclusive(&hitMarkerLock);
+            }
+            if (bulletTracerEnabled) {
+                AcquireSRWLockExclusive(&bulletTracerLock);
+                bulletTracers.push_back({ actualStart, actualEnd, now });
+                if (bulletTracers.size() > 128) bulletTracers.erase(bulletTracers.begin(), bulletTracers.begin() + (bulletTracers.size() - 128));
+                ReleaseSRWLockExclusive(&bulletTracerLock);
+            }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
@@ -3841,7 +3871,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Hit Marker Size", &hitMarkerSize, 3.0f, 24.0f, "%.0f px");
             ImGui::SliderFloat("Hit Marker Gap", &hitMarkerGap, 0.0f, 16.0f, "%.0f px");
             ImGui::SliderFloat("Hit Marker Thickness", &hitMarkerThickness, 1.0f, 6.0f, "%.1f px");
-            ImGui::Text("Confirmed marker calls: %ld", InterlockedCompareExchange(&hitMarkerCalls, 0, 0));
+            ImGui::Text("Confirmed world marker calls: %ld", InterlockedCompareExchange(&hitMarkerCalls, 0, 0));
         }
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
         if (bulletTracerEnabled) {
