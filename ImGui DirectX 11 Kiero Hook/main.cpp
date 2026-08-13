@@ -209,6 +209,7 @@ struct Matrix16 {
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0x8491C0
 #define OFFSET_GUNCONTROLLER_FIRE                  0x996BE0
 #define OFFSET_HITCASTER_CAST                      0x99FBB0
+#define OFFSET_CASTRESULT_ADD_PLAYER_HIT            0x9A30B0
 #define OFFSET_AIMVIEW_AWAKE                       0xA60AA0
 #define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
 #define OFFSET_HUDVIEW_UPDATE                       0xA68C60
@@ -399,6 +400,7 @@ float hitMarkerSize = 9.0f;
 float hitMarkerGap = 4.0f;
 float hitMarkerThickness = 2.0f;
 volatile LONG hitMarkerCalls = 0;
+volatile LONG playerHitDataCalls = 0;
 uintptr_t liveHitMarkerView = 0;
 Vector3 latestPlayerHitPoint;
 bool latestPlayerHitPointValid = false;
@@ -841,6 +843,7 @@ void(__fastcall* o_ArmsLod_SetVisible)(uintptr_t, bool, const Il2CppMethod*) = n
 void(__fastcall* o_Weaponry_TakeWeapon)(uintptr_t, uint8_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_CastResult_AddPlayerHit)(uintptr_t, uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 thread_local bool insideLocalGunFire = false;
 void(__fastcall* o_AimView_Awake)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimView_UpdateSniperPanels)(uintptr_t, float, float, const Il2CppMethod*) = nullptr;
@@ -1778,6 +1781,27 @@ void DrawBorderlessScopeReticle()
     draw->AddCircleFilled(center, 2.0f, line);
 }
 
+void __fastcall hk_CastResult_AddPlayerHit(uintptr_t result, uintptr_t player, uintptr_t hitData, const Il2CppMethod* method)
+{
+    // cjr.wxm is called once for each player BulletHitData added during the cast.
+    // Capture chs.cdvt (+0x10) while the local gun's HitCaster call is active.
+    if (keyValidated && hitMarkerEnabled && insideLocalGunFire && player && hitData) {
+        __try {
+            const Vector3 point = *reinterpret_cast<Vector3*>(hitData + 0x10);
+            if (std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z)) {
+                AcquireSRWLockExclusive(&hitMarkerLock);
+                latestPlayerHitPoint = point;
+                latestPlayerHitPointValid = true;
+                latestPlayerHitAt = GetTickCount64();
+                ReleaseSRWLockExclusive(&hitMarkerLock);
+                InterlockedIncrement(&playerHitDataCalls);
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    o_CastResult_AddPlayerHit(result, player, hitData, method);
+}
+
 uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float maxDistance, uintptr_t hitParameters, const Il2CppMethod* method)
 {
     if (keyValidated && noSpreadEnabled && insideLocalGunFire) {
@@ -1797,49 +1821,6 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
             const Vector3 actualStart = *(Vector3*)(result + 0x24);
             const Vector3 actualEnd = *(Vector3*)(result + 0x30);
             const ULONGLONG now = GetTickCount64();
-            if (hitMarkerEnabled) {
-                Vector3 playerHitPoint;
-                bool playerHitFound = false;
-                float nearestPlayerHitDistance = maxDistance + 1.0f;
-                // cjr.ddtd at +0x10 is Dictionary<player, List<BulletHitData>>.
-                // Each chs BulletHitData stores its impact point in cdvt at +0x10.
-                const uintptr_t hitDictionary = *reinterpret_cast<uintptr_t*>(result + 0x10);
-                if (hitDictionary) {
-                    const uintptr_t entries = *reinterpret_cast<uintptr_t*>(hitDictionary + 0x18);
-                    const int entryCount = *reinterpret_cast<int*>(hitDictionary + 0x20);
-                    if (entries && entryCount > 0 && entryCount <= 128) {
-                        for (int entryIndex = 0; entryIndex < entryCount; ++entryIndex) {
-                            const uintptr_t entry = entries + 0x20 + static_cast<uintptr_t>(entryIndex) * 0x18;
-                            if (*reinterpret_cast<int*>(entry) < 0) continue;
-                            const uintptr_t hitList = *reinterpret_cast<uintptr_t*>(entry + 0x10);
-                            if (!hitList) continue;
-                            const uintptr_t items = *reinterpret_cast<uintptr_t*>(hitList + 0x10);
-                            const int itemCount = *reinterpret_cast<int*>(hitList + 0x18);
-                            if (!items || itemCount <= 0 || itemCount > 64) continue;
-                            for (int itemIndex = 0; itemIndex < itemCount; ++itemIndex) {
-                                const uintptr_t hitData = *reinterpret_cast<uintptr_t*>(
-                                    items + 0x20 + static_cast<uintptr_t>(itemIndex) * sizeof(uintptr_t));
-                                if (!hitData) continue;
-                                const Vector3 point = *reinterpret_cast<Vector3*>(hitData + 0x10);
-                                const float distance = point.Distance(actualStart);
-                                if (std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z) &&
-                                    distance >= 0.0f && distance < nearestPlayerHitDistance) {
-                                    nearestPlayerHitDistance = distance;
-                                    playerHitPoint = point;
-                                    playerHitFound = true;
-                                }
-                            }
-                        }
-                    }
-                }
-                AcquireSRWLockExclusive(&hitMarkerLock);
-                latestPlayerHitPointValid = playerHitFound;
-                if (playerHitFound) {
-                    latestPlayerHitPoint = playerHitPoint;
-                    latestPlayerHitAt = now;
-                }
-                ReleaseSRWLockExclusive(&hitMarkerLock);
-            }
             if (bulletTracerEnabled) {
                 AcquireSRWLockExclusive(&bulletTracerLock);
                 bulletTracers.push_back({ actualStart, actualEnd, now });
@@ -3913,7 +3894,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Hit Marker Size", &hitMarkerSize, 3.0f, 24.0f, "%.0f px");
             ImGui::SliderFloat("Hit Marker Gap", &hitMarkerGap, 0.0f, 16.0f, "%.0f px");
             ImGui::SliderFloat("Hit Marker Thickness", &hitMarkerThickness, 1.0f, 6.0f, "%.1f px");
-            ImGui::Text("Confirmed world marker calls: %ld", InterlockedCompareExchange(&hitMarkerCalls, 0, 0));
+            ImGui::Text("Confirmed marker calls: %ld | Player hit data: %ld",
+                InterlockedCompareExchange(&hitMarkerCalls, 0, 0),
+                InterlockedCompareExchange(&playerHitDataCalls, 0, 0));
         }
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
         if (bulletTracerEnabled) {
@@ -4180,8 +4163,14 @@ DWORD WINAPI HackThread(LPVOID)
     // Fire remains a fallback for guns injected after the equip event.
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE));
+    const MH_STATUS playerHitCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_CASTRESULT_ADD_PLAYER_HIT), hk_CastResult_AddPlayerHit,
+        (LPVOID*)&o_CastResult_AddPlayerHit);
+    const MH_STATUS playerHitEnableStatus = playerHitCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_CASTRESULT_ADD_PLAYER_HIT)) : playerHitCreateStatus;
     MH_CreateHook((LPVOID)(base + OFFSET_HITCASTER_CAST), hk_HitCaster_Cast, (LPVOID*)&o_HitCaster_Cast);
     MH_EnableHook((LPVOID)(base + OFFSET_HITCASTER_CAST));
+    LINDY_LOG("[hit-marker] cjr.wxm create=%d enable=%d", (int)playerHitCreateStatus, (int)playerHitEnableStatus);
 
     // GunController hook for infinity ammo
 
