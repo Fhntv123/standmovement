@@ -208,6 +208,7 @@ struct Matrix16 {
 #define OFFSET_ARMSLOD_SET_VISIBLE                 0x81F1E0
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0x8491C0
 #define OFFSET_GUNCONTROLLER_FIRE                  0x996BE0
+#define OFFSET_GUNCONTROLLER_COMMAND               0x998290
 #define OFFSET_HITCASTER_CAST                      0x99FBB0
 #define OFFSET_AIMVIEW_AWAKE                       0xA60AA0
 #define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
@@ -431,11 +432,9 @@ float visibleAimbotHoldMs = 140.0f;
 bool aimbotAutoFire = false;
 uintptr_t aimbotLastHitParameters = 0;
 volatile LONG aimbotAutoFired = 0;
-ULONGLONG aimbotAutoFireNextRequestAt = 0;
-thread_local bool autoFireCastReached = false;
-thread_local bool autoFireTargetAccepted = false;
 volatile LONG aimbotAutoFireRejected = 0;
 volatile LONG aimbotAutoFireBusy = 0;
+volatile LONG aimbotAutoFireNativeCommands = 0;
 bool visibleAimbotCameraActive = false;
 uintptr_t visibleAimbotAimingData = 0;
 Vector3 visibleAimbotOriginalAimAngle;
@@ -1240,6 +1239,7 @@ void(__fastcall* o_Gloves_SetArms)(uintptr_t, uintptr_t, const Il2CppMethod*) = 
 void(__fastcall* o_ArmsLod_SetVisible)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_Weaponry_TakeWeapon)(uintptr_t, uint8_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_GunController_Command)(uintptr_t, uintptr_t, float, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float, uintptr_t, const Il2CppMethod*) = nullptr;
 thread_local bool insideLocalGunFire = false;
 thread_local bool insideAutoFireRequest = false;
@@ -2426,7 +2426,6 @@ static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t hitParameters, 
 
 uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float maxDistance, uintptr_t hitParameters, const Il2CppMethod* method)
 {
-    if (insideAutoFireRequest) autoFireCastReached = true;
     bool applyVisibleSnapAfterCast = false;
     Vector3 visibleSnapDirection;
     if (insideLocalGunFire && hitParameters) aimbotLastHitParameters = hitParameters;
@@ -2449,7 +2448,10 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
             strcpy_s(aimbotStatus, insideAutoFireRequest ?
                 "Auto Fire: no visible target; cast suppressed" :
                 "No visible enemy; original shot kept");
-            if (insideAutoFireRequest) return 0;
+            if (insideAutoFireRequest) {
+                InterlockedIncrement(&aimbotAutoFireRejected);
+                return 0;
+            }
         }
     }
     else if (keyValidated && noSpreadEnabled && insideLocalGunFire) {
@@ -2463,13 +2465,8 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
     }
 
     const uintptr_t result = o_HitCaster_Cast(origin, direction, maxDistance, hitParameters, method);
-    if (insideAutoFireRequest && result && applyVisibleSnapAfterCast) {
-        autoFireTargetAccepted = true;
+    if (insideAutoFireRequest && result)
         InterlockedIncrement(&aimbotAutoFired);
-    } else if (insideAutoFireRequest && result && aimbotEnabled) {
-        autoFireTargetAccepted = true;
-        InterlockedIncrement(&aimbotAutoFired);
-    }
     // Never mutate the live aim state before/during Fire. Only animate the camera
     // after the game has accepted and completed the real bullet cast.
     if (result && applyVisibleSnapAfterCast) {
@@ -2549,6 +2546,38 @@ void __fastcall hk_Weaponry_TakeWeapon(uintptr_t instance, uint8_t slotIndex, co
     }
 }
 
+void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, float frameTime, float commandTime, const Il2CppMethod* method)
+{
+    bool injectNativeFire = false;
+    bool originalPrimaryFire = false;
+    __try {
+        const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
+        const uintptr_t owner = instance ? *reinterpret_cast<uintptr_t*>(instance + 0x20) : 0;
+        const bool isLocalGun = instance && command &&
+            ((currentWeapon && instance == currentWeapon) ||
+             (liveHudLocalPlayer && owner == liveHudLocalPlayer));
+        injectNativeFire = keyValidated && isLocalGun && aimbotAutoFire &&
+            (aimbotEnabled || visibleAimbotEnabled);
+        if (injectNativeFire) {
+            // cil.cdyv (+0x10) is the native primary-fire command. Feed it into
+            // GunController.wfz so the game owns cadence, animation, ammo and networking.
+            originalPrimaryFire = *reinterpret_cast<bool*>(command + 0x10);
+            *reinterpret_cast<bool*>(command + 0x10) = true;
+            InterlockedIncrement(&aimbotAutoFireNativeCommands);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { injectNativeFire = false; }
+
+    insideAutoFireRequest = injectNativeFire;
+    o_GunController_Command(instance, command, frameTime, commandTime, method);
+    insideAutoFireRequest = false;
+
+    if (injectNativeFire) {
+        __try { *reinterpret_cast<bool*>(command + 0x10) = originalPrimaryFire; }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+}
+
 void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, const Il2CppMethod* method)
 {
     // Fire must remain latency-free: never create materials, inspect renderers,
@@ -2592,69 +2621,10 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     if (isLocalGun && weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
 }
 
-static ULONGLONG GetNativeAutoFireIntervalMs(uintptr_t gun)
-{
-    if (!gun || !base) return 100;
-    __try {
-        const uintptr_t parameters = *reinterpret_cast<uintptr_t*>(gun + 0x188);
-        if (!parameters) return 100;
-        using GetFireRateFn = int(__fastcall*)(uintptr_t, const Il2CppMethod*);
-        const int fireRate = reinterpret_cast<GetFireRateFn>(base + 0x99E350)(parameters, nullptr);
-        // GunParameters._fireRate is rounds per minute. Match the weapon's own
-        // cadence and clamp corrupted/transitional values safely.
-        if (fireRate < 30 || fireRate > 3000) return 100;
-        ULONGLONG interval = static_cast<ULONGLONG>(60000 / fireRate);
-        if (interval < 20) interval = 20;
-        if (interval > 1000) interval = 1000;
-        return interval;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return 100; }
-}
-
 static void UpdateAimbotAutoFire()
 {
-    if (!keyValidated || !aimbotAutoFire || (!aimbotEnabled && !visibleAimbotEnabled) ||
-        !activeLocalWeaponController || !o_GunController_Fire) {
-        aimbotAutoFireNextRequestAt = 0;
-        return;
-    }
-    const ULONGLONG now = GetTickCount64();
-    if (insideAutoFireRequest || now < aimbotAutoFireNextRequestAt) return;
-    const ULONGLONG nativeInterval = GetNativeAutoFireIntervalMs(activeLocalWeaponController);
-
-    // This is the last behavior the user confirmed actually fired: test with the
-    // game's cached live HitCaster parameters first, then call Fire only for a
-    // currently visible target. The native interval prevents the old Move-loop spam.
-    if (aimbotLastHitParameters) {
-        Vector3 origin;
-        bool haveOrigin = false;
-        __try {
-            const uintptr_t camera = GetCamera();
-            const uintptr_t transform = camera && o_Component_get_transform ? o_Component_get_transform(camera) : 0;
-            if (transform && o_Transform_get_position) {
-                origin = o_Transform_get_position(transform);
-                haveOrigin = true;
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
-        Vector3 visibleDirection;
-        if (!haveOrigin || !FindVisibleAimbotDirection(origin, aimbotLastHitParameters, visibleDirection)) {
-            InterlockedIncrement(&aimbotAutoFireRejected);
-            aimbotAutoFireNextRequestAt = now + nativeInterval + 2;
-            return;
-        }
-    }
-
-    autoFireCastReached = false;
-    autoFireTargetAccepted = false;
-    insideAutoFireRequest = true;
-    hk_GunController_Fire(activeLocalWeaponController, Vector3(), nullptr);
-    insideAutoFireRequest = false;
-    aimbotAutoFireNextRequestAt = now + nativeInterval + 2;
-    if (!autoFireTargetAccepted) {
-        if (autoFireCastReached) InterlockedIncrement(&aimbotAutoFireRejected);
-        else InterlockedIncrement(&aimbotAutoFireBusy);
-    }
+    // Auto Fire is injected in GunController.wfz (native weapon command processing).
+    // Never call private GunController.Fire from the movement loop.
 }
 
 short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
@@ -3407,7 +3377,6 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         gloveChamsRenderers.clear();
         weaponChamsController = 0;
         activeLocalWeaponController = 0;
-        aimbotAutoFireNextRequestAt = 0;
         adminBhopObservedMovement = 0;
         adminBhopObservedJumpParameters = 0;
         adminBhopOriginalCaptured = false;
@@ -4535,10 +4504,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 InterlockedCompareExchange(&aimbotVisibleTargets, 0, 0),
                 InterlockedCompareExchange(&aimbotApplied, 0, 0));
         if (aimbotAutoFire)
-            ImGui::Text("Auto Fire: %ld accepted | %ld no target | %ld weapon busy",
+            ImGui::Text("Auto Fire: %ld native commands | %ld confirmed casts | %ld no target",
+                InterlockedCompareExchange(&aimbotAutoFireNativeCommands, 0, 0),
                 InterlockedCompareExchange(&aimbotAutoFired, 0, 0),
-                InterlockedCompareExchange(&aimbotAutoFireRejected, 0, 0),
-                InterlockedCompareExchange(&aimbotAutoFireBusy, 0, 0));
+                InterlockedCompareExchange(&aimbotAutoFireRejected, 0, 0));
         ImGui::Spacing();
         ImGui::TextColored(accent, "Keybinds");
         ImGui::Separator();
@@ -5101,6 +5070,8 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_WEAPONRY_TAKE_WEAPON));
 
     // Fire remains a fallback for guns injected after the equip event.
+    MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_COMMAND), hk_GunController_Command, (LPVOID*)&o_GunController_Command);
+    MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_COMMAND));
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE));
     MH_CreateHook((LPVOID)(base + OFFSET_HITCASTER_CAST), hk_HitCaster_Cast, (LPVOID*)&o_HitCaster_Cast);
