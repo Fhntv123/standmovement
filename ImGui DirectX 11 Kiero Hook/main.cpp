@@ -400,11 +400,11 @@ float hitMarkerGap = 4.0f;
 float hitMarkerThickness = 2.0f;
 volatile LONG hitMarkerCalls = 0;
 uintptr_t liveHitMarkerView = 0;
-Vector3 latestLocalCastEnd;
-ULONGLONG latestLocalCastAt = 0;
+Vector3 latestPlayerHitPoint;
+bool latestPlayerHitPointValid = false;
+ULONGLONG latestPlayerHitAt = 0;
 struct HitMarkerEntry {
-    uintptr_t player;
-    Vector3 playerOffset;
+    Vector3 worldPosition;
     ULONGLONG triggeredAt;
 };
 std::vector<HitMarkerEntry> hitMarkers;
@@ -1708,39 +1708,14 @@ void __fastcall hk_HitMarkerView_Show(uintptr_t instance, bool value, bool playS
         const ULONGLONG now = GetTickCount64();
         InterlockedIncrement(&hitMarkerCalls);
         AcquireSRWLockExclusive(&hitMarkerLock);
-        // Correlate the game's confirmed-hit callback with the latest authoritative
-        // local cast. Every confirmed hit gets its own lifetime and world position.
-        if (latestLocalCastAt && now >= latestLocalCastAt && now - latestLocalCastAt <= 750) {
-            // Bind the confirmed impact to the closest non-local player. Store the
-            // impact offset from that player's live anchor so the marker follows the
-            // player instead of remaining at a fixed world-space point.
-            void* players[64];
-            int playerCount = 0;
-            CollectPlayers(players, 64, playerCount);
-            void* localPlayer = GetLocalPC();
-            uintptr_t closestPlayer = 0;
-            Vector3 closestPosition;
-            float closestDistance = 3.5f;
-            for (int i = 0; i < playerCount; ++i) {
-                if (!players[i] || players[i] == localPlayer) continue;
-                Vector3 playerPosition;
-                if (!GetPCPosition(players[i], playerPosition)) continue;
-                const float distance = latestLocalCastEnd.Distance(playerPosition);
-                if (distance < closestDistance) {
-                    closestDistance = distance;
-                    closestPlayer = reinterpret_cast<uintptr_t>(players[i]);
-                    closestPosition = playerPosition;
-                }
-            }
-            if (closestPlayer) {
-                const Vector3 offset(
-                    latestLocalCastEnd.x - closestPosition.x,
-                    latestLocalCastEnd.y - closestPosition.y,
-                    latestLocalCastEnd.z - closestPosition.z);
-                hitMarkers.push_back({ closestPlayer, offset, now });
-                if (hitMarkers.size() > 64)
-                    hitMarkers.erase(hitMarkers.begin(), hitMarkers.begin() + (hitMarkers.size() - 64));
-            }
+        // Correlate the game's confirmed-hit callback with BulletHitData extracted
+        // from cjr.ddtd. This is the player impact point, not cjr.cegd, which may
+        // continue through a killed/penetrated player until a later wall impact.
+        if (latestPlayerHitPointValid && latestPlayerHitAt &&
+            now >= latestPlayerHitAt && now - latestPlayerHitAt <= 750) {
+            hitMarkers.push_back({ latestPlayerHitPoint, now });
+            if (hitMarkers.size() > 64)
+                hitMarkers.erase(hitMarkers.begin(), hitMarkers.begin() + (hitMarkers.size() - 64));
         }
         ReleaseSRWLockExclusive(&hitMarkerLock);
     }
@@ -1765,14 +1740,8 @@ void DrawHitMarker()
     for (const HitMarkerEntry& marker : snapshot) {
         const float elapsedMs = static_cast<float>(now - marker.triggeredAt);
         const float alpha = 1.0f - elapsedMs / durationMs;
-        Vector3 playerPosition;
-        if (!GetPCPosition(reinterpret_cast<void*>(marker.player), playerPosition)) continue;
-        const Vector3 worldPosition(
-            playerPosition.x + marker.playerOffset.x,
-            playerPosition.y + marker.playerOffset.y,
-            playerPosition.z + marker.playerOffset.z);
         ImVec2 center;
-        if (!ProjectTracerEnd(worldPosition, center)) continue;
+        if (!ProjectTracerEnd(marker.worldPosition, center)) continue;
 
         const ImU32 shadow = IM_COL32(0, 0, 0, static_cast<int>(190.0f * alpha));
         const ImU32 color = ImGui::ColorConvertFloat4ToU32(ImVec4(
@@ -1829,9 +1798,46 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
             const Vector3 actualEnd = *(Vector3*)(result + 0x30);
             const ULONGLONG now = GetTickCount64();
             if (hitMarkerEnabled) {
+                Vector3 playerHitPoint;
+                bool playerHitFound = false;
+                float nearestPlayerHitDistance = maxDistance + 1.0f;
+                // cjr.ddtd at +0x10 is Dictionary<player, List<BulletHitData>>.
+                // Each chs BulletHitData stores its impact point in cdvt at +0x10.
+                const uintptr_t hitDictionary = *reinterpret_cast<uintptr_t*>(result + 0x10);
+                if (hitDictionary) {
+                    const uintptr_t entries = *reinterpret_cast<uintptr_t*>(hitDictionary + 0x18);
+                    const int entryCount = *reinterpret_cast<int*>(hitDictionary + 0x20);
+                    if (entries && entryCount > 0 && entryCount <= 128) {
+                        for (int entryIndex = 0; entryIndex < entryCount; ++entryIndex) {
+                            const uintptr_t entry = entries + 0x20 + static_cast<uintptr_t>(entryIndex) * 0x18;
+                            if (*reinterpret_cast<int*>(entry) < 0) continue;
+                            const uintptr_t hitList = *reinterpret_cast<uintptr_t*>(entry + 0x10);
+                            if (!hitList) continue;
+                            const uintptr_t items = *reinterpret_cast<uintptr_t*>(hitList + 0x10);
+                            const int itemCount = *reinterpret_cast<int*>(hitList + 0x18);
+                            if (!items || itemCount <= 0 || itemCount > 64) continue;
+                            for (int itemIndex = 0; itemIndex < itemCount; ++itemIndex) {
+                                const uintptr_t hitData = *reinterpret_cast<uintptr_t*>(
+                                    items + 0x20 + static_cast<uintptr_t>(itemIndex) * sizeof(uintptr_t));
+                                if (!hitData) continue;
+                                const Vector3 point = *reinterpret_cast<Vector3*>(hitData + 0x10);
+                                const float distance = point.Distance(actualStart);
+                                if (std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z) &&
+                                    distance >= 0.0f && distance < nearestPlayerHitDistance) {
+                                    nearestPlayerHitDistance = distance;
+                                    playerHitPoint = point;
+                                    playerHitFound = true;
+                                }
+                            }
+                        }
+                    }
+                }
                 AcquireSRWLockExclusive(&hitMarkerLock);
-                latestLocalCastEnd = actualEnd;
-                latestLocalCastAt = now;
+                latestPlayerHitPointValid = playerHitFound;
+                if (playerHitFound) {
+                    latestPlayerHitPoint = playerHitPoint;
+                    latestPlayerHitAt = now;
+                }
                 ReleaseSRWLockExclusive(&hitMarkerLock);
             }
             if (bulletTracerEnabled) {
