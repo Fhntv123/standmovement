@@ -117,16 +117,6 @@ struct Vector3 {
 
 #include "edge_bug.h"
 
-struct NativeRaycastHit {
-    Vector3 point;       // +0x00
-    Vector3 normal;      // +0x0C
-    uint32_t faceId;     // +0x18
-    float distance;      // +0x1C
-    float uvX;           // +0x20
-    float uvY;           // +0x24
-    int collider;        // +0x28
-};
-
 struct Vector2 {
 
     float x, y;
@@ -218,13 +208,13 @@ struct Matrix16 {
 #define OFFSET_ARMSLOD_SET_VISIBLE                 0x81F1E0
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0x8491C0
 #define OFFSET_GUNCONTROLLER_FIRE                  0x996BE0
-#define OFFSET_RAYCASTER_QMK                       0x8470C0
 #define OFFSET_HITCASTER_CAST                      0x99FBB0
 #define OFFSET_AIMVIEW_AWAKE                       0xA60AA0
 #define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
 #define OFFSET_HUDVIEW_UPDATE                       0xA68C60
 #define OFFSET_HITMARKERVIEW_SHOW                    0xA6AFC0
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xA5D6C0
+#define OFFSET_CHEAT_RUNTIME_SET_BHOP              0xA5DD90
 #define OFFSET_PLAYERCONTROLLER_COMMAND             0x83D210
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_A          0x840BF0  // PlayerManager.qkb(PlayerController)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_B          0x840DE0  // PlayerManager.qkc(PlayerController)
@@ -380,6 +370,7 @@ volatile LONG pendingThirdPersonCommand = 0;
 Il2CppClass* g_GameControllerClass = nullptr;
 Il2CppField* g_GameControllerInstanceField = nullptr;
 void(__fastcall* o_CheatRuntime_SetThirdPerson)(uintptr_t, bool) = nullptr;
+void(__fastcall* o_CheatRuntime_SetBhop)(uintptr_t, uintptr_t, bool) = nullptr;
 char thirdPersonStatus[96] = "Disabled";
 bool worldColorEnabled = false;
 float worldColor[3] = { 0.35f, 0.55f, 1.0f };
@@ -413,6 +404,17 @@ uint32_t imageSkyboxMaterialHandle = 0;
 uintptr_t originalSkyboxMaterial = 0;
 volatile LONG pendingSkyboxCommand = 0;
 
+bool adminBhopEnabled = false;
+float adminBhopSpeedMultiplier = 1.0f;
+float adminBhopMaxSpeed = 17.49f;
+uintptr_t adminBhopObservedMovement = 0;
+uintptr_t adminBhopObservedJumpParameters = 0;
+bool adminBhopOriginalCaptured = false;
+bool adminBhopOriginalEnabled = false;
+float adminBhopOriginalSpeedMultiplier = 1.0f;
+float adminBhopOriginalMaxSpeed = 17.49f;
+char adminBhopStatus[96] = "Disabled";
+
 bool infinityAmmo = false;
 uintptr_t frozenAmmoWeapon = 0;
 short frozenAmmoValue = -1;
@@ -429,11 +431,6 @@ float visibleAimbotHoldMs = 140.0f;
 bool aimbotAutoFire = false;
 uintptr_t aimbotLastHitParameters = 0;
 volatile LONG aimbotAutoFired = 0;
-ULONGLONG aimbotVisibilityNextScanAt = 0;
-ULONGLONG aimbotVisibilityValidUntil = 0;
-bool aimbotCachedVisibleTarget = false;
-Vector3 aimbotCachedVisibleDirection;
-volatile LONG aimbotVisibilityScans = 0;
 bool visibleAimbotCameraActive = false;
 uintptr_t visibleAimbotAimingData = 0;
 Vector3 visibleAimbotOriginalAimAngle;
@@ -1240,6 +1237,7 @@ void(__fastcall* o_Weaponry_TakeWeapon)(uintptr_t, uint8_t, const Il2CppMethod*)
 void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float, uintptr_t, const Il2CppMethod*) = nullptr;
 thread_local bool insideLocalGunFire = false;
+thread_local bool insideAutoFireRequest = false;
 void(__fastcall* o_AimView_Awake)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimView_UpdateSniperPanels)(uintptr_t, float, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Component_get_gameObject)(uintptr_t) = nullptr;
@@ -1575,6 +1573,42 @@ static bool ApplyNativeThirdPersonState()
         strcpy_s(thirdPersonStatus, "Native TPS transition failed");
         return false;
     }
+}
+
+static bool ApplyAdminBhopState()
+{
+    const uintptr_t player = liveHudLocalPlayer;
+    if (!player) { strcpy_s(adminBhopStatus, "Waiting for local player"); return false; }
+    __try {
+        const uintptr_t movement = *reinterpret_cast<uintptr_t*>(player + 0xE0);
+        const uintptr_t translation = movement ? *reinterpret_cast<uintptr_t*>(movement + 0x80) : 0;
+        const uintptr_t jump = translation ? *reinterpret_cast<uintptr_t*>(translation + 0x38) : 0;
+        if (!movement || !jump) { strcpy_s(adminBhopStatus, "Waiting for native movement parameters"); return false; }
+        if (movement != adminBhopObservedMovement || jump != adminBhopObservedJumpParameters) {
+            adminBhopObservedMovement = movement;
+            adminBhopObservedJumpParameters = jump;
+            adminBhopOriginalEnabled = *reinterpret_cast<bool*>(jump + 0x10);
+            adminBhopOriginalSpeedMultiplier = *reinterpret_cast<float*>(jump + 0x14);
+            adminBhopOriginalMaxSpeed = *reinterpret_cast<float*>(jump + 0x1C);
+            adminBhopOriginalCaptured = true;
+        }
+        const uintptr_t runtime = GetNativeCheatRuntime();
+        if (runtime && o_CheatRuntime_SetBhop)
+            o_CheatRuntime_SetBhop(runtime, movement, adminBhopEnabled);
+        *reinterpret_cast<bool*>(jump + 0x10) = adminBhopEnabled;
+        if (adminBhopEnabled) {
+            *reinterpret_cast<float*>(jump + 0x14) = adminBhopSpeedMultiplier;
+            *reinterpret_cast<float*>(jump + 0x1C) = adminBhopMaxSpeed;
+            strcpy_s(adminBhopStatus, runtime ? "Native admin BHop active" : "Native jump BHop active; runtime pending");
+        } else if (adminBhopOriginalCaptured) {
+            *reinterpret_cast<bool*>(jump + 0x10) = adminBhopOriginalEnabled;
+            *reinterpret_cast<float*>(jump + 0x14) = adminBhopOriginalSpeedMultiplier;
+            *reinterpret_cast<float*>(jump + 0x1C) = adminBhopOriginalMaxSpeed;
+            strcpy_s(adminBhopStatus, "Disabled; native values restored");
+        }
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { strcpy_s(adminBhopStatus, "Native BHop apply failed"); return false; }
 }
 
 uintptr_t GetCamera() {
@@ -2385,91 +2419,6 @@ static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t hitParameters, 
     return found;
 }
 
-static bool ScanIndependentVisibleAimbotDirection(Vector3 origin, Vector3& outDirection)
-{
-    void* localPlayer = GetLocalPC();
-    if (!localPlayer || !base) return false;
-    const unsigned char localTeam = GetPCTeam(localPlayer);
-    if (localTeam == 0 || localTeam == 3) return false;
-
-    using RaycasterFn = bool(__fastcall*)(Vector3, Vector3, float, NativeRaycastHit*, Il2CppArray*, const Il2CppMethod*);
-    static RaycasterFn raycaster = nullptr;
-    static Il2CppArray* emptyStringFilters = nullptr;
-    if (!raycaster) raycaster = reinterpret_cast<RaycasterFn>(base + OFFSET_RAYCASTER_QMK);
-    if (!emptyStringFilters && g_il2cpp.array_new) {
-        Il2CppClass* stringClass = g_il2cpp.find_class("System", "String");
-        if (stringClass) emptyStringFilters = g_il2cpp.array_new(stringClass, 0);
-    }
-
-    void* players[64] = {};
-    int playerCount = 0;
-    CollectPlayers(players, 64, playerCount);
-    InterlockedExchange(&aimbotTargetsScanned, playerCount);
-    bool found = false;
-    int visibleCount = 0;
-    float bestDistance = 3.402823466e+38F;
-    Vector3 bestDirection;
-    for (int i = 0; i < playerCount; ++i) {
-        void* player = players[i];
-        if (!player || player == localPlayer) continue;
-        const unsigned char team = GetPCTeam(player);
-        if (team == 0 || team == 3 || team == localTeam) continue;
-        Vector3 head;
-        if (!GetAimbotHead(player, head)) continue;
-        const Vector3 delta(head.x - origin.x, head.y - origin.y, head.z - origin.z);
-        const float distance = delta.Length();
-        if (distance < 0.5f) continue;
-        const Vector3 candidate(delta.x / distance, delta.y / distance, delta.z / distance);
-        bool visible = !aimbotVisibleCheck;
-        if (aimbotVisibleCheck && raycaster) {
-            __try {
-                NativeRaycastHit hit = {};
-                const bool collided = raycaster(origin, candidate, distance + 0.35f,
-                    &hit, emptyStringFilters, nullptr);
-                visible = !collided || hit.point.Distance(head) <= 0.75f ||
-                    (hit.distance >= distance - 0.75f && hit.distance <= distance + 0.75f);
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) { visible = false; }
-        }
-        if (!visible) continue;
-        ++visibleCount;
-        if (distance < bestDistance) {
-            bestDistance = distance;
-            bestDirection = candidate;
-            found = true;
-        }
-    }
-    InterlockedExchange(&aimbotVisibleTargets, visibleCount);
-    if (found) outDirection = bestDirection;
-    return found;
-}
-
-static void RefreshAimbotVisibilityCache()
-{
-    const ULONGLONG now = GetTickCount64();
-    if (now < aimbotVisibilityNextScanAt) return;
-    aimbotVisibilityNextScanAt = now + 50; // max 20 scans/sec; never per movement callback
-    InterlockedIncrement(&aimbotVisibilityScans);
-
-    Vector3 origin;
-    bool haveOrigin = false;
-    __try {
-        const uintptr_t camera = GetCamera();
-        const uintptr_t transform = camera && o_Component_get_transform ? o_Component_get_transform(camera) : 0;
-        if (transform && o_Transform_get_position) { origin = o_Transform_get_position(transform); haveOrigin = true; }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
-    Vector3 direction;
-    const bool visible = haveOrigin && ScanIndependentVisibleAimbotDirection(origin, direction);
-    aimbotCachedVisibleTarget = visible;
-    if (visible) {
-        aimbotCachedVisibleDirection = direction;
-        aimbotVisibilityValidUntil = now + 90;
-    } else {
-        aimbotVisibilityValidUntil = now + 50;
-    }
-}
-
 uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float maxDistance, uintptr_t hitParameters, const Il2CppMethod* method)
 {
     bool applyVisibleSnapAfterCast = false;
@@ -2482,6 +2431,7 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
             // Silent mode keeps doing exactly what it did before. Visible mode uses
             // the same proven shot direction but also rotates the real rendered camera.
             direction = targetDirection;
+            if (insideAutoFireRequest) InterlockedIncrement(&aimbotAutoFired);
             if (visibleAimbotEnabled) {
                 visibleSnapDirection = targetDirection;
                 applyVisibleSnapAfterCast = true;
@@ -2491,7 +2441,10 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
                 "Shot accepted; visible camera snap applied" :
                 "Silent lock applied; camera untouched");
         } else {
-            strcpy_s(aimbotStatus, "No visible enemy; original shot kept");
+            strcpy_s(aimbotStatus, insideAutoFireRequest ?
+                "Auto Fire: no visible target; cast suppressed" :
+                "No visible enemy; original shot kept");
+            if (insideAutoFireRequest) return 0;
         }
     }
     else if (keyValidated && noSpreadEnabled && insideLocalGunFire) {
@@ -2626,18 +2579,11 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
 static void UpdateAimbotAutoFire()
 {
     if (!keyValidated || !aimbotAutoFire || (!aimbotEnabled && !visibleAimbotEnabled) ||
-        !activeLocalWeaponController || !o_GunController_Fire) {
-        aimbotCachedVisibleTarget = false;
+        !activeLocalWeaponController || !o_GunController_Fire)
         return;
-    }
-    RefreshAimbotVisibilityCache();
-    const ULONGLONG now = GetTickCount64();
-    if (!aimbotCachedVisibleTarget || now > aimbotVisibilityValidUntil) return;
-
-    InterlockedIncrement(&aimbotAutoFired);
-    // No software delay: call every movement update while the 20 Hz visibility
-    // cache is fresh. GunController enforces the weapon's native fire rate.
+    insideAutoFireRequest = true;
     hk_GunController_Fire(activeLocalWeaponController, Vector3(), nullptr);
+    insideAutoFireRequest = false;
 }
 
 short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
@@ -3390,8 +3336,9 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         gloveChamsRenderers.clear();
         weaponChamsController = 0;
         activeLocalWeaponController = 0;
-        aimbotCachedVisibleTarget = false;
-        aimbotVisibilityNextScanAt = 0;
+        adminBhopObservedMovement = 0;
+        adminBhopObservedJumpParameters = 0;
+        adminBhopOriginalCaptured = false;
         armChamsArmsLodGroup = 0;
         gloveChamsArmsLodGroup = 0;
         if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
@@ -3423,6 +3370,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     AnimateArmChamsColor();
     AnimateGloveChamsColor();
     AnimateWorldColor();
+    if (adminBhopEnabled || adminBhopOriginalCaptured) ApplyAdminBhopState();
     UpdateAimbotAutoFire();
 
     if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
@@ -4451,6 +4399,12 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (jbActive) {
             ImGui::SliderFloat("Speed Multiplier", &surfSpeed, 0.5f, 3.0f, "%.2f");
         }
+        if (ImGui::Checkbox("Admin Panel BHop", &adminBhopEnabled)) ApplyAdminBhopState();
+        if (adminBhopEnabled) {
+            if (ImGui::SliderFloat("Admin BHop Multiplier", &adminBhopSpeedMultiplier, 0.25f, 5.0f, "%.2f")) ApplyAdminBhopState();
+            if (ImGui::SliderFloat("Admin BHop Max Speed", &adminBhopMaxSpeed, 1.0f, 100.0f, "%.2f")) ApplyAdminBhopState();
+        }
+        ImGui::TextWrapped("Admin BHop: %s", adminBhopStatus);
         
         ImGui::Checkbox("Velocity Limiter", &velocityLimiterEnabled);
         if (velocityLimiterEnabled) {
@@ -4509,9 +4463,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 InterlockedCompareExchange(&aimbotVisibleTargets, 0, 0),
                 InterlockedCompareExchange(&aimbotApplied, 0, 0));
         if (aimbotAutoFire)
-            ImGui::Text("Auto-fired: %ld | visibility scans: %ld (20/s max)",
-                InterlockedCompareExchange(&aimbotAutoFired, 0, 0),
-                InterlockedCompareExchange(&aimbotVisibilityScans, 0, 0));
+            ImGui::Text("Auto Fire uses native weapon cadence");
         ImGui::Spacing();
         ImGui::TextColored(accent, "Keybinds");
         ImGui::Separator();
@@ -4907,6 +4859,7 @@ DWORD WINAPI HackThread(LPVOID)
 
 
     o_CheatRuntime_SetThirdPerson = (void(__fastcall*)(uintptr_t, bool))(base + OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON);
+    o_CheatRuntime_SetBhop = (void(__fastcall*)(uintptr_t, uintptr_t, bool))(base + OFFSET_CHEAT_RUNTIME_SET_BHOP);
     o_GetPlayerController = (uintptr_t(__fastcall*)())(base + OFFSET_GET_PLAYERCONTROLLER);
 
     const MH_STATUS playerEventACreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYERMANAGER_PLAYER_EVENT_A),
