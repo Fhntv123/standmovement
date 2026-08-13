@@ -2373,6 +2373,8 @@ static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t hitParameters, 
 
 uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float maxDistance, uintptr_t hitParameters, const Il2CppMethod* method)
 {
+    bool applyVisibleSnapAfterCast = false;
+    Vector3 visibleSnapDirection;
     if (insideLocalGunFire && hitParameters) aimbotLastHitParameters = hitParameters;
     if (keyValidated && insideLocalGunFire && (aimbotEnabled || visibleAimbotEnabled)) {
         InterlockedIncrement(&aimbotShots);
@@ -2381,9 +2383,13 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
             // Silent mode keeps doing exactly what it did before. Visible mode uses
             // the same proven shot direction but also rotates the real rendered camera.
             direction = targetDirection;
+            if (visibleAimbotEnabled) {
+                visibleSnapDirection = targetDirection;
+                applyVisibleSnapAfterCast = true;
+            }
             InterlockedIncrement(&aimbotApplied);
             strcpy_s(aimbotStatus, visibleAimbotEnabled ?
-                "Visible snap active; restoring original camera" :
+                "Shot accepted; visible camera snap applied" :
                 "Silent lock applied; camera untouched");
         } else {
             strcpy_s(aimbotStatus, "No visible enemy; original shot kept");
@@ -2400,6 +2406,10 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
     }
 
     const uintptr_t result = o_HitCaster_Cast(origin, direction, maxDistance, hitParameters, method);
+    // Never mutate the live aim state before/during Fire. Only animate the camera
+    // after the game has accepted and completed the real bullet cast.
+    if (result && applyVisibleSnapAfterCast)
+        BeginVisibleAimbotCameraSnap(visibleSnapDirection);
     if (keyValidated && insideLocalGunFire && result && (hitMarkerEnabled || bulletTracerEnabled)) {
         __try {
             // cjr stores the authoritative cast start/end at 0x24/0x30.
@@ -2471,24 +2481,6 @@ void __fastcall hk_Weaponry_TakeWeapon(uintptr_t instance, uint8_t slotIndex, co
     }
 }
 
-static bool PrepareVisibleAimbotBeforeFire(uintptr_t instance)
-{
-    if (!visibleAimbotEnabled || !instance || !aimbotLastHitParameters) return false;
-    Vector3 origin;
-    bool haveOrigin = false;
-    __try {
-        const uintptr_t camera = GetCamera();
-        const uintptr_t transform = camera && o_Component_get_transform ? o_Component_get_transform(camera) : 0;
-        if (transform && o_Transform_get_position) { origin = o_Transform_get_position(transform); haveOrigin = true; }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
-    if (!haveOrigin) return false;
-    Vector3 targetDirection;
-    if (!FindVisibleAimbotDirection(origin, aimbotLastHitParameters, targetDirection)) return false;
-    BeginVisibleAimbotCameraSnap(targetDirection);
-    return true;
-}
-
 void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, const Il2CppMethod* method)
 {
     // Fire must remain latency-free: never create materials, inspect renderers,
@@ -2515,7 +2507,6 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { ammoBeforeShot = -1; }
     }
-    if (isLocalGun && visibleAimbotEnabled) PrepareVisibleAimbotBeforeFire(instance);
     insideLocalGunFire = isLocalGun;
     o_GunController_Fire(instance, playSound, method);
     insideLocalGunFire = false;
