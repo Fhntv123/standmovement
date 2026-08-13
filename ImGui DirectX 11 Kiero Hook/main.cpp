@@ -399,12 +399,14 @@ float hitMarkerSize = 9.0f;
 float hitMarkerGap = 4.0f;
 float hitMarkerThickness = 2.0f;
 volatile LONG hitMarkerCalls = 0;
-ULONGLONG hitMarkerTriggeredAt = 0;
 uintptr_t liveHitMarkerView = 0;
 Vector3 latestLocalCastEnd;
 ULONGLONG latestLocalCastAt = 0;
-Vector3 confirmedHitMarkerWorldPosition;
-bool confirmedHitMarkerWorldPositionValid = false;
+struct HitMarkerEntry {
+    Vector3 worldPosition;
+    ULONGLONG triggeredAt;
+};
+std::vector<HitMarkerEntry> hitMarkers;
 SRWLOCK hitMarkerLock = SRWLOCK_INIT;
 bool bulletTracerEnabled = false;
 bool noSpreadEnabled = false;
@@ -1706,12 +1708,12 @@ void __fastcall hk_HitMarkerView_Show(uintptr_t instance, bool value, bool playS
         InterlockedIncrement(&hitMarkerCalls);
         AcquireSRWLockExclusive(&hitMarkerLock);
         // Correlate the game's confirmed-hit callback with the latest authoritative
-        // local cast. The short window prevents an old wall impact from being reused.
-        confirmedHitMarkerWorldPositionValid = latestLocalCastAt &&
-            now >= latestLocalCastAt && now - latestLocalCastAt <= 750;
-        if (confirmedHitMarkerWorldPositionValid)
-            confirmedHitMarkerWorldPosition = latestLocalCastEnd;
-        hitMarkerTriggeredAt = now;
+        // local cast. Every confirmed hit gets its own lifetime and world position.
+        if (latestLocalCastAt && now >= latestLocalCastAt && now - latestLocalCastAt <= 750) {
+            hitMarkers.push_back({ latestLocalCastEnd, now });
+            if (hitMarkers.size() > 64)
+                hitMarkers.erase(hitMarkers.begin(), hitMarkers.begin() + (hitMarkers.size() - 64));
+        }
         ReleaseSRWLockExclusive(&hitMarkerLock);
     }
     o_HitMarkerView_Show(instance, value, playSound, method);
@@ -1720,41 +1722,41 @@ void __fastcall hk_HitMarkerView_Show(uintptr_t instance, bool value, bool playS
 void DrawHitMarker()
 {
     if (!keyValidated || !hitMarkerEnabled) return;
-    ULONGLONG triggeredAt = 0;
-    Vector3 worldPosition;
-    bool worldPositionValid = false;
-    AcquireSRWLockShared(&hitMarkerLock);
-    triggeredAt = hitMarkerTriggeredAt;
-    worldPosition = confirmedHitMarkerWorldPosition;
-    worldPositionValid = confirmedHitMarkerWorldPositionValid;
-    ReleaseSRWLockShared(&hitMarkerLock);
-    if (!triggeredAt || !worldPositionValid) return;
 
+    const ULONGLONG now = GetTickCount64();
     const float durationMs = hitMarkerDuration * 1000.0f;
-    const float elapsedMs = static_cast<float>(GetTickCount64() - triggeredAt);
-    if (elapsedMs < 0.0f || elapsedMs >= durationMs) return;
+    std::vector<HitMarkerEntry> snapshot;
+    AcquireSRWLockExclusive(&hitMarkerLock);
+    hitMarkers.erase(std::remove_if(hitMarkers.begin(), hitMarkers.end(), [now, durationMs](const HitMarkerEntry& marker) {
+        return now < marker.triggeredAt || static_cast<float>(now - marker.triggeredAt) >= durationMs;
+    }), hitMarkers.end());
+    snapshot = hitMarkers;
+    ReleaseSRWLockExclusive(&hitMarkerLock);
 
-    const float alpha = 1.0f - elapsedMs / durationMs;
-    ImVec2 center;
-    if (!ProjectTracerEnd(worldPosition, center)) return;
     ImDrawList* draw = ImGui::GetForegroundDrawList();
-    const ImU32 shadow = IM_COL32(0, 0, 0, static_cast<int>(190.0f * alpha));
-    const ImU32 color = ImGui::ColorConvertFloat4ToU32(ImVec4(
-        hitMarkerColor[0], hitMarkerColor[1], hitMarkerColor[2], alpha));
+    for (const HitMarkerEntry& marker : snapshot) {
+        const float elapsedMs = static_cast<float>(now - marker.triggeredAt);
+        const float alpha = 1.0f - elapsedMs / durationMs;
+        ImVec2 center;
+        if (!ProjectTracerEnd(marker.worldPosition, center)) continue;
 
-    const float inner = hitMarkerGap;
-    const float outer = hitMarkerGap + hitMarkerSize;
-    const ImVec2 starts[4] = {
-        ImVec2(center.x - inner, center.y - inner), ImVec2(center.x + inner, center.y - inner),
-        ImVec2(center.x - inner, center.y + inner), ImVec2(center.x + inner, center.y + inner)
-    };
-    const ImVec2 ends[4] = {
-        ImVec2(center.x - outer, center.y - outer), ImVec2(center.x + outer, center.y - outer),
-        ImVec2(center.x - outer, center.y + outer), ImVec2(center.x + outer, center.y + outer)
-    };
-    for (int i = 0; i < 4; ++i) {
-        draw->AddLine(starts[i], ends[i], shadow, hitMarkerThickness + 2.0f);
-        draw->AddLine(starts[i], ends[i], color, hitMarkerThickness);
+        const ImU32 shadow = IM_COL32(0, 0, 0, static_cast<int>(190.0f * alpha));
+        const ImU32 color = ImGui::ColorConvertFloat4ToU32(ImVec4(
+            hitMarkerColor[0], hitMarkerColor[1], hitMarkerColor[2], alpha));
+        const float inner = hitMarkerGap;
+        const float outer = hitMarkerGap + hitMarkerSize;
+        const ImVec2 starts[4] = {
+            ImVec2(center.x - inner, center.y - inner), ImVec2(center.x + inner, center.y - inner),
+            ImVec2(center.x - inner, center.y + inner), ImVec2(center.x + inner, center.y + inner)
+        };
+        const ImVec2 ends[4] = {
+            ImVec2(center.x - outer, center.y - outer), ImVec2(center.x + outer, center.y - outer),
+            ImVec2(center.x - outer, center.y + outer), ImVec2(center.x + outer, center.y + outer)
+        };
+        for (int i = 0; i < 4; ++i) {
+            draw->AddLine(starts[i], ends[i], shadow, hitMarkerThickness + 2.0f);
+            draw->AddLine(starts[i], ends[i], color, hitMarkerThickness);
+        }
     }
 }
 
