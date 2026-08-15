@@ -462,6 +462,8 @@ volatile LONG pendingSkyboxCommand = 0;
 bool adminBhopEnabled = false;
 bool adminBhopCsStrafeMode = false;
 volatile LONG adminBhopManualStrafeHeld = 0;
+float adminBhopPreviousCameraYaw = 0.0f;
+bool adminBhopCameraYawValid = false;
 Vector3 adminBhopLastManualMotion;
 bool adminBhopLastManualMotionValid = false;
 float adminBhopSpeedMultiplier = 1.0f;
@@ -1316,6 +1318,8 @@ static float ReadConfigFloat(const std::wstring& path, const char* key, float fa
     return isfinite(value) ? value : fallback;
 }
 
+static bool ApplyAdminBhopState();
+
 static bool SaveConfig(const char* requestedName)
 {
     const std::string name = SanitizeConfigName(requestedName);
@@ -1381,6 +1385,7 @@ static bool LoadConfig(const char* requestedName)
 #undef LOAD_INT
 #undef LOAD_FLOAT
     adminBhopLastManualMotionValid = false;
+    adminBhopCameraYawValid = false;
     InterlockedExchange(&adminBhopManualStrafeHeld, 0);
     InterlockedExchange(&pendingWorldColorCommand, worldColorEnabled ? 1 : 2);
     InterlockedExchange(&pendingFogCommand, fogEnabled ? 1 : 2);
@@ -2520,23 +2525,47 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
                 float& strafeInput = *reinterpret_cast<float*>(command + 0x10);
                 float& forwardInput = *reinterpret_cast<float*>(command + 0x14);
                 const float manualStrafe = strafeInput;
+                float currentYaw = adminBhopPreviousCameraYaw;
+                bool currentYawValid = false;
+                const uintptr_t aimController = *reinterpret_cast<uintptr_t*>(player + 0xC8);
+                const uintptr_t aimingData = aimController ?
+                    *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
+                if (aimingData) {
+                    currentYaw = reinterpret_cast<Vector3*>(aimingData + 0x18)->y;
+                    currentYawValid = isfinite(currentYaw);
+                }
+                float yawDelta = 0.0f;
+                if (currentYawValid && adminBhopCameraYawValid)
+                    yawDelta = NormalizeAngle180(currentYaw - adminBhopPreviousCameraYaw);
+                if (currentYawValid) {
+                    adminBhopPreviousCameraYaw = currentYaw;
+                    adminBhopCameraYawValid = true;
+                }
+
+                // Horizontal axis is A=-1 / D=+1. Unity yaw decreases while
+                // turning left and increases while turning right. Their product
+                // is positive only for A+left or D+right.
                 const bool hasManualStrafe = fabsf(manualStrafe) > 0.01f;
-                InterlockedExchange(&adminBhopManualStrafeHeld, hasManualStrafe ? 1 : 0);
-                if (hasManualStrafe) {
-                    // Standoff's native BHop interprets raw A/D as pure sideways
-                    // movement. Convert A/D into forward acceleration relative to
-                    // the live camera; mouse-left with A / mouse-right with D then
-                    // bends that forward momentum into an air-strafe arc.
+                const bool matchingCameraTurn = hasManualStrafe &&
+                    fabsf(yawDelta) > 0.001f && manualStrafe * yawDelta > 0.0f;
+                InterlockedExchange(&adminBhopManualStrafeHeld,
+                    matchingCameraTurn ? 1 : 0);
+                if (matchingCameraTurn) {
+                    // Only the correct synchronized pair receives forward air
+                    // acceleration: A+mouse-left or D+mouse-right.
                     forwardInput = fabsf(manualStrafe);
                     strafeInput = 0.0f;
                 }
                 else {
-                    // No A/D means no automatic W propulsion in manual mode.
+                    // Wrong turn direction, camera-only movement, or A/D without
+                    // a matching turn receives no steering acceleration.
                     forwardInput = 0.0f;
+                    strafeInput = 0.0f;
                 }
             }
             else {
                 InterlockedExchange(&adminBhopManualStrafeHeld, 0);
+                adminBhopCameraYawValid = false;
                 adminBhopLastManualMotionValid = false;
             }
         }
