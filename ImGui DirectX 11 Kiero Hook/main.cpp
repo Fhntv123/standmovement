@@ -457,8 +457,9 @@ uintptr_t originalSkyboxMaterial = 0;
 volatile LONG pendingSkyboxCommand = 0;
 
 bool adminBhopEnabled = false;
-float adminBhopSpeedMultiplier = 1.0f;
-float adminBhopMaxSpeed = 17.49f;
+bool adminBhopCsStrafeMode = false;
+const float adminBhopSpeedMultiplier = 1.0f;
+const float adminBhopMaxSpeed = 6.50f;
 uintptr_t adminBhopObservedMovement = 0;
 uintptr_t adminBhopObservedJumpParameters = 0;
 bool adminBhopOriginalCaptured = false;
@@ -1901,7 +1902,10 @@ static bool ApplyAdminBhopState()
         if (adminBhopEnabled) {
             *reinterpret_cast<float*>(jump + 0x14) = adminBhopSpeedMultiplier;
             *reinterpret_cast<float*>(jump + 0x1C) = adminBhopMaxSpeed;
-            strcpy_s(adminBhopStatus, runtime ? "Native admin BHop active" : "Native jump BHop active; runtime pending");
+            strcpy_s(adminBhopStatus, adminBhopCsStrafeMode ?
+                "Native admin BHop active; CS air strafe" :
+                (runtime ? "Native admin BHop active; fixed speed 6.50" :
+                    "Native jump BHop active; fixed speed 6.50"));
         } else if (adminBhopOriginalCaptured) {
             *reinterpret_cast<bool*>(jump + 0x10) = adminBhopOriginalEnabled;
             *reinterpret_cast<float*>(jump + 0x14) = adminBhopOriginalSpeedMultiplier;
@@ -2343,6 +2347,20 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     InterlockedIncrement(&silentAntiAimInputBuildCalls);
     if (silentAntiAimEnabled && player && command)
         CaptureSilentAntiAimInput(player, command);
+
+    if (keyValidated && adminBhopEnabled && adminBhopCsStrafeMode &&
+        player && command && player == liveHudLocalPlayer && lastCharacterController &&
+        o_CC_get_isGrounded) {
+        __try {
+            const bool grounded = o_CC_get_isGrounded(lastCharacterController);
+            if (!grounded) {
+                // CS2/CS:GO air strafe: W/S is released in the air. A/D is left
+                // untouched and must be synchronized with the camera turn.
+                *reinterpret_cast<float*>(command + 0x14) = 0.0f;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
     return command;
 }
 
@@ -5415,8 +5433,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Release Hop", &pixelSurfReleaseHop);
         if (ImGui::Checkbox("Admin Panel BHop", &adminBhopEnabled)) ApplyAdminBhopState();
         if (adminBhopEnabled) {
-            if (ImGui::SliderFloat("Admin BHop Multiplier", &adminBhopSpeedMultiplier, 0.25f, 5.0f, "%.2f")) ApplyAdminBhopState();
-            if (ImGui::SliderFloat("Admin BHop Max Speed", &adminBhopMaxSpeed, 1.0f, 100.0f, "%.2f")) ApplyAdminBhopState();
+            ImGui::TextDisabled("Fixed speed: 6.50");
+            if (ImGui::Checkbox("CS Manual Air Strafe", &adminBhopCsStrafeMode))
+                ApplyAdminBhopState();
+            if (adminBhopCsStrafeMode)
+                ImGui::TextWrapped("In air: release W, hold A + turn left or D + turn right.");
         }
         
         ImGui::Checkbox("Velocity Limiter", &velocityLimiterEnabled);
