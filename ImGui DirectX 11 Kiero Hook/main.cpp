@@ -491,6 +491,7 @@ bool aimbotEnabled = false;              // silent shot redirection (kept unchan
 bool visibleAimbotEnabled = false;       // visibly turns the real camera, then restores it
 bool aimbotVisibleCheck = true;
 bool aimbotAutoWall = false;
+float aimbotAutoWallMinDamage = 1.0f;
 float aimbotFov = 360.0f;
 float visibleAimbotHoldMs = 140.0f;
 bool aimbotAutoFire = false;
@@ -1364,7 +1365,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(adminBhopEnabled); SAVE_BOOL(adminBhopCsStrafeMode); SAVE_FLOAT(adminBhopMaxSpeed);
     SAVE_BOOL(airJump); SAVE_BOOL(edgeBugEnabled); SAVE_FLOAT(edgeBugPullForce);
     SAVE_BOOL(velocityLimiterEnabled); SAVE_FLOAT(velocityLimit);
-    SAVE_BOOL(aimbotEnabled); SAVE_BOOL(visibleAimbotEnabled); SAVE_BOOL(aimbotVisibleCheck); SAVE_BOOL(aimbotAutoWall); SAVE_BOOL(aimbotAutoFire);
+    SAVE_BOOL(aimbotEnabled); SAVE_BOOL(visibleAimbotEnabled); SAVE_BOOL(aimbotVisibleCheck); SAVE_BOOL(aimbotAutoWall); SAVE_FLOAT(aimbotAutoWallMinDamage); SAVE_BOOL(aimbotAutoFire);
     SAVE_BOOL(silentAntiAimEnabled); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
     SAVE_BOOL(espShowName); SAVE_BOOL(espShowHealth); SAVE_BOOL(espShowWeapon); SAVE_BOOL(espGradient);
     SAVE_BOOL(worldColorEnabled); SAVE_INT(worldColorMode); SAVE_FLOAT(worldColorStrength); SAVE_FLOAT(worldColorAlpha);
@@ -1430,7 +1431,7 @@ static bool LoadConfig(const char* requestedName)
     if (adminBhopMaxSpeed < 1.0f) adminBhopMaxSpeed = 1.0f; if (adminBhopMaxSpeed > 30.0f) adminBhopMaxSpeed = 30.0f;
     LOAD_BOOL(airJump); LOAD_BOOL(edgeBugEnabled); LOAD_FLOAT(edgeBugPullForce);
     LOAD_BOOL(velocityLimiterEnabled); LOAD_FLOAT(velocityLimit);
-    LOAD_BOOL(aimbotEnabled); LOAD_BOOL(visibleAimbotEnabled); LOAD_BOOL(aimbotVisibleCheck); LOAD_BOOL(aimbotAutoWall); LOAD_BOOL(aimbotAutoFire);
+    LOAD_BOOL(aimbotEnabled); LOAD_BOOL(visibleAimbotEnabled); LOAD_BOOL(aimbotVisibleCheck); LOAD_BOOL(aimbotAutoWall); LOAD_FLOAT(aimbotAutoWallMinDamage); LOAD_BOOL(aimbotAutoFire);
     LOAD_BOOL(silentAntiAimEnabled); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
     LOAD_BOOL(espShowName); LOAD_BOOL(espShowHealth); LOAD_BOOL(espShowWeapon); LOAD_BOOL(espGradient);
     LOAD_BOOL(worldColorEnabled); LOAD_INT(worldColorMode); LOAD_FLOAT(worldColorStrength); LOAD_FLOAT(worldColorAlpha);
@@ -3158,6 +3159,44 @@ static bool GetAimbotHead(void* player, Vector3& headPosition)
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+static bool ReadNativeCastTargetDamage(uintptr_t castResult, void* player, int& damage)
+{
+    damage = 0;
+    if (!castResult || !player) return false;
+    __try {
+        const uintptr_t targetHitController = *reinterpret_cast<uintptr_t*>(
+            reinterpret_cast<uintptr_t>(player) + 0xF0);
+        const uintptr_t hitDictionary = *reinterpret_cast<uintptr_t*>(castResult + 0x10);
+        const uintptr_t entries = hitDictionary ?
+            *reinterpret_cast<uintptr_t*>(hitDictionary + 0x18) : 0;
+        const int count = hitDictionary ? *reinterpret_cast<int*>(hitDictionary + 0x20) : 0;
+        if (!targetHitController || !entries || count <= 0 || count > 128) return false;
+        // Dictionary<bor,List<chs>> entry: hash +0x00, key +0x08,
+        // value +0x10, stride 0x18. chs.cdvw at +0x2C is native damage.
+        for (int i = 0; i < count; ++i) {
+            const uintptr_t entry = entries + 0x20 + static_cast<uintptr_t>(i) * 0x18;
+            if (*reinterpret_cast<int*>(entry + 0x00) < 0) continue;
+            if (*reinterpret_cast<uintptr_t*>(entry + 0x08) != targetHitController) continue;
+            const uintptr_t hits = *reinterpret_cast<uintptr_t*>(entry + 0x10);
+            const int hitCount = hits ? *reinterpret_cast<int*>(hits + 0x18) : 0;
+            const uintptr_t items = hits ? *reinterpret_cast<uintptr_t*>(hits + 0x10) : 0;
+            if (!items || hitCount <= 0 || hitCount > 64) return false;
+            int total = 0;
+            for (int hitIndex = 0; hitIndex < hitCount; ++hitIndex) {
+                const uintptr_t hit = *reinterpret_cast<uintptr_t*>(items + 0x20 +
+                    static_cast<uintptr_t>(hitIndex) * sizeof(uintptr_t));
+                if (!hit) continue;
+                const int hitDamage = *reinterpret_cast<int*>(hit + 0x2C);
+                if (hitDamage > 0 && hitDamage <= 500) total += hitDamage;
+            }
+            damage = total;
+            return total > 0;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { damage = 0; }
+    return false;
+}
+
 static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t hitParameters, Vector3& outDirection)
 {
     void* localPlayer = GetLocalPC();
@@ -3196,15 +3235,20 @@ static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t hitParameters, 
                 // that reaches the head after one or more real penetrations is valid.
                 const uintptr_t probe = o_HitCaster_Cast(origin, candidate, distance + 0.35f, hitParameters, nullptr);
                 if (probe) {
-                    const Vector3 probeEnd = *reinterpret_cast<Vector3*>(probe + 0x30);
-                    const bool reachesTarget = probeEnd.Distance(head) <= 0.60f;
                     const uintptr_t penetrationList = *reinterpret_cast<uintptr_t*>(probe + 0x18);
                     const int penetrationCount = penetrationList ?
                         *reinterpret_cast<int*>(penetrationList + 0x18) : 0;
+                    int nativeDamage = 0;
+                    const bool hitExactTarget =
+                        ReadNativeCastTargetDamage(probe, player, nativeDamage);
                     const bool directShot = penetrationCount == 0;
                     const bool validWallbang = aimbotAutoWall &&
-                        penetrationCount > 0 && penetrationCount <= 64;
-                    visible = reachesTarget && (directShot || validWallbang);
+                        penetrationCount > 0 && penetrationCount <= 64 &&
+                        nativeDamage >= static_cast<int>(aimbotAutoWallMinDamage);
+                    // For penetrations, cjr.cegd is not guaranteed to be the player
+                    // point; target ownership lives in cjr.cefz, keyed by that
+                    // player's HitController. This is the authoritative wallbang test.
+                    visible = hitExactTarget && (directShot || validWallbang);
                 }
             }
             __except (EXCEPTION_EXECUTE_HANDLER) { visible = false; }
@@ -5930,8 +5974,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Visible Check", &aimbotVisibleCheck);
         if (aimbotVisibleCheck) {
             ImGui::Checkbox("Auto Wall", &aimbotAutoWall);
-            if (aimbotAutoWall)
-                ImGui::TextDisabled("Uses native penetration result only");
+            if (aimbotAutoWall) {
+                ImGui::TextDisabled("Uses target hit-list and native damage");
+                ImGui::SliderFloat("Auto Wall Min Damage", &aimbotAutoWallMinDamage,
+                    1.0f, 100.0f, "%.0f");
+            }
         }
         ImGui::Checkbox("Auto Fire", &aimbotAutoFire);
         ImGui::Text("FOV: %.0f degrees", aimbotFov);
