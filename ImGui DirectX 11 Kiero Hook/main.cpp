@@ -580,6 +580,8 @@ uintptr_t enemyChamsMaterials[8] = {};
 uint32_t enemyChamsMaterialHandles[8] = {};
 struct EnemyChamsRenderer { uintptr_t renderer; uintptr_t originalMaterial; bool originalEnabled; };
 std::vector<EnemyChamsRenderer> enemyChamsRenderers;
+std::vector<uintptr_t> enemyChamsInitializedOcclusionControllers;
+bool enemyChamsThroughWallsObserved = false;
 uintptr_t currentLocalCharacterLodGroupCache = 0;
 char enemyChamsStatus[128] = "Disabled";
 volatile LONG pendingEnemyChamsRefresh = 0;
@@ -3590,6 +3592,21 @@ static void CollectEnemyBodyRenderers(std::vector<uintptr_t>& renderers)
         const unsigned char team = GetPCTeam(player);
         if (team == 0 || team == 3 || team == localTeam) continue;
         __try {
+            if (enemyChamsThroughWalls && o_ObjectOccludee_SetVisibleState) {
+                const uintptr_t occlusionController = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(player) + 0xF8);
+                const bool initialized = occlusionController && std::find(
+                    enemyChamsInitializedOcclusionControllers.begin(),
+                    enemyChamsInitializedOcclusionControllers.end(),
+                    occlusionController) != enemyChamsInitializedOcclusionControllers.end();
+                if (occlusionController && !initialized) {
+                    // If Through Walls was enabled after this enemy had already become hidden,
+                    // no future false transition was guaranteed. Wake all bpj listeners once;
+                    // subsequent visibility changes are handled by the occlusion hook.
+                    o_ObjectOccludee_SetVisibleState(occlusionController, false, nullptr);
+                    o_ObjectOccludee_SetVisibleState(occlusionController, true, nullptr);
+                    enemyChamsInitializedOcclusionControllers.push_back(occlusionController);
+                }
+            }
             // PlayerController::CharacterLodGroup +0x130 -> CharacterLodGroup::_meshRenderer +0x60.
             const uintptr_t characterLodGroup = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(player) + 0x130);
             const uintptr_t renderer = characterLodGroup ? *reinterpret_cast<uintptr_t*>(characterLodGroup + 0x60) : 0;
@@ -3635,6 +3652,10 @@ static bool ApplyEnemyChamsRendererMaterial(uintptr_t renderer, uintptr_t replac
 static void UpdateEnemyChams()
 {
     if (!keyValidated || !o_Renderer_set_material || !o_Material_set_color) return;
+    if (enemyChamsThroughWallsObserved != enemyChamsThroughWalls) {
+        enemyChamsThroughWallsObserved = enemyChamsThroughWalls;
+        enemyChamsInitializedOcclusionControllers.clear();
+    }
     if (!enemyChamsEnabled) {
         if (!enemyChamsRenderers.empty()) RestoreEnemyChams();
         strcpy_s(enemyChamsStatus, "Disabled");
@@ -3777,6 +3798,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         armChamsRenderers.clear();
         gloveChamsRenderers.clear();
         enemyChamsRenderers.clear();
+        enemyChamsInitializedOcclusionControllers.clear();
         weaponChamsController = 0;
         activeLocalWeaponController = 0;
         aimbotAutoFirePendingGun = 0;
