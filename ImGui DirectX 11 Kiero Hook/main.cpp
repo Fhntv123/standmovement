@@ -550,6 +550,8 @@ bool bulletTracerEnabled = false;
 bool bulletImpactsEnabled = false;
 float bulletImpactsDuration = 4.0f;
 float bulletImpactsSize = 0.08f;
+float bulletImpactsClientColor[3] = { 1.0f, 0.215f, 0.215f };
+float bulletImpactsConfirmedColor[3] = { 0.176f, 0.49f, 1.0f };
 bool noSpreadEnabled = false;
 bool removeScopeBorders = false;
 bool customScopeReticleVisible = false;
@@ -1394,6 +1396,7 @@ static bool SaveConfig(const char* requestedName)
     WriteConfigColor(path, "customSkyboxColor", customSkyboxColor);
     WriteConfigColor(path, "hitMarkerColor", hitMarkerColor);
     WriteConfigColor(path, "bulletTracerStartColor", bulletTracerStartColor); WriteConfigColor(path, "bulletTracerEndColor", bulletTracerEndColor);
+    WriteConfigColor(path, "bulletImpactsClientColor", bulletImpactsClientColor); WriteConfigColor(path, "bulletImpactsConfirmedColor", bulletImpactsConfirmedColor);
     WriteConfigColor(path, "weaponChamsColor", weaponChamsColor); WriteConfigColor(path, "armChamsColor", armChamsColor);
     WriteConfigColor(path, "gloveChamsColor", gloveChamsColor); WriteConfigColor(path, "localPlayerChamsColor", localPlayerChamsColor);
     WriteConfigColor(path, "enemyChamsColor", enemyChamsColor);
@@ -1459,6 +1462,7 @@ static bool LoadConfig(const char* requestedName)
     ReadConfigColor(path, "customSkyboxColor", customSkyboxColor);
     ReadConfigColor(path, "hitMarkerColor", hitMarkerColor);
     ReadConfigColor(path, "bulletTracerStartColor", bulletTracerStartColor); ReadConfigColor(path, "bulletTracerEndColor", bulletTracerEndColor);
+    ReadConfigColor(path, "bulletImpactsClientColor", bulletImpactsClientColor); ReadConfigColor(path, "bulletImpactsConfirmedColor", bulletImpactsConfirmedColor);
     ReadConfigColor(path, "weaponChamsColor", weaponChamsColor); ReadConfigColor(path, "armChamsColor", armChamsColor);
     ReadConfigColor(path, "gloveChamsColor", gloveChamsColor); ReadConfigColor(path, "localPlayerChamsColor", localPlayerChamsColor);
     ReadConfigColor(path, "enemyChamsColor", enemyChamsColor);
@@ -5019,9 +5023,11 @@ void DrawBulletImpacts()
         // CS2-style solid 3D impact cube: filled faces only, with no wireframe
         // border. Slight face shading keeps its volume readable while the inside
         // remains completely filled.
-        const int baseR = impact.serverConfirmed ? 45 : 255;
-        const int baseG = impact.serverConfirmed ? 125 : 55;
-        const int baseB = impact.serverConfirmed ? 255 : 55;
+        const float* selectedColor = impact.serverConfirmed ?
+            bulletImpactsConfirmedColor : bulletImpactsClientColor;
+        const int baseR = static_cast<int>(selectedColor[0] * 255.0f);
+        const int baseG = static_cast<int>(selectedColor[1] * 255.0f);
+        const int baseB = static_cast<int>(selectedColor[2] * 255.0f);
         Vector3 corners[8];
         ImVec2 projected[8];
         bool allProjected = true;
@@ -6172,7 +6178,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ReleaseSRWLockExclusive(&bulletImpactLock);
         }
         if (bulletImpactsEnabled) {
-            ImGui::TextDisabled("Red: client/penetration  Blue: confirmed player hit");
+            ImGui::TextDisabled("Client/penetration and confirmed-hit colors");
+            ImGui::ColorEdit3("Client Impact Color", bulletImpactsClientColor);
+            ImGui::ColorEdit3("Confirmed Impact Color", bulletImpactsConfirmedColor);
             ImGui::SliderFloat("Impact Duration", &bulletImpactsDuration, 0.25f, 10.0f, "%.1f s");
             ImGui::SliderFloat("Impact 3D Size", &bulletImpactsSize, 0.02f, 0.30f, "%.2f u");
         }
