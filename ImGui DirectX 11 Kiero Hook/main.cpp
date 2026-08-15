@@ -528,13 +528,21 @@ float freezeCorpsesFadeDuration = 1.0f;
 int freezeCorpsesChamsMode = 0; // None, Flat, Glass, Lit, Metallic, Rainbow, Pulse
 int freezeCorpsesVisualMode = 0; // Frozen Model, Falling Dots, Model + Dots
 float freezeCorpsesChamsColor[3] = { 1.0f, 0.20f, 0.35f };
+float freezeCorpsesDotGradientColor[3] = { 0.25f, 0.55f, 1.0f };
 float freezeCorpsesChamsAlpha = 0.55f;
 float freezeCorpsesMetallic = 0.9f;
 float freezeCorpsesSmoothness = 0.8f;
 float freezeCorpsesAnimationSpeed = 1.0f;
 float freezeCorpsesDotSize = 2.5f;
 float freezeCorpsesDotFallSpeed = 1.2f;
-struct CorpseDotParticle { Vector3 position; float driftX; float driftZ; };
+struct CorpseDotParticle {
+    Vector3 position;
+    float driftX;
+    float driftZ;
+    float floorY;
+    float worldRadius;
+    float gradientT;
+};
 struct FrozenCorpseEntry {
     uintptr_t ragdoll;
     uintptr_t manager;
@@ -1435,6 +1443,7 @@ static bool SaveConfig(const char* requestedName)
     WriteConfigColor(path, "customSkyboxColor", customSkyboxColor);
     WriteConfigColor(path, "hitMarkerColor", hitMarkerColor);
     WriteConfigColor(path, "freezeCorpsesChamsColor", freezeCorpsesChamsColor);
+    WriteConfigColor(path, "freezeCorpsesDotGradientColor", freezeCorpsesDotGradientColor);
     WriteConfigColor(path, "bulletTracerStartColor", bulletTracerStartColor); WriteConfigColor(path, "bulletTracerEndColor", bulletTracerEndColor);
     WriteConfigColor(path, "bulletImpactsClientColor", bulletImpactsClientColor); WriteConfigColor(path, "bulletImpactsConfirmedColor", bulletImpactsConfirmedColor);
     WriteConfigColor(path, "weaponChamsColor", weaponChamsColor); WriteConfigColor(path, "armChamsColor", armChamsColor);
@@ -1502,6 +1511,7 @@ static bool LoadConfig(const char* requestedName)
     ReadConfigColor(path, "customSkyboxColor", customSkyboxColor);
     ReadConfigColor(path, "hitMarkerColor", hitMarkerColor);
     ReadConfigColor(path, "freezeCorpsesChamsColor", freezeCorpsesChamsColor);
+    ReadConfigColor(path, "freezeCorpsesDotGradientColor", freezeCorpsesDotGradientColor);
     ReadConfigColor(path, "bulletTracerStartColor", bulletTracerStartColor); ReadConfigColor(path, "bulletTracerEndColor", bulletTracerEndColor);
     ReadConfigColor(path, "bulletImpactsClientColor", bulletImpactsClientColor); ReadConfigColor(path, "bulletImpactsConfirmedColor", bulletImpactsConfirmedColor);
     ReadConfigColor(path, "weaponChamsColor", weaponChamsColor); ReadConfigColor(path, "armChamsColor", armChamsColor);
@@ -2654,10 +2664,23 @@ static bool TryGetCorpseBonePosition(uintptr_t biped, uintptr_t offset, Vector3*
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+static void AddCorpseVolumeDot(FrozenCorpseEntry& corpse, const Vector3& center,
+    float offsetX, float offsetY, float offsetZ, float floorY, float worldRadius,
+    float phase, float gradientT)
+{
+    CorpseDotParticle dot{};
+    dot.position = Vector3(center.x + offsetX, center.y + offsetY, center.z + offsetZ);
+    dot.driftX = sinf(phase * 0.29f) * 0.09f;
+    dot.driftZ = cosf(phase * 0.41f) * 0.09f;
+    dot.floorY = floorY;
+    dot.worldRadius = worldRadius;
+    dot.gradientT = gradientT;
+    corpse.dots.push_back(dot);
+}
+
 static void CaptureCorpsePoseDots(FrozenCorpseEntry& corpse, uintptr_t biped)
 {
     if (!biped || freezeCorpsesVisualMode == 0) return;
-    // Actual Ragdoll BipedMap chain: head/torso, both arms and both legs.
     static const uintptr_t offsets[] = {
         0x20,0x28,0x40,0x38,0x30,0x88,
         0x48,0x50,0x58,0x60, 0x68,0x70,0x78,0x80,
@@ -2670,29 +2693,61 @@ static void CaptureCorpsePoseDots(FrozenCorpseEntry& corpse, uintptr_t biped)
     };
     Vector3 bones[IM_ARRAYSIZE(offsets)] = {};
     bool valid[IM_ARRAYSIZE(offsets)] = {};
-    for (int i = 0; i < IM_ARRAYSIZE(offsets); ++i)
+    float floorY = 1.0e9f;
+    for (int i = 0; i < IM_ARRAYSIZE(offsets); ++i) {
         valid[i] = TryGetCorpseBonePosition(biped, offsets[i], &bones[i]);
+        if (valid[i] && bones[i].y < floorY) floorY = bones[i].y;
+    }
+    if (floorY > 1.0e8f) return;
     corpse.dots.clear();
-    corpse.dots.reserve(IM_ARRAYSIZE(segments) * 9);
+    corpse.dots.reserve(900);
     for (int segmentIndex = 0; segmentIndex < IM_ARRAYSIZE(segments); ++segmentIndex) {
         const int a = segments[segmentIndex][0], b = segments[segmentIndex][1];
         if (!valid[a] || !valid[b]) continue;
         const Vector3 delta = bones[b] - bones[a];
-        for (int step = 0; step <= 6; ++step) {
-            const float t = static_cast<float>(step) / 6.0f;
-            const float phase = static_cast<float>(segmentIndex * 17 + step * 11);
-            const float spread = 0.025f;
-            CorpseDotParticle dot{};
-            dot.position = Vector3(
+        const float length = sqrtf(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+        if (length < 0.001f) continue;
+        const Vector3 direction(delta.x / length, delta.y / length, delta.z / length);
+        Vector3 reference = fabsf(direction.y) < 0.85f ? Vector3(0.0f, 1.0f, 0.0f) : Vector3(1.0f, 0.0f, 0.0f);
+        Vector3 side(
+            direction.y * reference.z - direction.z * reference.y,
+            direction.z * reference.x - direction.x * reference.z,
+            direction.x * reference.y - direction.y * reference.x);
+        const float sideLength = sqrtf(side.x * side.x + side.y * side.y + side.z * side.z);
+        if (sideLength < 0.001f) continue;
+        side = Vector3(side.x / sideLength, side.y / sideLength, side.z / sideLength);
+        const Vector3 up(
+            side.y * direction.z - side.z * direction.y,
+            side.z * direction.x - side.x * direction.z,
+            side.x * direction.y - side.y * direction.x);
+        // Wider capsules on torso/head/thighs, narrower on forearms/calves/hands.
+        float bodyRadius = 0.075f;
+        if (segmentIndex <= 4) bodyRadius = segmentIndex <= 1 ? 0.13f : 0.18f;
+        else if (segmentIndex == 5 || segmentIndex == 9) bodyRadius = 0.12f;
+        else if (segmentIndex == 13 || segmentIndex == 17) bodyRadius = 0.14f;
+        else if (segmentIndex == 14 || segmentIndex == 18) bodyRadius = 0.12f;
+        const int alongSteps = static_cast<int>(fminf(8.0f, fmaxf(3.0f, length / 0.10f)));
+        for (int step = 0; step <= alongSteps; ++step) {
+            const float t = static_cast<float>(step) / static_cast<float>(alongSteps);
+            const Vector3 center(
                 bones[a].x + delta.x * t,
                 bones[a].y + delta.y * t,
                 bones[a].z + delta.z * t);
-            dot.position.x += sinf(phase * 0.73f) * spread;
-            dot.position.y += cosf(phase * 0.51f) * spread;
-            dot.position.z += sinf(phase * 0.37f) * spread;
-            dot.driftX = sinf(phase * 0.29f) * 0.12f;
-            dot.driftZ = cosf(phase * 0.41f) * 0.12f;
-            corpse.dots.push_back(dot);
+            const int rings = 8;
+            for (int ring = 0; ring < rings; ++ring) {
+                const float angle = 6.28318530718f * static_cast<float>(ring) / static_cast<float>(rings);
+                const float radial = bodyRadius * (0.72f + 0.28f * sinf((step + 1) * 1.91f + ring));
+                const float ox = (side.x * cosf(angle) + up.x * sinf(angle)) * radial;
+                const float oy = (side.y * cosf(angle) + up.y * sinf(angle)) * radial;
+                const float oz = (side.z * cosf(angle) + up.z * sinf(angle)) * radial;
+                const float phase = static_cast<float>(segmentIndex * 71 + step * 13 + ring * 7);
+                AddCorpseVolumeDot(corpse, center, ox, oy, oz, floorY, 0.022f,
+                    phase, fminf(1.0f, fmaxf(0.0f, (center.y - floorY) / 1.8f)));
+            }
+            // A center particle closes holes so limbs read as solid volume, not a wire skeleton.
+            const float phase = static_cast<float>(segmentIndex * 83 + step * 19);
+            AddCorpseVolumeDot(corpse, center, 0.0f, 0.0f, 0.0f, floorY, 0.024f,
+                phase, fminf(1.0f, fmaxf(0.0f, (center.y - floorY) / 1.8f)));
         }
     }
 }
@@ -5439,6 +5494,9 @@ struct CorpseDotDrawItem {
     ULONGLONG releaseAt;
     float driftX;
     float driftZ;
+    float floorY;
+    float worldRadius;
+    float gradientT;
 };
 
 static void DrawFrozenCorpseDots()
@@ -5451,7 +5509,7 @@ static void DrawFrozenCorpseDots()
     for (const FrozenCorpseEntry& corpse : frozenCorpses) {
         for (const CorpseDotParticle& dot : corpse.dots)
             snapshot.push_back({ dot.position, corpse.createdAt, corpse.releaseAt,
-                dot.driftX, dot.driftZ });
+                dot.driftX, dot.driftZ, dot.floorY, dot.worldRadius, dot.gradientT });
     }
     ReleaseSRWLockShared(&frozenCorpseLock);
     ImDrawList* draw = ImGui::GetForegroundDrawList();
@@ -5467,20 +5525,48 @@ static void DrawFrozenCorpseDots()
         world.x += dot.driftX * smoothFall;
         world.z += dot.driftZ * smoothFall;
         world.y -= freezeCorpsesDotFallSpeed * smoothFall;
-        ImVec2 screen;
+        // The captured lowest ragdoll point is the corpse's contact plane. Never let
+        // an orb center descend below its own radius above that plane.
+        const float floorCenter = dot.floorY + dot.worldRadius;
+        if (world.y < floorCenter) world.y = floorCenter;
+        ImVec2 screen, radiusScreen;
         if (!ProjectTracerEnd(world, screen)) continue;
+        const Vector3 radiusWorld(world.x, world.y + dot.worldRadius, world.z);
+        if (!ProjectTracerEnd(radiusWorld, radiusScreen)) continue;
+        const float perspectiveRadius = fabsf(radiusScreen.y - screen.y);
+        const float radius = fminf(9.0f, fmaxf(1.25f,
+            perspectiveRadius * freezeCorpsesDotSize * 0.52f));
         float alpha = 1.0f;
         if (freezeCorpsesFadeEnabled) {
             const float fadeMs = fmaxf(50.0f, freezeCorpsesFadeDuration * 1000.0f);
             const float remaining = static_cast<float>(dot.releaseAt - now);
             alpha = fminf(1.0f, fmaxf(0.0f, remaining / fadeMs));
         }
-        const ImU32 color = IM_COL32(
-            static_cast<int>(freezeCorpsesChamsColor[0] * 255.0f),
-            static_cast<int>(freezeCorpsesChamsColor[1] * 255.0f),
-            static_cast<int>(freezeCorpsesChamsColor[2] * 255.0f),
-            static_cast<int>(alpha * 255.0f));
-        draw->AddCircleFilled(screen, freezeCorpsesDotSize, color, 10);
+        const float gradient = fminf(1.0f, fmaxf(0.0f, dot.gradientT));
+        const float r = freezeCorpsesChamsColor[0] +
+            (freezeCorpsesDotGradientColor[0] - freezeCorpsesChamsColor[0]) * gradient;
+        const float g = freezeCorpsesChamsColor[1] +
+            (freezeCorpsesDotGradientColor[1] - freezeCorpsesChamsColor[1]) * gradient;
+        const float b = freezeCorpsesChamsColor[2] +
+            (freezeCorpsesDotGradientColor[2] - freezeCorpsesChamsColor[2]) * gradient;
+        // Depth-sized volumetric orb: soft bloom outside, shaded body, bright offset
+        // specular core. Unlike the old fixed 2D dot, its size follows world depth.
+        for (int glow = 4; glow >= 1; --glow) {
+            const float glowRadius = radius * (1.0f + static_cast<float>(glow) * 0.72f);
+            const int glowAlpha = static_cast<int>(alpha * (5.0f + (4 - glow) * 4.0f));
+            draw->AddCircleFilled(screen, glowRadius,
+                IM_COL32(static_cast<int>(r * 255.0f), static_cast<int>(g * 255.0f),
+                    static_cast<int>(b * 255.0f), glowAlpha), 16);
+        }
+        draw->AddCircleFilled(screen, radius,
+            IM_COL32(static_cast<int>(r * 115.0f), static_cast<int>(g * 115.0f),
+                static_cast<int>(b * 115.0f), static_cast<int>(alpha * 235.0f)), 16);
+        draw->AddCircleFilled(ImVec2(screen.x - radius * 0.22f, screen.y - radius * 0.22f),
+            radius * 0.72f,
+            IM_COL32(static_cast<int>(r * 230.0f), static_cast<int>(g * 230.0f),
+                static_cast<int>(b * 230.0f), static_cast<int>(alpha * 225.0f)), 16);
+        draw->AddCircleFilled(ImVec2(screen.x - radius * 0.38f, screen.y - radius * 0.38f),
+            radius * 0.25f, IM_COL32(255, 255, 255, static_cast<int>(alpha * 245.0f)), 12);
     }
 }
 
@@ -6464,6 +6550,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 corpseChamsModes, IM_ARRAYSIZE(corpseChamsModes));
             if (freezeCorpsesChamsMode != 0 || freezeCorpsesVisualMode != 0)
                 ImGui::ColorEdit3("Corpse Color", freezeCorpsesChamsColor);
+            if (freezeCorpsesVisualMode != 0)
+                ImGui::ColorEdit3("Corpse Dot Gradient", freezeCorpsesDotGradientColor);
             if (freezeCorpsesChamsMode == 2)
                 ImGui::SliderFloat("Corpse Glass Alpha", &freezeCorpsesChamsAlpha, 0.05f, 0.95f, "%.2f");
             if (freezeCorpsesChamsMode == 4) {
@@ -6473,7 +6561,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (freezeCorpsesChamsMode == 5 || freezeCorpsesChamsMode == 6)
                 ImGui::SliderFloat("Corpse Animation Speed", &freezeCorpsesAnimationSpeed, 0.1f, 5.0f, "%.2f");
             if (freezeCorpsesVisualMode != 0) {
-                ImGui::SliderFloat("Corpse Dot Size", &freezeCorpsesDotSize, 1.0f, 6.0f, "%.1f px");
+                ImGui::SliderFloat("Corpse Orb Scale", &freezeCorpsesDotSize, 1.0f, 6.0f, "%.1f");
                 ImGui::SliderFloat("Corpse Dot Fall", &freezeCorpsesDotFallSpeed, 0.2f, 4.0f, "%.1f");
             }
         }
