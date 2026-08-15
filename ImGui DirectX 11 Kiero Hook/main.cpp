@@ -2842,10 +2842,32 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     insideLocalGunFire = isLocalGun;
     o_GunController_Fire(instance, playSound, method);
     if (fireSecondShot) {
-        // GunController::Fire is already past wfz's cooldown/input gate. Calling the
-        // original trampoline again creates a real second cast in the same command,
-        // including normal damage, spread, tracers and ammo consumption.
+        uintptr_t aimingData = 0;
+        Vector3 aimAngleAfterFirstShot;
+        Vector3 aimEulerAfterFirstShot;
+        bool capturedFirstShotCamera = false;
+        __try {
+            const uintptr_t aimController = liveHudLocalPlayer ?
+                *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8) : 0;
+            aimingData = aimController ? *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
+            if (aimingData) {
+                aimAngleAfterFirstShot = *reinterpret_cast<Vector3*>(aimingData + 0x18);
+                aimEulerAfterFirstShot = *reinterpret_cast<Vector3*>(aimingData + 0x24);
+                capturedFirstShotCamera = true;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { capturedFirstShotCamera = false; }
+
+        // The second native shot keeps its cast, damage, spread, tracers and ammo use,
+        // but its duplicate camera recoil is discarded. The normal first-shot kick stays.
         o_GunController_Fire(instance, playSound, method);
+        if (capturedFirstShotCamera) {
+            __try {
+                *reinterpret_cast<Vector3*>(aimingData + 0x18) = aimAngleAfterFirstShot;
+                *reinterpret_cast<Vector3*>(aimingData + 0x24) = aimEulerAfterFirstShot;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
         InterlockedIncrement(&doubleTapExtraShots);
     }
     insideLocalGunFire = false;
