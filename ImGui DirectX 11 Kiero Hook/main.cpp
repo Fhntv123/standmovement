@@ -490,6 +490,7 @@ volatile LONG infinityAmmoLastGetter = -1;
 bool aimbotEnabled = false;              // silent shot redirection (kept unchanged)
 bool visibleAimbotEnabled = false;       // visibly turns the real camera, then restores it
 bool aimbotVisibleCheck = true;
+bool aimbotAutoWall = false;
 float aimbotFov = 360.0f;
 float visibleAimbotHoldMs = 140.0f;
 bool aimbotAutoFire = false;
@@ -1363,7 +1364,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(adminBhopEnabled); SAVE_BOOL(adminBhopCsStrafeMode); SAVE_FLOAT(adminBhopMaxSpeed);
     SAVE_BOOL(airJump); SAVE_BOOL(edgeBugEnabled); SAVE_FLOAT(edgeBugPullForce);
     SAVE_BOOL(velocityLimiterEnabled); SAVE_FLOAT(velocityLimit);
-    SAVE_BOOL(aimbotEnabled); SAVE_BOOL(visibleAimbotEnabled); SAVE_BOOL(aimbotVisibleCheck); SAVE_BOOL(aimbotAutoFire);
+    SAVE_BOOL(aimbotEnabled); SAVE_BOOL(visibleAimbotEnabled); SAVE_BOOL(aimbotVisibleCheck); SAVE_BOOL(aimbotAutoWall); SAVE_BOOL(aimbotAutoFire);
     SAVE_BOOL(silentAntiAimEnabled); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
     SAVE_BOOL(espShowName); SAVE_BOOL(espShowHealth); SAVE_BOOL(espShowWeapon); SAVE_BOOL(espGradient);
     SAVE_BOOL(worldColorEnabled); SAVE_INT(worldColorMode); SAVE_FLOAT(worldColorStrength); SAVE_FLOAT(worldColorAlpha);
@@ -1429,7 +1430,7 @@ static bool LoadConfig(const char* requestedName)
     if (adminBhopMaxSpeed < 1.0f) adminBhopMaxSpeed = 1.0f; if (adminBhopMaxSpeed > 30.0f) adminBhopMaxSpeed = 30.0f;
     LOAD_BOOL(airJump); LOAD_BOOL(edgeBugEnabled); LOAD_FLOAT(edgeBugPullForce);
     LOAD_BOOL(velocityLimiterEnabled); LOAD_FLOAT(velocityLimit);
-    LOAD_BOOL(aimbotEnabled); LOAD_BOOL(visibleAimbotEnabled); LOAD_BOOL(aimbotVisibleCheck); LOAD_BOOL(aimbotAutoFire);
+    LOAD_BOOL(aimbotEnabled); LOAD_BOOL(visibleAimbotEnabled); LOAD_BOOL(aimbotVisibleCheck); LOAD_BOOL(aimbotAutoWall); LOAD_BOOL(aimbotAutoFire);
     LOAD_BOOL(silentAntiAimEnabled); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
     LOAD_BOOL(espShowName); LOAD_BOOL(espShowHealth); LOAD_BOOL(espShowWeapon); LOAD_BOOL(espGradient);
     LOAD_BOOL(worldColorEnabled); LOAD_INT(worldColorMode); LOAD_FLOAT(worldColorStrength); LOAD_FLOAT(worldColorAlpha);
@@ -3189,20 +3190,28 @@ static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t hitParameters, 
         bool visible = !aimbotVisibleCheck;
         if (aimbotVisibleCheck) {
             __try {
-                // Use the game's own bullet caster as the visibility test. Stop the
-                // probe just behind the head: unobstructed rays finish within 0.6 m of
-                // the target; walls stop the cast significantly earlier.
+                // Native HitCaster decides whether the shot actually reaches the
+                // target. cjr.cega (+0x18) contains penetration segments: without
+                // Auto Wall only a direct cast is accepted; with Auto Wall a cast
+                // that reaches the head after one or more real penetrations is valid.
                 const uintptr_t probe = o_HitCaster_Cast(origin, candidate, distance + 0.35f, hitParameters, nullptr);
                 if (probe) {
                     const Vector3 probeEnd = *reinterpret_cast<Vector3*>(probe + 0x30);
-                    visible = probeEnd.Distance(head) <= 0.60f;
+                    const bool reachesTarget = probeEnd.Distance(head) <= 0.60f;
+                    const uintptr_t penetrationList = *reinterpret_cast<uintptr_t*>(probe + 0x18);
+                    const int penetrationCount = penetrationList ?
+                        *reinterpret_cast<int*>(penetrationList + 0x18) : 0;
+                    const bool directShot = penetrationCount == 0;
+                    const bool validWallbang = aimbotAutoWall &&
+                        penetrationCount > 0 && penetrationCount <= 64;
+                    visible = reachesTarget && (directShot || validWallbang);
                 }
             }
             __except (EXCEPTION_EXECUTE_HANDLER) { visible = false; }
         }
         if (!visible) continue;
         ++visibleCount;
-        // 360-degree FOV: no screen-angle rejection. Select the nearest visible enemy.
+        // 360-degree FOV: select the nearest enemy reachable by a direct shot or enabled Auto Wall.
         if (distance < bestDistance) {
             bestDistance = distance;
             bestDirection = candidate;
@@ -3236,8 +3245,8 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
                 "Silent direction applied; waiting for cast result");
         } else {
             strcpy_s(aimbotStatus, insideAutoFireRequest ?
-                "Auto Fire: no visible target; cast suppressed" :
-                "No visible enemy; original shot kept");
+                "Auto Fire: no reachable target; cast suppressed" :
+                "No reachable enemy; original shot kept");
             if (insideAutoFireRequest) {
                 InterlockedIncrement(&aimbotAutoFireRejected);
                 return 0;
@@ -3432,7 +3441,7 @@ void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, 
             } else {
                 aimbotAutoFireNextDecisionAt = now + 50;
                 InterlockedIncrement(&aimbotAutoFireRejected);
-                strcpy_s(aimbotStatus, "Auto Fire blocked before weapon: target behind wall");
+                strcpy_s(aimbotStatus, "Auto Fire blocked: no direct shot or valid wallbang");
             }
         }
     }
@@ -5919,6 +5928,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (visibleAimbotEnabled)
             ImGui::SliderFloat("Camera Hold", &visibleAimbotHoldMs, 50.0f, 400.0f, "%.0f ms");
         ImGui::Checkbox("Visible Check", &aimbotVisibleCheck);
+        if (aimbotVisibleCheck) {
+            ImGui::Checkbox("Auto Wall", &aimbotAutoWall);
+            if (aimbotAutoWall)
+                ImGui::TextDisabled("Uses native penetration result only");
+        }
         ImGui::Checkbox("Auto Fire", &aimbotAutoFire);
         ImGui::Text("FOV: %.0f degrees", aimbotFov);
         ImGui::Spacing();
