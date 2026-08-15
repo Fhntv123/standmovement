@@ -3563,6 +3563,17 @@ static void CaptureEnemyChamsRenderers(const std::vector<uintptr_t>& renderers)
     sprintf_s(enemyChamsStatus, "Applied to %zu enemy renderer(s)", enemyChamsRenderers.size());
 }
 
+static bool ApplyEnemyChamsRendererMaterial(uintptr_t renderer, uintptr_t replacement)
+{
+    if (!renderer || !replacement) return false;
+    __try {
+        const uintptr_t currentMaterial = o_Renderer_get_material ? o_Renderer_get_material(renderer) : 0;
+        if (currentMaterial != replacement) o_Renderer_set_material(renderer, replacement);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
 static void UpdateEnemyChams()
 {
     if (!keyValidated || !o_Renderer_set_material || !o_Material_set_color) return;
@@ -3591,15 +3602,8 @@ static void UpdateEnemyChams()
     }
     o_Material_set_color(replacement, GetEnemyChamsDisplayColor());
     size_t applied = 0;
-    for (const EnemyChamsRenderer& entry : enemyChamsRenderers) {
-        if (!entry.renderer) continue;
-        __try {
-            const uintptr_t currentMaterial = o_Renderer_get_material ? o_Renderer_get_material(entry.renderer) : 0;
-            if (currentMaterial != replacement) o_Renderer_set_material(entry.renderer, replacement);
-            ++applied;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
+    for (const EnemyChamsRenderer& entry : enemyChamsRenderers)
+        if (ApplyEnemyChamsRendererMaterial(entry.renderer, replacement)) ++applied;
     sprintf_s(enemyChamsStatus, "Active on %zu enemy renderer(s)", applied);
 }
 
