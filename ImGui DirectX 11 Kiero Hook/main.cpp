@@ -839,11 +839,22 @@ static void CacheConfirmedDamageResult(uintptr_t hitController, uintptr_t result
     InterlockedExchange(&boxEspConfirmedHealth, damage);
     InterlockedIncrement(&boxEspConfirmedHits);
 
-    // The same confirmed result can traverse ria and rib; add one row only, and only
-    // when the authoritative shooter actor is the local player's actor.
+    // The same confirmed result can traverse ria and rib. Correlate it with the
+    // authoritative HitCaster call made while the local GunController Fire hook was
+    // active; actor wrappers are not pointer-identical on every network mode.
     const ULONGLONG now = GetTickCount64();
-    if (keyValidated && hitLogEnabled && player && damage > 0 && damage <= 500 &&
-        localActor && shooterActor == localActor &&
+    ULONGLONG localCastAt = 0;
+    AcquireSRWLockShared(&hitMarkerLock);
+    localCastAt = latestHitMarkerCastAt;
+    ReleaseSRWLockShared(&hitMarkerLock);
+    const bool followsLocalShot = localCastAt && now >= localCastAt && now - localCastAt <= 1500;
+    void* localPlayer = GetLocalPC();
+    const unsigned char localTeam = GetPCTeam(localPlayer);
+    const unsigned char victimTeam = GetPCTeam(reinterpret_cast<void*>(player));
+    const bool isEnemy = player && player != reinterpret_cast<uintptr_t>(localPlayer) &&
+        victimTeam != 0 && victimTeam != 3 && victimTeam != localTeam;
+    if (keyValidated && hitLogEnabled && followsLocalShot && isEnemy &&
+        damage > 0 && damage <= 500 &&
         (result != hitLogLastResult || now - hitLogLastResultAt > 250)) {
         HitLogEntry entry = {};
         GetPCName(reinterpret_cast<void*>(player), entry.enemyName, sizeof(entry.enemyName));
@@ -2748,13 +2759,14 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
     } else if (insideAutoFireRequest && !result) {
         strcpy_s(aimbotStatus, "Auto Fire reached HitCaster, but native cast returned null");
     }
-    if (keyValidated && insideLocalGunFire && result && (hitMarkerEnabled || bulletTracerEnabled)) {
+    if (keyValidated && insideLocalGunFire && result &&
+        (hitMarkerEnabled || hitLogEnabled || bulletTracerEnabled)) {
         __try {
             // cjr stores the authoritative cast start/end at 0x24/0x30.
             const Vector3 actualStart = *(Vector3*)(result + 0x24);
             const Vector3 actualEnd = *(Vector3*)(result + 0x30);
             const ULONGLONG now = GetTickCount64();
-            if (hitMarkerEnabled) {
+            if (hitMarkerEnabled || hitLogEnabled) {
                 AcquireSRWLockExclusive(&hitMarkerLock);
                 latestHitMarkerCastStart = actualStart;
                 latestHitMarkerCastEnd = actualEnd;
