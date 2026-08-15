@@ -525,8 +525,16 @@ bool freezeCorpsesEnabled = false;
 float freezeCorpsesDuration = 4.0f;
 bool freezeCorpsesFadeEnabled = true;
 float freezeCorpsesFadeDuration = 1.0f;
-bool freezeCorpsesChamsEnabled = false;
+int freezeCorpsesChamsMode = 0; // None, Flat, Glass, Lit, Metallic, Rainbow, Pulse
+int freezeCorpsesVisualMode = 0; // Frozen Model, Falling Dots, Model + Dots
 float freezeCorpsesChamsColor[3] = { 1.0f, 0.20f, 0.35f };
+float freezeCorpsesChamsAlpha = 0.55f;
+float freezeCorpsesMetallic = 0.9f;
+float freezeCorpsesSmoothness = 0.8f;
+float freezeCorpsesAnimationSpeed = 1.0f;
+float freezeCorpsesDotSize = 2.5f;
+float freezeCorpsesDotFallSpeed = 1.2f;
+struct CorpseDotParticle { Vector3 position; float driftX; float driftZ; };
 struct FrozenCorpseEntry {
     uintptr_t ragdoll;
     uintptr_t manager;
@@ -536,6 +544,9 @@ struct FrozenCorpseEntry {
     uintptr_t originalMaterial;
     uintptr_t fadeMaterial;
     uint32_t fadeMaterialHandle;
+    int materialMode;
+    ULONGLONG createdAt;
+    std::vector<CorpseDotParticle> dots;
     std::vector<std::pair<uintptr_t, bool>> rigidbodies;
 };
 std::vector<FrozenCorpseEntry> frozenCorpses;
@@ -1392,7 +1403,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(airJump); SAVE_BOOL(edgeBugEnabled); SAVE_FLOAT(edgeBugPullForce);
     SAVE_BOOL(velocityLimiterEnabled); SAVE_FLOAT(velocityLimit);
     SAVE_BOOL(aimbotEnabled); SAVE_BOOL(visibleAimbotEnabled); SAVE_BOOL(aimbotVisibleCheck); SAVE_BOOL(aimbotAutoWall); SAVE_FLOAT(aimbotAutoWallMinDamage); SAVE_BOOL(aimbotAutoFire);
-    SAVE_BOOL(silentAntiAimEnabled); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(freezeCorpsesFadeEnabled); SAVE_FLOAT(freezeCorpsesFadeDuration); SAVE_BOOL(freezeCorpsesChamsEnabled); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
+    SAVE_BOOL(silentAntiAimEnabled); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(freezeCorpsesFadeEnabled); SAVE_FLOAT(freezeCorpsesFadeDuration); SAVE_INT(freezeCorpsesChamsMode); SAVE_INT(freezeCorpsesVisualMode); SAVE_FLOAT(freezeCorpsesChamsAlpha); SAVE_FLOAT(freezeCorpsesMetallic); SAVE_FLOAT(freezeCorpsesSmoothness); SAVE_FLOAT(freezeCorpsesAnimationSpeed); SAVE_FLOAT(freezeCorpsesDotSize); SAVE_FLOAT(freezeCorpsesDotFallSpeed); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
     SAVE_BOOL(espShowName); SAVE_BOOL(espShowHealth); SAVE_BOOL(espShowWeapon); SAVE_BOOL(espGradient);
     SAVE_BOOL(worldColorEnabled); SAVE_INT(worldColorMode); SAVE_FLOAT(worldColorStrength); SAVE_FLOAT(worldColorAlpha);
     SAVE_BOOL(fogEnabled); SAVE_FLOAT(fogStartDistance); SAVE_FLOAT(fogEndDistance); SAVE_FLOAT(fogDensity);
@@ -1459,7 +1470,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(airJump); LOAD_BOOL(edgeBugEnabled); LOAD_FLOAT(edgeBugPullForce);
     LOAD_BOOL(velocityLimiterEnabled); LOAD_FLOAT(velocityLimit);
     LOAD_BOOL(aimbotEnabled); LOAD_BOOL(visibleAimbotEnabled); LOAD_BOOL(aimbotVisibleCheck); LOAD_BOOL(aimbotAutoWall); LOAD_FLOAT(aimbotAutoWallMinDamage); LOAD_BOOL(aimbotAutoFire);
-    LOAD_BOOL(silentAntiAimEnabled); LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(freezeCorpsesFadeEnabled); LOAD_FLOAT(freezeCorpsesFadeDuration); LOAD_BOOL(freezeCorpsesChamsEnabled); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
+    LOAD_BOOL(silentAntiAimEnabled); LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(freezeCorpsesFadeEnabled); LOAD_FLOAT(freezeCorpsesFadeDuration); LOAD_INT(freezeCorpsesChamsMode); LOAD_INT(freezeCorpsesVisualMode); LOAD_FLOAT(freezeCorpsesChamsAlpha); LOAD_FLOAT(freezeCorpsesMetallic); LOAD_FLOAT(freezeCorpsesSmoothness); LOAD_FLOAT(freezeCorpsesAnimationSpeed); LOAD_FLOAT(freezeCorpsesDotSize); LOAD_FLOAT(freezeCorpsesDotFallSpeed); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
     LOAD_BOOL(espShowName); LOAD_BOOL(espShowHealth); LOAD_BOOL(espShowWeapon); LOAD_BOOL(espGradient);
     LOAD_BOOL(worldColorEnabled); LOAD_INT(worldColorMode); LOAD_FLOAT(worldColorStrength); LOAD_FLOAT(worldColorAlpha);
     LOAD_BOOL(fogEnabled); LOAD_FLOAT(fogStartDistance); LOAD_FLOAT(fogEndDistance); LOAD_FLOAT(fogDensity);
@@ -2556,34 +2567,70 @@ static void SetCorpseRigidbodiesFrozen(FrozenCorpseEntry& corpse, bool frozen)
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
+static uintptr_t CreateFrozenCorpseMaterial(uintptr_t originalMaterial, int mode)
+{
+    if (!g_il2cpp.object_new) return 0;
+    Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
+    if (!materialClass) return 0;
+    if (mode == 0 && originalMaterial && o_Material_copy_ctor) {
+        const uintptr_t material = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
+        if (!material) return 0;
+        o_Material_copy_ctor(material, originalMaterial, nullptr);
+        // Preserve the original shader/texture: only switch its common blend properties
+        // for alpha fading. Unsupported properties are harmless on custom shaders.
+        if (o_Material_SetFloat && g_il2cpp.string_new) {
+            o_Material_SetFloat(material, g_il2cpp.string_new("_Mode"), 3.0f);
+            o_Material_SetFloat(material, g_il2cpp.string_new("_Surface"), 1.0f);
+            o_Material_SetFloat(material, g_il2cpp.string_new("_SrcBlend"), 5.0f);
+            o_Material_SetFloat(material, g_il2cpp.string_new("_DstBlend"), 10.0f);
+            o_Material_SetFloat(material, g_il2cpp.string_new("_ZWrite"), 0.0f);
+        }
+        if (o_Material_set_renderQueue) o_Material_set_renderQueue(material, 3000);
+        return material;
+    }
+    static const char* shaders[7][4] = {
+        { nullptr, nullptr, nullptr, nullptr },
+        { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", nullptr },
+        { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", nullptr },
+        { "Legacy Shaders/Transparent/Diffuse", "Standard", "Legacy Shaders/Transparent/VertexLit", nullptr },
+        { "Standard", "Legacy Shaders/Transparent/Specular", "Legacy Shaders/Specular", nullptr },
+        { "Unlit/Transparent", "Sprites/Default", "Legacy Shaders/Transparent/Diffuse", nullptr },
+        { "Unlit/Transparent", "Sprites/Default", "Legacy Shaders/Transparent/Diffuse", nullptr }
+    };
+    if (mode < 1 || mode > 6) return 0;
+    for (const char* shader : shaders[mode]) {
+        if (!shader) break;
+        const uintptr_t material = CreateWeaponChamsMaterial(shader, true);
+        if (material) return material;
+    }
+    return 0;
+}
+
 static void SetupFrozenCorpseMaterial(FrozenCorpseEntry& corpse)
 {
     if (!corpse.ragdoll || !o_Renderer_get_material || !o_Renderer_set_material ||
         !o_Material_set_color) return;
     __try {
-        // RagdollController.cafy (+0x90) is CharacterLodGroup; its body renderer is +0x60.
         const uintptr_t lodGroup = *reinterpret_cast<uintptr_t*>(corpse.ragdoll + 0x90);
         corpse.renderer = lodGroup ? *reinterpret_cast<uintptr_t*>(lodGroup + 0x60) : 0;
         corpse.originalMaterial = corpse.renderer ? o_Renderer_get_material(corpse.renderer) : 0;
-        if (!corpse.renderer || !corpse.originalMaterial ||
-            (!freezeCorpsesFadeEnabled && !freezeCorpsesChamsEnabled)) return;
-        corpse.fadeMaterial = CreateWeaponChamsMaterial("Unlit/Transparent", true);
-        if (!corpse.fadeMaterial)
-            corpse.fadeMaterial = CreateWeaponChamsMaterial("Legacy Shaders/Transparent/Diffuse", true);
+        if (!corpse.renderer || !corpse.originalMaterial || freezeCorpsesVisualMode == 1) return;
+        corpse.materialMode = freezeCorpsesChamsMode;
+        corpse.fadeMaterial = CreateFrozenCorpseMaterial(corpse.originalMaterial, corpse.materialMode);
         if (!corpse.fadeMaterial) return;
         if (g_il2cpp.gchandle_new)
             corpse.fadeMaterialHandle = g_il2cpp.gchandle_new(
                 reinterpret_cast<Il2CppObject*>(corpse.fadeMaterial), false);
-        o_Material_set_color(corpse.fadeMaterial, Color(
-            freezeCorpsesChamsColor[0], freezeCorpsesChamsColor[1],
-            freezeCorpsesChamsColor[2], 1.0f));
         o_Renderer_set_material(corpse.renderer, corpse.fadeMaterial);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
+static void SetCorpseRendererVisibleUnsafe(uintptr_t renderer, bool visible);
+
 static void RestoreFrozenCorpseMaterial(FrozenCorpseEntry& corpse)
 {
+    SetCorpseRendererVisibleUnsafe(corpse.renderer, true);
     __try {
         if (corpse.renderer && corpse.originalMaterial && o_Renderer_set_material)
             o_Renderer_set_material(corpse.renderer, corpse.originalMaterial);
@@ -2595,6 +2642,64 @@ static void RestoreFrozenCorpseMaterial(FrozenCorpseEntry& corpse)
     corpse.fadeMaterial = 0;
 }
 
+static bool TryGetCorpseBonePosition(uintptr_t biped, uintptr_t offset, Vector3* out)
+{
+    if (!biped || !out || !o_Transform_get_position) return false;
+    __try {
+        const uintptr_t transform = *reinterpret_cast<uintptr_t*>(biped + offset);
+        if (!transform) return false;
+        *out = o_Transform_get_position(transform);
+        return isfinite(out->x) && isfinite(out->y) && isfinite(out->z);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static void CaptureCorpsePoseDots(FrozenCorpseEntry& corpse, uintptr_t biped)
+{
+    if (!biped || freezeCorpsesVisualMode == 0) return;
+    // Actual Ragdoll BipedMap chain: head/torso, both arms and both legs.
+    static const uintptr_t offsets[] = {
+        0x20,0x28,0x40,0x38,0x30,0x88,
+        0x48,0x50,0x58,0x60, 0x68,0x70,0x78,0x80,
+        0x90,0x98,0xA0,0xA8, 0xB0,0xB8,0xC0,0xC8
+    };
+    static const int segments[][2] = {
+        {0,1},{1,2},{2,3},{3,4},{4,5},
+        {2,6},{6,7},{7,8},{8,9}, {2,10},{10,11},{11,12},{12,13},
+        {5,14},{14,15},{15,16},{16,17}, {5,18},{18,19},{19,20},{20,21}
+    };
+    Vector3 bones[IM_ARRAYSIZE(offsets)] = {};
+    bool valid[IM_ARRAYSIZE(offsets)] = {};
+    for (int i = 0; i < IM_ARRAYSIZE(offsets); ++i)
+        valid[i] = TryGetCorpseBonePosition(biped, offsets[i], &bones[i]);
+    corpse.dots.clear();
+    corpse.dots.reserve(IM_ARRAYSIZE(segments) * 9);
+    for (int segmentIndex = 0; segmentIndex < IM_ARRAYSIZE(segments); ++segmentIndex) {
+        const int a = segments[segmentIndex][0], b = segments[segmentIndex][1];
+        if (!valid[a] || !valid[b]) continue;
+        const Vector3 delta = bones[b] - bones[a];
+        for (int step = 0; step <= 6; ++step) {
+            const float t = static_cast<float>(step) / 6.0f;
+            const float phase = static_cast<float>(segmentIndex * 17 + step * 11);
+            const float spread = 0.025f;
+            CorpseDotParticle dot{};
+            dot.position = bones[a] + delta * t;
+            dot.position.x += sinf(phase * 0.73f) * spread;
+            dot.position.y += cosf(phase * 0.51f) * spread;
+            dot.position.z += sinf(phase * 0.37f) * spread;
+            dot.driftX = sinf(phase * 0.29f) * 0.12f;
+            dot.driftZ = cosf(phase * 0.41f) * 0.12f;
+            corpse.dots.push_back(dot);
+        }
+    }
+}
+
+static void SetCorpseRendererVisibleUnsafe(uintptr_t renderer, bool visible)
+{
+    __try { if (renderer && o_Renderer_set_enabled) o_Renderer_set_enabled(renderer, visible); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 void __fastcall hk_RagdollActivate(uintptr_t ragdoll, uintptr_t biped, Vector3 velocity,
     bool c, void* skinName, uintptr_t shotData, bool f, bool g, const Il2CppMethod* method)
 {
@@ -2603,15 +2708,26 @@ void __fastcall hk_RagdollActivate(uintptr_t ragdoll, uintptr_t biped, Vector3 v
     FrozenCorpseEntry corpse{};
     corpse.ragdoll = ragdoll;
     corpse.manager = 0;
-    corpse.releaseAt = GetTickCount64() +
+    corpse.createdAt = GetTickCount64();
+    corpse.releaseAt = corpse.createdAt +
         static_cast<ULONGLONG>(freezeCorpsesDuration * 1000.0f);
     corpse.releaseRequested = false;
     corpse.renderer = 0;
     corpse.originalMaterial = 0;
     corpse.fadeMaterial = 0;
     corpse.fadeMaterialHandle = 0;
+    corpse.materialMode = freezeCorpsesChamsMode;
     SetCorpseRigidbodiesFrozen(corpse, true);
     SetupFrozenCorpseMaterial(corpse);
+    CaptureCorpsePoseDots(corpse, biped);
+    if (freezeCorpsesVisualMode == 1) {
+        __try {
+            const uintptr_t lodGroup = *reinterpret_cast<uintptr_t*>(ragdoll + 0x90);
+            corpse.renderer = lodGroup ? *reinterpret_cast<uintptr_t*>(lodGroup + 0x60) : 0;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { corpse.renderer = 0; }
+        SetCorpseRendererVisibleUnsafe(corpse.renderer, false);
+    }
     AcquireSRWLockExclusive(&frozenCorpseLock);
     for (auto it = frozenCorpses.begin(); it != frozenCorpses.end();) {
         if (it->ragdoll != ragdoll) { ++it; continue; }
@@ -2641,13 +2757,31 @@ void __fastcall hk_RagdollManagerRelease(uintptr_t manager, uintptr_t ragdoll,
     o_RagdollManagerRelease(manager, ragdoll, method);
 }
 
-static void ApplyFrozenCorpseFadeUnsafe(uintptr_t material, uintptr_t renderer, float alpha)
+static void ApplyFrozenCorpseFadeUnsafe(uintptr_t material, uintptr_t renderer,
+    int mode, float alpha, ULONGLONG now)
 {
-    // Keep SEH in this scalar-only function: no STL objects or destructors here.
     __try {
-        o_Material_set_color(material, Color(
-            freezeCorpsesChamsColor[0], freezeCorpsesChamsColor[1],
-            freezeCorpsesChamsColor[2], alpha));
+        float r = freezeCorpsesChamsColor[0], g = freezeCorpsesChamsColor[1],
+            b = freezeCorpsesChamsColor[2];
+        const float t = static_cast<float>(now % 60000) * 0.001f * freezeCorpsesAnimationSpeed;
+        if (mode == 5) {
+            r = 0.5f + 0.5f * sinf(t);
+            g = 0.5f + 0.5f * sinf(t + 2.0943951f);
+            b = 0.5f + 0.5f * sinf(t + 4.1887902f);
+        }
+        else if (mode == 6) {
+            const float intensity = 0.25f + 0.75f * (0.5f + 0.5f * sinf(t));
+            r *= intensity; g *= intensity; b *= intensity;
+        }
+        if (mode == 4 && o_Material_SetFloat && g_il2cpp.string_new) {
+            o_Material_SetFloat(material, g_il2cpp.string_new("_Metallic"), freezeCorpsesMetallic);
+            o_Material_SetFloat(material, g_il2cpp.string_new("_Glossiness"), freezeCorpsesSmoothness);
+        }
+        if (mode == 0 && o_Material_get_color) {
+            const Color original = o_Material_get_color(material);
+            r = original.r; g = original.g; b = original.b;
+        }
+        o_Material_set_color(material, Color(r, g, b, alpha));
         if (renderer && o_Renderer_get_material && o_Renderer_set_material &&
             o_Renderer_get_material(renderer) != material)
             o_Renderer_set_material(renderer, material);
@@ -2663,15 +2797,18 @@ static void UpdateFrozenCorpses()
     for (auto it = frozenCorpses.begin(); it != frozenCorpses.end();) {
         if (freezeCorpsesEnabled && now < it->releaseAt) {
             if (it->fadeMaterial && o_Material_set_color) {
-                float alpha = 1.0f;
+                float alpha = it->materialMode == 2 ? freezeCorpsesChamsAlpha : 1.0f;
                 if (freezeCorpsesFadeEnabled) {
+                    float fadeFactor = 1.0f;
                     const ULONGLONG fadeMs = static_cast<ULONGLONG>(
                         fmaxf(0.05f, freezeCorpsesFadeDuration) * 1000.0f);
                     const ULONGLONG remaining = it->releaseAt - now;
                     if (remaining < fadeMs)
-                        alpha = static_cast<float>(remaining) / static_cast<float>(fadeMs);
+                        fadeFactor = static_cast<float>(remaining) / static_cast<float>(fadeMs);
+                    alpha *= fadeFactor;
                 }
-                ApplyFrozenCorpseFadeUnsafe(it->fadeMaterial, it->renderer, alpha);
+                ApplyFrozenCorpseFadeUnsafe(it->fadeMaterial, it->renderer,
+                    it->materialMode, alpha, now);
             }
             ++it;
             continue;
@@ -5288,6 +5425,57 @@ static bool ProjectTracerEnd(const Vector3& pos, ImVec2& screen) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+struct CorpseDotDrawItem {
+    Vector3 position;
+    ULONGLONG createdAt;
+    ULONGLONG releaseAt;
+    float driftX;
+    float driftZ;
+};
+
+static void DrawFrozenCorpseDots()
+{
+    if (!keyValidated || !freezeCorpsesEnabled || freezeCorpsesVisualMode == 0 ||
+        !o_WorldToScreenPoint) return;
+    const ULONGLONG now = GetTickCount64();
+    std::vector<CorpseDotDrawItem> snapshot;
+    AcquireSRWLockShared(&frozenCorpseLock);
+    for (const FrozenCorpseEntry& corpse : frozenCorpses) {
+        for (const CorpseDotParticle& dot : corpse.dots)
+            snapshot.push_back({ dot.position, corpse.createdAt, corpse.releaseAt,
+                dot.driftX, dot.driftZ });
+    }
+    ReleaseSRWLockShared(&frozenCorpseLock);
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    for (const CorpseDotDrawItem& dot : snapshot) {
+        if (now >= dot.releaseAt || dot.releaseAt <= dot.createdAt) continue;
+        const float life = static_cast<float>(dot.releaseAt - dot.createdAt);
+        const float age = static_cast<float>(now - dot.createdAt);
+        const float progress = fminf(1.0f, fmaxf(0.0f, age / life));
+        // Keep the exact death pose briefly, then let the point-body collapse downward.
+        const float fallProgress = progress <= 0.18f ? 0.0f : (progress - 0.18f) / 0.82f;
+        const float smoothFall = fallProgress * fallProgress;
+        Vector3 world = dot.position;
+        world.x += dot.driftX * smoothFall;
+        world.z += dot.driftZ * smoothFall;
+        world.y -= freezeCorpsesDotFallSpeed * smoothFall;
+        ImVec2 screen;
+        if (!ProjectTracerEnd(world, screen)) continue;
+        float alpha = 1.0f;
+        if (freezeCorpsesFadeEnabled) {
+            const float fadeMs = fmaxf(50.0f, freezeCorpsesFadeDuration * 1000.0f);
+            const float remaining = static_cast<float>(dot.releaseAt - now);
+            alpha = fminf(1.0f, fmaxf(0.0f, remaining / fadeMs));
+        }
+        const ImU32 color = IM_COL32(
+            static_cast<int>(freezeCorpsesChamsColor[0] * 255.0f),
+            static_cast<int>(freezeCorpsesChamsColor[1] * 255.0f),
+            static_cast<int>(freezeCorpsesChamsColor[2] * 255.0f),
+            static_cast<int>(alpha * 255.0f));
+        draw->AddCircleFilled(screen, freezeCorpsesDotSize, color, 10);
+    }
+}
+
 void DrawBulletImpacts()
 {
     if (!keyValidated || !bulletImpactsEnabled || !o_WorldToScreenPoint) return;
@@ -6260,9 +6448,26 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (freezeCorpsesFadeEnabled)
                 ImGui::SliderFloat("Corpse Fade Duration", &freezeCorpsesFadeDuration,
                     0.1f, 4.0f, "%.1f s");
-            ImGui::Checkbox("Corpse Chams", &freezeCorpsesChamsEnabled);
-            if (freezeCorpsesChamsEnabled || freezeCorpsesFadeEnabled)
+            const char* corpseVisualModes[] = { "Frozen Model", "Falling 3D Dots", "Model + Falling Dots" };
+            ImGui::Combo("Corpse Effect", &freezeCorpsesVisualMode,
+                corpseVisualModes, IM_ARRAYSIZE(corpseVisualModes));
+            const char* corpseChamsModes[] = { "None", "Flat", "Glass", "Lit", "Metallic", "Rainbow", "Pulse" };
+            ImGui::Combo("Corpse Chams", &freezeCorpsesChamsMode,
+                corpseChamsModes, IM_ARRAYSIZE(corpseChamsModes));
+            if (freezeCorpsesChamsMode != 0 || freezeCorpsesVisualMode != 0)
                 ImGui::ColorEdit3("Corpse Color", freezeCorpsesChamsColor);
+            if (freezeCorpsesChamsMode == 2)
+                ImGui::SliderFloat("Corpse Glass Alpha", &freezeCorpsesChamsAlpha, 0.05f, 0.95f, "%.2f");
+            if (freezeCorpsesChamsMode == 4) {
+                ImGui::SliderFloat("Corpse Metallic", &freezeCorpsesMetallic, 0.0f, 1.0f, "%.2f");
+                ImGui::SliderFloat("Corpse Smoothness", &freezeCorpsesSmoothness, 0.0f, 1.0f, "%.2f");
+            }
+            if (freezeCorpsesChamsMode == 5 || freezeCorpsesChamsMode == 6)
+                ImGui::SliderFloat("Corpse Animation Speed", &freezeCorpsesAnimationSpeed, 0.1f, 5.0f, "%.2f");
+            if (freezeCorpsesVisualMode != 0) {
+                ImGui::SliderFloat("Corpse Dot Size", &freezeCorpsesDotSize, 1.0f, 6.0f, "%.1f px");
+                ImGui::SliderFloat("Corpse Dot Fall", &freezeCorpsesDotFallSpeed, 0.2f, 4.0f, "%.1f");
+            }
         }
         if (ImGui::Checkbox("World Color", &worldColorEnabled))
             InterlockedExchange(&pendingWorldColorCommand, worldColorEnabled ? 1 : 2);
@@ -6574,6 +6779,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     DrawHitMarker();
     DrawHitLog();
+    DrawFrozenCorpseDots();
     DrawBulletImpacts();
     DrawBulletTracers();
     DrawBorderlessScopeReticle();
