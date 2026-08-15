@@ -511,9 +511,14 @@ std::vector<HitLogEntry> hitLogEntries;
 SRWLOCK hitLogLock = SRWLOCK_INIT;
 uintptr_t hitLogLastResult = 0;
 ULONGLONG hitLogLastResultAt = 0;
-uintptr_t hitLogPendingVictim = 0;
-ULONGLONG hitLogPendingShotAt = 0;
-char hitLogPendingHitbox[16] = "Unknown";
+struct PendingHitLogShot {
+    uintptr_t victim;
+    int healthBefore;
+    char hitbox[16];
+    ULONGLONG firedAt;
+    ULONGLONG confirmedAt;
+};
+std::vector<PendingHitLogShot> pendingHitLogShots;
 bool bulletTracerEnabled = false;
 bool noSpreadEnabled = false;
 bool removeScopeBorders = false;
@@ -770,31 +775,6 @@ static void* GetLocalPC();
 static unsigned char GetPCTeam(void* pc);
 static void GetPCName(void* pc, char* output, int outputSize);
 
-static void CommitOutgoingHitLogFromHealth(uintptr_t state, int healthBefore, int healthAfter) {
-    if (!keyValidated || !hitLogEnabled || !state || healthBefore < 0 || healthAfter < 0) return;
-    uintptr_t victim = 0;
-    __try { victim = *reinterpret_cast<uintptr_t*>(state + 0x40); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return; }
-    const ULONGLONG now = GetTickCount64();
-    if (!victim || victim != hitLogPendingVictim || !hitLogPendingShotAt ||
-        now < hitLogPendingShotAt || now - hitLogPendingShotAt > 1500) return;
-    const int damage = healthBefore - healthAfter;
-    if (damage <= 0 || damage > 100) return;
-
-    HitLogEntry entry = {};
-    GetPCName(reinterpret_cast<void*>(victim), entry.enemyName, sizeof(entry.enemyName));
-    entry.damage = damage;
-    strcpy_s(entry.hitbox, hitLogPendingHitbox);
-    entry.createdAt = now;
-    AcquireSRWLockExclusive(&hitLogLock);
-    hitLogEntries.push_back(entry);
-    if (hitLogEntries.size() > 6)
-        hitLogEntries.erase(hitLogEntries.begin(), hitLogEntries.begin() + (hitLogEntries.size() - 6));
-    ReleaseSRWLockExclusive(&hitLogLock);
-    hitLogPendingVictim = 0;
-    hitLogPendingShotAt = 0;
-}
-
 static void CacheUpdatedHealth(uintptr_t state) {
     const int hp = ReadHealthStateNow(state);
     if (hp < 0) return;
@@ -811,31 +791,19 @@ static void CacheUpdatedHealth(uintptr_t state) {
     InterlockedIncrement(&boxEspHealthUpdates);
 }
 void __fastcall hk_HealthApplyA(uintptr_t state, int a, int b, bool c, bool d, float e, const Il2CppMethod* method) {
-    const int healthBefore = ReadHealthStateNow(state);
     o_HealthApplyA(state, a, b, c, d, e, method);
-    const int healthAfter = ReadHealthStateNow(state);
-    CommitOutgoingHitLogFromHealth(state, healthBefore, healthAfter);
     InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, b); CacheUpdatedHealth(state);
 }
 void __fastcall hk_HealthApplyB(uintptr_t state, int a, int b, bool c, bool d, float e, void* info, const Il2CppMethod* method) {
-    const int healthBefore = ReadHealthStateNow(state);
     o_HealthApplyB(state, a, b, c, d, e, info, method);
-    const int healthAfter = ReadHealthStateNow(state);
-    CommitOutgoingHitLogFromHealth(state, healthBefore, healthAfter);
     InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, b); CacheUpdatedHealth(state);
 }
 void __fastcall hk_HealthApplyC(uintptr_t state, int a, bool b, const Il2CppMethod* method) {
-    const int healthBefore = ReadHealthStateNow(state);
     o_HealthApplyC(state, a, b, method);
-    const int healthAfter = ReadHealthStateNow(state);
-    CommitOutgoingHitLogFromHealth(state, healthBefore, healthAfter);
     InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, -1); CacheUpdatedHealth(state);
 }
 void __fastcall hk_HealthApplyD(uintptr_t state, int a, bool b, const Il2CppMethod* method) {
-    const int healthBefore = ReadHealthStateNow(state);
     o_HealthApplyD(state, a, b, method);
-    const int healthAfter = ReadHealthStateNow(state);
-    CommitOutgoingHitLogFromHealth(state, healthBefore, healthAfter);
     InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, -1); CacheUpdatedHealth(state);
 }
 
@@ -2570,9 +2538,18 @@ static void CaptureOutgoingHitLogTarget(const Vector3& castStart, const Vector3&
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
     if (bestVictim) {
-        hitLogPendingVictim = bestVictim;
-        hitLogPendingShotAt = GetTickCount64();
-        strcpy_s(hitLogPendingHitbox, bestHitbox);
+        PendingHitLogShot shot = {};
+        shot.victim = bestVictim;
+        shot.healthBefore = GetPCHealth(reinterpret_cast<void*>(bestVictim));
+        strcpy_s(shot.hitbox, bestHitbox);
+        shot.firedAt = GetTickCount64();
+        shot.confirmedAt = 0;
+        AcquireSRWLockExclusive(&hitLogLock);
+        pendingHitLogShots.push_back(shot);
+        if (pendingHitLogShots.size() > 12)
+            pendingHitLogShots.erase(pendingHitLogShots.begin(),
+                pendingHitLogShots.begin() + (pendingHitLogShots.size() - 12));
+        ReleaseSRWLockExclusive(&hitLogLock);
     }
 }
 
@@ -2581,27 +2558,39 @@ void __fastcall hk_HitMarkerView_Show(uintptr_t instance, bool value, bool playS
     // HitMarkerView.bbcx is the game's confirmed marker-display path. Restrict the
     // overlay to the marker owned by the active local HUD; remote HUD instances and
     // raw world/surface casts cannot trigger it.
-    if (keyValidated && hitMarkerEnabled && instance && instance == liveHitMarkerView) {
+    if (keyValidated && value && instance && instance == liveHitMarkerView &&
+        (hitMarkerEnabled || hitLogEnabled)) {
         const ULONGLONG now = GetTickCount64();
-        InterlockedIncrement(&hitMarkerCalls);
-        Vector3 impactPoint, castEndFallback;
-        const bool resolved = ResolveConfirmedPlayerImpact(impactPoint, castEndFallback);
-        bool haveWorldFallback = false;
-        AcquireSRWLockShared(&hitMarkerLock);
-        haveWorldFallback = latestHitMarkerCastValid && latestHitMarkerCastAt &&
-            now >= latestHitMarkerCastAt && now - latestHitMarkerCastAt <= 2000;
-        ReleaseSRWLockShared(&hitMarkerLock);
+        if (hitLogEnabled) {
+            AcquireSRWLockExclusive(&hitLogLock);
+            // Confirm the newest unconfirmed local shot. Double Tap generates two casts
+            // and two marker callbacks, so each callback consumes one queue item.
+            for (auto it = pendingHitLogShots.rbegin(); it != pendingHitLogShots.rend(); ++it) {
+                if (!it->confirmedAt && now >= it->firedAt && now - it->firedAt <= 2000) {
+                    it->confirmedAt = now;
+                    break;
+                }
+            }
+            ReleaseSRWLockExclusive(&hitLogLock);
+        }
+        if (hitMarkerEnabled) {
+            InterlockedIncrement(&hitMarkerCalls);
+            Vector3 impactPoint, castEndFallback;
+            const bool resolved = ResolveConfirmedPlayerImpact(impactPoint, castEndFallback);
+            bool haveWorldFallback = false;
+            AcquireSRWLockShared(&hitMarkerLock);
+            haveWorldFallback = latestHitMarkerCastValid && latestHitMarkerCastAt &&
+                now >= latestHitMarkerCastAt && now - latestHitMarkerCastAt <= 2000;
+            ReleaseSRWLockShared(&hitMarkerLock);
 
-        AcquireSRWLockExclusive(&hitMarkerLock);
-        // A confirmed hit must always create a visible marker. Prefer the player
-        // intersection; if runtime player enumeration is unavailable, keep a visible
-        // diagnostic fallback rather than silently dropping the confirmed hit.
-        hitMarkers.push_back({ resolved ? impactPoint : castEndFallback, now,
-            !resolved && !haveWorldFallback });
-        if (hitMarkers.size() > 64)
-            hitMarkers.erase(hitMarkers.begin(), hitMarkers.begin() + (hitMarkers.size() - 64));
-        ReleaseSRWLockExclusive(&hitMarkerLock);
-        InterlockedIncrement(resolved ? &hitMarkerResolvedCalls : &hitMarkerFallbackCalls);
+            AcquireSRWLockExclusive(&hitMarkerLock);
+            hitMarkers.push_back({ resolved ? impactPoint : castEndFallback, now,
+                !resolved && !haveWorldFallback });
+            if (hitMarkers.size() > 64)
+                hitMarkers.erase(hitMarkers.begin(), hitMarkers.begin() + (hitMarkers.size() - 64));
+            ReleaseSRWLockExclusive(&hitMarkerLock);
+            InterlockedIncrement(resolved ? &hitMarkerResolvedCalls : &hitMarkerFallbackCalls);
+        }
     }
     o_HitMarkerView_Show(instance, value, playSound, method);
 }
@@ -2657,9 +2646,36 @@ void DrawHitLog()
 {
     if (!keyValidated || !hitLogEnabled) return;
     const ULONGLONG now = GetTickCount64();
+
+    struct CompletedHit { uintptr_t victim; int damage; char hitbox[16]; };
+    std::vector<CompletedHit> completed;
+    AcquireSRWLockExclusive(&hitLogLock);
+    for (auto it = pendingHitLogShots.begin(); it != pendingHitLogShots.end();) {
+        bool erase = now < it->firedAt || now - it->firedAt > 3000;
+        if (!erase && it->confirmedAt) {
+            const int healthNow = GetPCHealth(reinterpret_cast<void*>(it->victim));
+            if (it->healthBefore >= 0 && healthNow >= 0 && healthNow < it->healthBefore) {
+                CompletedHit hit = { it->victim, it->healthBefore - healthNow, {} };
+                strcpy_s(hit.hitbox, it->hitbox);
+                completed.push_back(hit);
+                erase = true;
+            }
+        }
+        if (erase) it = pendingHitLogShots.erase(it); else ++it;
+    }
+    for (const CompletedHit& hit : completed) {
+        HitLogEntry entry = {};
+        GetPCName(reinterpret_cast<void*>(hit.victim), entry.enemyName, sizeof(entry.enemyName));
+        entry.damage = hit.damage;
+        strcpy_s(entry.hitbox, hit.hitbox);
+        entry.createdAt = now;
+        hitLogEntries.push_back(entry);
+    }
+    if (hitLogEntries.size() > 6)
+        hitLogEntries.erase(hitLogEntries.begin(), hitLogEntries.begin() + (hitLogEntries.size() - 6));
+
     const ULONGLONG lifetime = static_cast<ULONGLONG>(hitLogDuration * 1000.0f);
     std::vector<HitLogEntry> snapshot;
-    AcquireSRWLockExclusive(&hitLogLock);
     hitLogEntries.erase(std::remove_if(hitLogEntries.begin(), hitLogEntries.end(),
         [now, lifetime](const HitLogEntry& entry) {
             return now < entry.createdAt || now - entry.createdAt >= lifetime;
@@ -5429,10 +5445,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (ImGui::Checkbox("Hit Log", &hitLogEnabled)) {
             AcquireSRWLockExclusive(&hitLogLock);
             hitLogEntries.clear();
+            pendingHitLogShots.clear();
             hitLogLastResult = 0;
             hitLogLastResultAt = 0;
-            hitLogPendingVictim = 0;
-            hitLogPendingShotAt = 0;
             ReleaseSRWLockExclusive(&hitLogLock);
         }
         if (hitLogEnabled)
