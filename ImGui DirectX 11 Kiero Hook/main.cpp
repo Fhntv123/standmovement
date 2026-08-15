@@ -5311,9 +5311,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             menuPosition.y = display.y - animatedSize.y - 8.0f;
         ImGui::SetWindowPos("ze0nware##main", menuPosition, ImGuiCond_Always);
     }
-    shellDraw->AddText(ImVec2(wp.x + 10.0f, wp.y + 9.0f),
-        ImGui::GetColorU32(ImVec4(234.0f / 255.0f, 234.0f / 255.0f, 234.0f / 255.0f, 0.70f)),
-        "ze0nware");
     ImGui::SetCursorPos(ImVec2(10.0f, 31.0f));
     ImGui::BeginChild("FigmaMain", ImVec2(animatedSize.x - 20.0f, animatedSize.y - 41.0f), true);
 
