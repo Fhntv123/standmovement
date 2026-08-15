@@ -2927,6 +2927,29 @@ static void ReadLocalHitPayload(uintptr_t shotData, int& damage, char* hitbox, s
     }
 }
 
+static bool IsPointOnBulletCast(const Vector3& point, const Vector3& start,
+    const Vector3& direction, float maxDistance)
+{
+    if (!isfinite(point.x) || !isfinite(point.y) || !isfinite(point.z) ||
+        !isfinite(maxDistance) || maxDistance <= 0.0f) return false;
+    const float directionLength = sqrtf(direction.x * direction.x +
+        direction.y * direction.y + direction.z * direction.z);
+    if (!isfinite(directionLength) || directionLength <= 0.0001f) return false;
+    const float dx = point.x - start.x;
+    const float dy = point.y - start.y;
+    const float dz = point.z - start.z;
+    const float nx = direction.x / directionLength;
+    const float ny = direction.y / directionLength;
+    const float nz = direction.z / directionLength;
+    const float along = dx * nx + dy * ny + dz * nz;
+    if (along < -0.05f || along > maxDistance + 1.0f) return false;
+    const float distanceSquared = dx * dx + dy * dy + dz * dz;
+    const float perpendicularSquared = distanceSquared - along * along;
+    // Real penetration entry/exit points lie directly on this shot ray. Unused
+    // cjv fields are zero-filled and otherwise produced a cube at the map origin.
+    return perpendicularSquared <= 0.0625f;
+}
+
 static void AddBulletImpact(const Vector3& position, bool serverConfirmed)
 {
     if (!isfinite(position.x) || !isfinite(position.y) || !isfinite(position.z)) return;
@@ -3267,11 +3290,18 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
                         const uintptr_t penetration = *reinterpret_cast<uintptr_t*>(
                             penetrationItems + 0x20 + static_cast<uintptr_t>(i) * sizeof(uintptr_t));
                         if (!penetration) continue;
-                        AddBulletImpact(*reinterpret_cast<Vector3*>(penetration + 0x10), false);
-                        AddBulletImpact(*reinterpret_cast<Vector3*>(penetration + 0x1C), false);
+                        const Vector3 penetrationEntry =
+                            *reinterpret_cast<Vector3*>(penetration + 0x10);
+                        const Vector3 penetrationExit =
+                            *reinterpret_cast<Vector3*>(penetration + 0x1C);
+                        if (IsPointOnBulletCast(penetrationEntry, actualStart, direction, maxDistance))
+                            AddBulletImpact(penetrationEntry, false);
+                        if (IsPointOnBulletCast(penetrationExit, actualStart, direction, maxDistance))
+                            AddBulletImpact(penetrationExit, false);
                     }
                 }
-                AddBulletImpact(actualEnd, false);
+                if (IsPointOnBulletCast(actualEnd, actualStart, direction, maxDistance))
+                    AddBulletImpact(actualEnd, false);
             }
             if (hitMarkerEnabled || hitLogEnabled) {
                 AcquireSRWLockExclusive(&hitMarkerLock);
