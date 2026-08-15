@@ -1269,6 +1269,7 @@ void(__fastcall* o_ObjectOccludee_SetVisibleState)(uintptr_t, bool, const Il2Cpp
 
 void __fastcall hk_ObjectOccludee_SetVisibleState(uintptr_t instance, bool visible, const Il2CppMethod* method)
 {
+    bool keepEnemyVisible = false;
     if (keyValidated && enemyChamsEnabled && enemyChamsThroughWalls && instance && !visible) {
         __try {
             // PlayerOcclusionController inherits ObjectOccludee and owns its PlayerController at +0x48.
@@ -1276,13 +1277,23 @@ void __fastcall hk_ObjectOccludee_SetVisibleState(uintptr_t instance, bool visib
             void* localPlayer = GetLocalPC();
             const unsigned char localTeam = GetPCTeam(localPlayer);
             const unsigned char team = GetPCTeam(player);
-            if (player && player != localPlayer && localTeam != 0 && localTeam != 3 &&
-                team != 0 && team != 3 && team != localTeam)
-                visible = true;
+            keepEnemyVisible = player && player != localPlayer && localTeam != 0 && localTeam != 3 &&
+                team != 0 && team != 3 && team != localTeam;
         }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        __except (EXCEPTION_EXECUTE_HANDLER) { keepEnemyVisible = false; }
     }
-    o_ObjectOccludee_SetVisibleState(instance, visible, method);
+    if (!keepEnemyVisible) {
+        o_ObjectOccludee_SetVisibleState(instance, visible, method);
+        return;
+    }
+
+    // Do not merely replace false with true: when the state was already true that became
+    // a no-op, so ObjectOccludee never notified its bpj listeners and remote Mecanim stayed
+    // frozen. Complete the native hidden transition and immediately restore visible state
+    // in the same call. All game listeners receive the proper disable/enable callbacks,
+    // while no render frame can occur between the two synchronous transitions.
+    o_ObjectOccludee_SetVisibleState(instance, false, method);
+    o_ObjectOccludee_SetVisibleState(instance, true, method);
 }
 
 Il2CppArray*(__fastcall* o_Object_FindObjectsOfType)(Il2CppObject*, bool, const Il2CppMethod*) = nullptr;
