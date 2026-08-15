@@ -2683,7 +2683,10 @@ static void CaptureCorpsePoseDots(FrozenCorpseEntry& corpse, uintptr_t biped)
             const float phase = static_cast<float>(segmentIndex * 17 + step * 11);
             const float spread = 0.025f;
             CorpseDotParticle dot{};
-            dot.position = bones[a] + delta * t;
+            dot.position = Vector3(
+                bones[a].x + delta.x * t,
+                bones[a].y + delta.y * t,
+                bones[a].z + delta.z * t);
             dot.position.x += sinf(phase * 0.73f) * spread;
             dot.position.y += cosf(phase * 0.51f) * spread;
             dot.position.z += sinf(phase * 0.37f) * spread;
@@ -2692,6 +2695,15 @@ static void CaptureCorpsePoseDots(FrozenCorpseEntry& corpse, uintptr_t biped)
             corpse.dots.push_back(dot);
         }
     }
+}
+
+static uintptr_t GetCorpseRendererUnsafe(uintptr_t ragdoll)
+{
+    __try {
+        const uintptr_t lodGroup = ragdoll ? *reinterpret_cast<uintptr_t*>(ragdoll + 0x90) : 0;
+        return lodGroup ? *reinterpret_cast<uintptr_t*>(lodGroup + 0x60) : 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
 static void SetCorpseRendererVisibleUnsafe(uintptr_t renderer, bool visible)
@@ -2721,11 +2733,7 @@ void __fastcall hk_RagdollActivate(uintptr_t ragdoll, uintptr_t biped, Vector3 v
     SetupFrozenCorpseMaterial(corpse);
     CaptureCorpsePoseDots(corpse, biped);
     if (freezeCorpsesVisualMode == 1) {
-        __try {
-            const uintptr_t lodGroup = *reinterpret_cast<uintptr_t*>(ragdoll + 0x90);
-            corpse.renderer = lodGroup ? *reinterpret_cast<uintptr_t*>(lodGroup + 0x60) : 0;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) { corpse.renderer = 0; }
+        corpse.renderer = GetCorpseRendererUnsafe(ragdoll);
         SetCorpseRendererVisibleUnsafe(corpse.renderer, false);
     }
     AcquireSRWLockExclusive(&frozenCorpseLock);
