@@ -354,6 +354,8 @@ bool pixelSurfReleaseHop = false;
 volatile LONG64 pixelSurfReleasedAt = 0;
 volatile LONG64 pixelSurfReleaseGraceUntil = 0;
 uintptr_t pixelSurfCharacterController = 0;
+Vector3 pixelSurfWorldDirection;
+bool pixelSurfWorldDirectionValid = false;
 
 static void SetPixelSurfActive(bool active)
 {
@@ -361,10 +363,15 @@ static void SetPixelSurfActive(bool active)
     jbActive = active;
     pixelSurf = active;
     if (active) {
+        if (!wasActive) {
+            pixelSurfCharacterController = 0;
+            pixelSurfWorldDirectionValid = false;
+        }
         InterlockedExchange64(&pixelSurfReleasedAt, 0);
         InterlockedExchange64(&pixelSurfReleaseGraceUntil, 0);
     }
     else if (wasActive) {
+        pixelSurfWorldDirectionValid = false;
         const LONG64 now = static_cast<LONG64>(GetTickCount64());
         InterlockedExchange64(&pixelSurfReleasedAt, now);
         // Optional legacy mode keeps the small release hop the user liked.
@@ -1410,7 +1417,7 @@ static bool LoadConfig(const char* requestedName)
 #define LOAD_BOOL(v) v = ReadConfigBool(path, #v, v)
 #define LOAD_INT(v) v = ReadConfigInt(path, #v, v)
 #define LOAD_FLOAT(v) v = ReadConfigFloat(path, #v, v)
-    LOAD_BOOL(jbActive); pixelSurf = jbActive; LOAD_BOOL(pixelSurfReleaseHop); LOAD_FLOAT(surfSpeed);
+    LOAD_BOOL(jbActive); pixelSurf = jbActive; pixelSurfCharacterController = 0; pixelSurfWorldDirectionValid = false; LOAD_BOOL(pixelSurfReleaseHop); LOAD_FLOAT(surfSpeed);
     LOAD_BOOL(adminBhopEnabled); LOAD_BOOL(adminBhopCsStrafeMode); LOAD_FLOAT(adminBhopMaxSpeed);
     if (adminBhopMaxSpeed < 1.0f) adminBhopMaxSpeed = 1.0f; if (adminBhopMaxSpeed > 30.0f) adminBhopMaxSpeed = 30.0f;
     LOAD_BOOL(airJump); LOAD_BOOL(edgeBugEnabled); LOAD_FLOAT(edgeBugPullForce);
@@ -3711,6 +3718,7 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
     if (grounded && instance && instance == pixelSurfCharacterController) {
         InterlockedExchange64(&pixelSurfReleasedAt, 0);
         pixelSurfCharacterController = 0;
+        pixelSurfWorldDirectionValid = false;
     }
     return grounded;
 
@@ -4663,14 +4671,25 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 
 
     if (keyValidated && jbActive) {
-        pixelSurfCharacterController = instance;
-        float speed = sqrt(motion.x * motion.x + motion.z * motion.z);
-        if (speed > 0.1f) {
-            motion.x = (motion.x / speed) * surfSpeed * 10.0f;
-            motion.z = (motion.z / speed) * surfSpeed * 10.0f;
+        const float incomingSpeed = sqrtf(motion.x * motion.x + motion.z * motion.z);
+        if (!pixelSurfCharacterController && incomingSpeed > 0.1f) {
+            // Claim exactly one controller for this activation. The old global
+            // lock could capture another controller's first Move call and throw
+            // the local player in an unrelated direction.
+            pixelSurfCharacterController = instance;
+            pixelSurfWorldDirection.x = motion.x / incomingSpeed;
+            pixelSurfWorldDirection.y = 0.0f;
+            pixelSurfWorldDirection.z = motion.z / incomingSpeed;
+            pixelSurfWorldDirectionValid = true;
         }
-
-        motion.y = 0;
+        if (instance == pixelSurfCharacterController && pixelSurfWorldDirectionValid) {
+            // Reuse the original proven Pixel Surf magnitude. Only the normalized
+            // world-space direction is frozen; later mouse turns cannot rotate it.
+            const float surfMotion = surfSpeed * 10.0f;
+            motion.x = pixelSurfWorldDirection.x * surfMotion;
+            motion.z = pixelSurfWorldDirection.z * surfMotion;
+            motion.y = 0.0f;
+        }
     }
     else if (keyValidated) {
         const LONG64 now = static_cast<LONG64>(GetTickCount64());
