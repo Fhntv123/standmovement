@@ -443,6 +443,8 @@ float adminBhopOriginalMaxSpeed = 17.49f;
 char adminBhopStatus[96] = "Disabled";
 
 bool infinityAmmo = false;
+bool doubleTapEnabled = false;
+volatile LONG doubleTapExtraShots = 0;
 uintptr_t frozenAmmoWeapon = 0;
 short frozenAmmoValue = -1;
 volatile LONG infinityAmmoFireCalls = 0;
@@ -2821,22 +2823,31 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     if (isLocalGun) activeLocalWeaponController = instance;
     if (isLocalGun && infinityAmmo) InterlockedIncrement(&infinityAmmoFireCalls);
     short ammoBeforeShot = -1;
-    if (isLocalGun && infinityAmmo) {
+    if (isLocalGun && (infinityAmmo || doubleTapEnabled)) {
         __try {
             ammoBeforeShot = *reinterpret_cast<short*>(instance + OFFSET_CURRENT_AMMO);
-            if (ammoBeforeShot >= 0 && ammoBeforeShot < 1000) {
+            if (infinityAmmo && ammoBeforeShot >= 0 && ammoBeforeShot < 1000) {
                 frozenAmmoWeapon = instance;
                 frozenAmmoValue = ammoBeforeShot;
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { ammoBeforeShot = -1; }
     }
+    const bool fireSecondShot = isLocalGun && doubleTapEnabled &&
+        (infinityAmmo || ammoBeforeShot >= 2);
     const ULONGLONG fireNow = GetTickCount64();
     const bool persistentAutoRequest = isLocalGun && instance == aimbotAutoFirePendingGun &&
         fireNow <= aimbotAutoFirePendingUntil;
     insideAutoFireRequest = persistentAutoRequest;
     insideLocalGunFire = isLocalGun;
     o_GunController_Fire(instance, playSound, method);
+    if (fireSecondShot) {
+        // GunController::Fire is already past wfz's cooldown/input gate. Calling the
+        // original trampoline again creates a real second cast in the same command,
+        // including normal damage, spread, tracers and ammo consumption.
+        o_GunController_Fire(instance, playSound, method);
+        InterlockedIncrement(&doubleTapExtraShots);
+    }
     insideLocalGunFire = false;
     insideAutoFireRequest = false;
     if (persistentAutoRequest) {
@@ -5114,6 +5125,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Separator();
         ImGui::Spacing();
         
+        if (ImGui::Checkbox("Double Tap", &doubleTapEnabled))
+            InterlockedExchange(&doubleTapExtraShots, 0);
         if (ImGui::Checkbox("Infinity Ammo", &infinityAmmo)) {
             frozenAmmoWeapon = 0;
             frozenAmmoValue = -1;
