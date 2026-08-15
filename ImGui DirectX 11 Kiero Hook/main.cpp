@@ -571,8 +571,8 @@ float enemyChamsMetallic = 0.9f;
 float enemyChamsSmoothness = 0.8f;
 float enemyChamsAnimationSpeed = 1.0f;
 ULONGLONG enemyChamsLastAnimationTick = 0;
-uintptr_t enemyChamsMaterials[7] = {};
-uint32_t enemyChamsMaterialHandles[7] = {};
+uintptr_t enemyChamsMaterials[8] = {};
+uint32_t enemyChamsMaterialHandles[8] = {};
 struct EnemyChamsRenderer { uintptr_t renderer; uintptr_t originalMaterial; };
 std::vector<EnemyChamsRenderer> enemyChamsRenderers;
 uintptr_t currentLocalCharacterLodGroupCache = 0;
@@ -3470,22 +3470,32 @@ static uintptr_t GetCurrentLocalCharacterLodGroup()
 
 static uintptr_t EnsureSelectedEnemyChamsMaterial()
 {
-    const int mode = (enemyChamsMode >= 0 && enemyChamsMode < 7) ? enemyChamsMode : 0;
+    const int mode = (enemyChamsMode >= 0 && enemyChamsMode < 8) ? enemyChamsMode : 0;
     if (enemyChamsMaterials[mode]) return enemyChamsMaterials[mode];
-    static const char* shaderCandidates[7][5] = {
+    static const char* shaderCandidates[8][5] = {
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
         { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", "UI/Default", nullptr },
         { "Legacy Shaders/Diffuse", "Standard", "Legacy Shaders/VertexLit", "Diffuse", nullptr },
         { "Standard", "Legacy Shaders/Specular", "Legacy Shaders/Reflective/Diffuse", "Legacy Shaders/Diffuse", nullptr },
         { "Legacy Shaders/Transparent/Diffuse", "Legacy Shaders/Transparent/VertexLit", "Legacy Shaders/Transparent/Specular", "Unlit/Transparent", nullptr },
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
-        { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr }
+        { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
+        { "Hidden/Internal-Colored", "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", nullptr }
     };
     const bool transparent = mode == 1 || mode == 4;
     for (const char* shaderName : shaderCandidates[mode]) {
         if (!shaderName) break;
         enemyChamsMaterials[mode] = CreateWeaponChamsMaterial(shaderName, transparent);
         if (enemyChamsMaterials[mode]) break;
+    }
+    if (mode == 7 && enemyChamsMaterials[mode] && o_Material_SetFloat && g_il2cpp.string_new) {
+        // Hidden/Internal-Colored exposes these render-state properties. Always depth-test
+        // and no depth writes make the enemy pass visible behind map geometry without
+        // changing colliders, hit detection, transforms, or any gameplay state.
+        o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_ZTest"), 8.0f);
+        o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_ZWrite"), 0.0f);
+        o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_Cull"), 0.0f);
+        if (o_Material_set_renderQueue) o_Material_set_renderQueue(enemyChamsMaterials[mode], 4000);
     }
     const uintptr_t material = enemyChamsMaterials[mode];
     if (!material) { strcpy_s(enemyChamsStatus, "Selected enemy shader not found"); return 0; }
@@ -5076,7 +5086,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&pendingEnemyChamsRefresh, 1);
         }
         if (enemyChamsEnabled) {
-            const char* enemyModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse" };
+            const char* enemyModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse", "Through Walls" };
             if (ImGui::Combo("Enemy Material", &enemyChamsMode, enemyModes, IM_ARRAYSIZE(enemyModes)))
                 InterlockedExchange(&pendingEnemyChamsRefresh, 1);
             if (ImGui::ColorEdit3("Enemy Color", enemyChamsColor))
