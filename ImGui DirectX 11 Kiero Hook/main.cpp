@@ -3120,10 +3120,7 @@ static void RestoreWeaponChams()
     if (o_Renderer_set_material) {
         for (const WeaponChamsRenderer& entry : weaponChamsRenderers) {
             if (!entry.renderer || !entry.originalMaterial) continue;
-            __try {
-                o_Renderer_set_material(entry.renderer, entry.originalMaterial);
-                if (o_Renderer_set_enabled) o_Renderer_set_enabled(entry.renderer, entry.originalEnabled);
-            }
+            __try { o_Renderer_set_material(entry.renderer, entry.originalMaterial); }
             __except (EXCEPTION_EXECUTE_HANDLER) {}
         }
     }
@@ -3534,7 +3531,10 @@ static void RestoreEnemyChams()
     if (o_Renderer_set_material) {
         for (const EnemyChamsRenderer& entry : enemyChamsRenderers) {
             if (!entry.renderer || !entry.originalMaterial) continue;
-            __try { o_Renderer_set_material(entry.renderer, entry.originalMaterial); }
+            __try {
+                o_Renderer_set_material(entry.renderer, entry.originalMaterial);
+                if (o_Renderer_set_enabled) o_Renderer_set_enabled(entry.renderer, entry.originalEnabled);
+            }
             __except (EXCEPTION_EXECUTE_HANDLER) {}
         }
     }
