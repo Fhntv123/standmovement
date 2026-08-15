@@ -1478,6 +1478,7 @@ void(__fastcall* o_GunController_Command)(uintptr_t, uintptr_t, float, float, co
 uintptr_t(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float, uintptr_t, const Il2CppMethod*) = nullptr;
 thread_local bool insideLocalGunFire = false;
 thread_local bool insideAutoFireRequest = false;
+thread_local int activeLocalHitCastDepth = 0;
 void(__fastcall* o_AimView_Awake)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimView_UpdateSniperPanels)(uintptr_t, float, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Component_get_gameObject)(uintptr_t) = nullptr;
@@ -2563,15 +2564,14 @@ void __fastcall hk_HitMarkerView_LocalHit(uintptr_t instance, void* victim,
     // the active local HUD and follows an actual local GunController -> HitCaster cast.
     if (keyValidated && hitLogEnabled && instance && instance == liveHitMarkerView && victim && shotData) {
         const ULONGLONG now = GetTickCount64();
-        ULONGLONG localCastAt = 0;
-        AcquireSRWLockShared(&hitMarkerLock);
-        localCastAt = latestHitMarkerCastAt;
-        ReleaseSRWLockShared(&hitMarkerLock);
         void* localPlayer = GetLocalPC();
         const unsigned char localTeam = GetPCTeam(localPlayer);
         const unsigned char victimTeam = GetPCTeam(victim);
-        const bool followsLocalShot = localCastAt && now >= localCastAt && now - localCastAt <= 2000;
-        if (followsLocalShot && localPlayer && victim != localPlayer &&
+        // bbcz is invoked synchronously from inside the original HitCaster::Cast. The
+        // thread-local depth is set before entering Cast, so no remote/network callback
+        // on another thread can pass this gate and no post-return timestamp race exists.
+        const bool insideThisLocalCast = activeLocalHitCastDepth > 0;
+        if (insideThisLocalCast && localPlayer && victim != localPlayer &&
             localTeam && localTeam != 3 && victimTeam && victimTeam != 3 && victimTeam != localTeam &&
             (shotData != hitLogLastResult || now - hitLogLastResultAt > 250)) {
             HitLogEntry entry = {};
@@ -2586,9 +2586,6 @@ void __fastcall hk_HitMarkerView_LocalHit(uintptr_t instance, void* victim,
                 hitLogLastResult = shotData;
                 hitLogLastResultAt = now;
                 ReleaseSRWLockExclusive(&hitLogLock);
-                AcquireSRWLockExclusive(&hitMarkerLock);
-                latestHitMarkerCastAt = 0; // consume one confirmed callback per local cast
-                ReleaseSRWLockExclusive(&hitMarkerLock);
             }
         }
     }
@@ -2837,6 +2834,15 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
 
+    struct LocalHitCastScope {
+        bool active;
+        explicit LocalHitCastScope(bool enable) : active(enable) {
+            if (active) ++activeLocalHitCastDepth;
+        }
+        ~LocalHitCastScope() {
+            if (active) --activeLocalHitCastDepth;
+        }
+    } localHitCastScope(keyValidated && hitLogEnabled && insideLocalGunFire);
     const uintptr_t result = o_HitCaster_Cast(origin, direction, maxDistance, hitParameters, method);
     if (insideAutoFireRequest && result)
         InterlockedIncrement(&aimbotAutoFired);
