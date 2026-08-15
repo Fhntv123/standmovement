@@ -499,6 +499,18 @@ struct HitMarkerEntry {
 };
 std::vector<HitMarkerEntry> hitMarkers;
 SRWLOCK hitMarkerLock = SRWLOCK_INIT;
+bool hitLogEnabled = false;
+float hitLogDuration = 4.0f;
+struct HitLogEntry {
+    char enemyName[96];
+    int damage;
+    char hitbox[16];
+    ULONGLONG createdAt;
+};
+std::vector<HitLogEntry> hitLogEntries;
+SRWLOCK hitLogLock = SRWLOCK_INIT;
+uintptr_t hitLogLastResult = 0;
+ULONGLONG hitLogLastResultAt = 0;
 bool bulletTracerEnabled = false;
 bool noSpreadEnabled = false;
 bool removeScopeBorders = false;
@@ -787,28 +799,70 @@ using t_PlayerHitConfirmed = void(__fastcall*)(uintptr_t, uintptr_t, const Il2Cp
 t_PlayerHitConfirmed o_PlayerHitConfirmedA = nullptr;
 t_PlayerHitConfirmed o_PlayerHitConfirmedB = nullptr;
 
+static void* GetLocalPC();
+static void GetPCName(void* pc, char* output, int outputSize);
+
+static const char* HitboxNameFromDamageCounts(int headHits, int bodyHits, int feetHits) {
+    if (headHits > 0) return "Head";
+    if (bodyHits > 0) return "Body";
+    if (feetHits > 0) return "Legs";
+    return "Unknown";
+}
+
 static void CacheConfirmedDamageResult(uintptr_t hitController, uintptr_t result) {
     if (!hitController || !result || !base) return;
-    int fieldA = -1, fieldB = -1, fieldC = -1, hp = -1;
+    int headHits = -1, bodyHits = -1, feetHits = -1, damage = -1;
     uintptr_t player = 0;
+    uintptr_t shooterActor = 0;
+    uintptr_t localActor = 0;
     __try {
-        player = *reinterpret_cast<uintptr_t*>(hitController + 0x90); // HitController.cara
-        fieldA = *reinterpret_cast<int*>(result + 0x18);              // boq.carn
-        fieldB = *reinterpret_cast<int*>(result + 0x1C);              // boq.caro
-        fieldC = *reinterpret_cast<int*>(result + 0x20);              // boq.carp
-        using GetResultHealthFn = int(__fastcall*)(uintptr_t, const Il2CppMethod*);
-        static GetResultHealthFn getResultHealth = nullptr;
-        if (!getResultHealth) getResultHealth = reinterpret_cast<GetResultHealthFn>(base + OFFSET_DAMAGE_RESULT_GET_HEALTH);
-        hp = getResultHealth(result, nullptr); // the same value KillerDetailsView uses for its health bar
+        player = *reinterpret_cast<uintptr_t*>(hitController + 0x90); // victim PlayerController
+        shooterActor = *reinterpret_cast<uintptr_t*>(result + 0x10); // boq.carm
+        void* localPlayer = GetLocalPC();
+        const uintptr_t localHitController = localPlayer ?
+            *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(localPlayer) + 0xF0) : 0;
+        localActor = localHitController ?
+            *reinterpret_cast<uintptr_t*>(localHitController + 0xB0) : 0; // PlayerHitController.cary
+        headHits = *reinterpret_cast<int*>(result + 0x18); // DamageDetailsView head count
+        bodyHits = *reinterpret_cast<int*>(result + 0x1C); // DamageDetailsView body count
+        feetHits = *reinterpret_cast<int*>(result + 0x20); // DamageDetailsView feet count
+        using GetResultDamageFn = int(__fastcall*)(uintptr_t, const Il2CppMethod*);
+        static GetResultDamageFn getResultDamage = nullptr;
+        if (!getResultDamage)
+            getResultDamage = reinterpret_cast<GetResultDamageFn>(base + OFFSET_DAMAGE_RESULT_GET_HEALTH);
+        damage = getResultDamage(result, nullptr); // boo.dcxl: DamageDetailsView sum damage
     } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
-    InterlockedExchange(&boxEspConfirmedFieldA, fieldA);
-    InterlockedExchange(&boxEspConfirmedFieldB, fieldB);
-    InterlockedExchange(&boxEspConfirmedFieldC, fieldC);
-    InterlockedExchange(&boxEspConfirmedHealth, hp);
+
+    InterlockedExchange(&boxEspConfirmedFieldA, headHits);
+    InterlockedExchange(&boxEspConfirmedFieldB, bodyHits);
+    InterlockedExchange(&boxEspConfirmedFieldC, feetHits);
+    InterlockedExchange(&boxEspConfirmedHealth, damage);
     InterlockedIncrement(&boxEspConfirmedHits);
-    if (!player || hp < 0 || hp > 100) return;
+
+    // The same confirmed result can traverse ria and rib; add one row only, and only
+    // when the authoritative shooter actor is the local player's actor.
+    const ULONGLONG now = GetTickCount64();
+    if (keyValidated && hitLogEnabled && player && damage > 0 && damage <= 500 &&
+        localActor && shooterActor == localActor &&
+        (result != hitLogLastResult || now - hitLogLastResultAt > 250)) {
+        HitLogEntry entry = {};
+        GetPCName(reinterpret_cast<void*>(player), entry.enemyName, sizeof(entry.enemyName));
+        entry.damage = damage;
+        strcpy_s(entry.hitbox, HitboxNameFromDamageCounts(headHits, bodyHits, feetHits));
+        entry.createdAt = now;
+        AcquireSRWLockExclusive(&hitLogLock);
+        hitLogEntries.push_back(entry);
+        if (hitLogEntries.size() > 6)
+            hitLogEntries.erase(hitLogEntries.begin(), hitLogEntries.begin() + (hitLogEntries.size() - 6));
+        hitLogLastResult = result;
+        hitLogLastResultAt = now;
+        ReleaseSRWLockExclusive(&hitLogLock);
+    }
+
+    // Keep the existing confirmed-value fallback used by ESP diagnostics.
+    if (!player || damage < 0 || damage > 100) return;
     AcquireSRWLockExclusive(&g_LiveHealthLock);
-    g_ConfirmedHealthByPlayer[player] = hp;
+    g_ConfirmedHealthByPlayer[player] = damage;
     ReleaseSRWLockExclusive(&g_LiveHealthLock);
 }
 void __fastcall hk_PlayerHitConfirmedA(uintptr_t hitController, uintptr_t result, const Il2CppMethod* method) {
@@ -2515,6 +2569,46 @@ void DrawHitMarker()
             draw->AddLine(starts[i], ends[i], shadow, hitMarkerThickness + 2.0f);
             draw->AddLine(starts[i], ends[i], color, hitMarkerThickness);
         }
+    }
+}
+
+void DrawHitLog()
+{
+    if (!keyValidated || !hitLogEnabled) return;
+    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG lifetime = static_cast<ULONGLONG>(hitLogDuration * 1000.0f);
+    std::vector<HitLogEntry> snapshot;
+    AcquireSRWLockExclusive(&hitLogLock);
+    hitLogEntries.erase(std::remove_if(hitLogEntries.begin(), hitLogEntries.end(),
+        [now, lifetime](const HitLogEntry& entry) {
+            return now < entry.createdAt || now - entry.createdAt >= lifetime;
+        }), hitLogEntries.end());
+    snapshot = hitLogEntries;
+    ReleaseSRWLockExclusive(&hitLogLock);
+
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetIO().Fonts->Fonts[0];
+    const float fontSize = 25.0f;
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    for (size_t i = 0; i < snapshot.size(); ++i) {
+        const HitLogEntry& entry = snapshot[snapshot.size() - 1 - i];
+        const float elapsed = static_cast<float>(now - entry.createdAt);
+        const float fadeStart = static_cast<float>(lifetime) * 0.72f;
+        const float alpha = elapsed <= fadeStart ? 1.0f :
+            fmaxf(0.0f, 1.0f - (elapsed - fadeStart) / (static_cast<float>(lifetime) - fadeStart));
+        char text[256];
+        sprintf_s(text, "[Hitlog] -> %s | Damage: %d | Hitbox: %s",
+            entry.enemyName, entry.damage, entry.hitbox);
+        const ImVec2 textSize = font->CalcTextSizeA(fontSize, 1000.0f, 0.0f, text);
+        const ImVec2 pos((display.x - textSize.x) * 0.5f, 34.0f + static_cast<float>(i) * 31.0f);
+        const int a = static_cast<int>(255.0f * alpha);
+        const ImU32 shadow = IM_COL32(0, 0, 0, a);
+        const ImU32 white = IM_COL32(255, 255, 255, a);
+        draw->AddText(font, fontSize, ImVec2(pos.x - 2.0f, pos.y), shadow, text);
+        draw->AddText(font, fontSize, ImVec2(pos.x + 2.0f, pos.y), shadow, text);
+        draw->AddText(font, fontSize, ImVec2(pos.x, pos.y - 2.0f), shadow, text);
+        draw->AddText(font, fontSize, ImVec2(pos.x, pos.y + 2.0f), shadow, text);
+        draw->AddText(font, fontSize, pos, white, text);
     }
 }
 
@@ -5249,6 +5343,15 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (enemyChamsMode == 5 || enemyChamsMode == 6)
                 ImGui::SliderFloat("Enemy Animation Speed", &enemyChamsAnimationSpeed, 0.2f, 5.0f, "%.1f");
         }
+        if (ImGui::Checkbox("Hit Log", &hitLogEnabled)) {
+            AcquireSRWLockExclusive(&hitLogLock);
+            hitLogEntries.clear();
+            hitLogLastResult = 0;
+            hitLogLastResultAt = 0;
+            ReleaseSRWLockExclusive(&hitLogLock);
+        }
+        if (hitLogEnabled)
+            ImGui::SliderFloat("Hit Log Duration", &hitLogDuration, 1.0f, 8.0f, "%.1f s");
         ImGui::Checkbox("Hit Marker", &hitMarkerEnabled);
         if (hitMarkerEnabled) {
             ImGui::ColorEdit3("Hit Marker Color", hitMarkerColor);
@@ -5320,6 +5423,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     ImGui::PopFont();
 
     DrawHitMarker();
+    DrawHitLog();
     DrawBulletTracers();
     DrawBorderlessScopeReticle();
 
