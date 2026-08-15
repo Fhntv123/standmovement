@@ -344,9 +344,27 @@ std::vector<Vector3> trailPoints;
 
 // Feature states
 
-bool pixelSurf = false;
+bool pixelSurf = false; // legacy alias; real Pixel Surf state is jbActive
 
 bool jbActive = false;
+volatile LONG64 pixelSurfReleaseGraceUntil = 0;
+
+static void SetPixelSurfActive(bool active)
+{
+    const bool wasActive = jbActive;
+    jbActive = active;
+    pixelSurf = active;
+    if (active) {
+        InterlockedExchange64(&pixelSurfReleaseGraceUntil, 0);
+    }
+    else if (wasActive) {
+        // While surfing, outgoing Y motion is held at zero, but the game can keep
+        // accumulating gravity internally. Briefly report grounded after release
+        // so that accumulator is reset instead of being applied as a downward burst.
+        InterlockedExchange64(&pixelSurfReleaseGraceUntil,
+            static_cast<LONG64>(GetTickCount64() + 100));
+    }
+}
 
 bool airJump = false;
 
@@ -3365,6 +3383,11 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
 
     if (airJump && instance) return true;
 
+    const LONG64 releaseGraceUntil = InterlockedCompareExchange64(
+        &pixelSurfReleaseGraceUntil, 0, 0);
+    if (!jbActive && releaseGraceUntil > static_cast<LONG64>(GetTickCount64()))
+        return true;
+
     if (jbActive) return false;
 
     return grounded;
@@ -4321,8 +4344,14 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
             motion.x = (motion.x / speed) * surfSpeed * 10.0f;
             motion.z = (motion.z / speed) * surfSpeed * 10.0f;
         }
-        
+
         motion.y = 0;
+    }
+    else if (keyValidated) {
+        const LONG64 releaseGraceUntil = InterlockedCompareExchange64(
+            &pixelSurfReleaseGraceUntil, 0, 0);
+        if (releaseGraceUntil > static_cast<LONG64>(GetTickCount64()) && motion.y < 0.0f)
+            motion.y = 0.0f;
     }
 
     if (keyValidated) {
@@ -4765,29 +4794,18 @@ DWORD WINAPI KeyListenerThread(LPVOID) {
 
         if (keyValidated) {
 
-            if (psBind.key > 0) {
-
-                bool held = (GetAsyncKeyState(psBind.key) & 0x8000) != 0;
-
-                static bool psToggle = false, psLast = false;
-
-                if (psBind.toggleMode) { if (held && !psLast) psToggle = !psToggle; pixelSurf = psToggle; }
-
-                else pixelSurf = held;
-
-                psLast = held;
-
-            }
-
             if (jbBind.key > 0) {
 
                 bool held = (GetAsyncKeyState(jbBind.key) & 0x8000) != 0;
 
                 static bool jbToggle = false, jbLast = false;
 
-                if (jbBind.toggleMode) { if (held && !jbLast) jbToggle = !jbToggle; jbActive = jbToggle; }
-
-                else jbActive = held;
+                bool requestedPixelSurf = held;
+                if (jbBind.toggleMode) {
+                    if (held && !jbLast) jbToggle = !jbToggle;
+                    requestedPixelSurf = jbToggle;
+                }
+                SetPixelSurfActive(requestedPixelSurf);
 
                 jbLast = held;
 
@@ -5361,9 +5379,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Separator();
         ImGui::Spacing();
         
-        ImGui::Checkbox("Enable BunnyHop", &jbActive);
+        bool pixelSurfRequested = jbActive;
+        if (ImGui::Checkbox("Pixel Surf", &pixelSurfRequested))
+            SetPixelSurfActive(pixelSurfRequested);
         if (jbActive) {
-            ImGui::SliderFloat("Speed Multiplier", &surfSpeed, 0.5f, 3.0f, "%.2f");
+            ImGui::SliderFloat("Pixel Surf Speed", &surfSpeed, 0.5f, 3.0f, "%.2f");
         }
         if (ImGui::Checkbox("Admin Panel BHop", &adminBhopEnabled)) ApplyAdminBhopState();
         if (adminBhopEnabled) {
@@ -5392,8 +5412,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 if (edgeBugPullForce > 100.0f) edgeBugPullForce = 100.0f;
             }
         }
-        ImGui::Checkbox("Pixel Surf", &pixelSurf);
-        
         ImGui::EndChild();
         
         ImGui::NextColumn();
@@ -5423,7 +5441,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Separator();
         ImGui::Spacing();
         
-        ImGui::Text("BunnyHop Key");
+        ImGui::Text("Pixel Surf Key");
         if (ImGui::Button(waitingForBind == &jbBind.key ? "[...]" : (jbBind.key > 0 ? GetKeyName(jbBind.key).c_str() : "None##jb"), ImVec2(100, 0))) waitingForBind = &jbBind.key;
         
         ImGui::Text("Air Jump Key");
@@ -5722,7 +5740,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
 
-    if (pixelSurf) {
+    if (jbActive) {
 
         ImVec2 ts = ImGui::CalcTextSize("ps");
 
@@ -5731,18 +5749,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::GetForegroundDrawList()->AddText(ImVec2(x + 2, y + 2), IM_COL32(0, 0, 0, 160), "ps");
 
         ImGui::GetForegroundDrawList()->AddText(ImVec2(x, y), IM_COL32(100, 255, 140, 255), "ps");
-
-    }
-
-    if (jbActive) {
-
-        ImVec2 ts = ImGui::CalcTextSize("jb");
-
-        float x = (ImGui::GetIO().DisplaySize.x - ts.x) * 0.5f, y = ImGui::GetIO().DisplaySize.y - 140.0f;
-
-        ImGui::GetForegroundDrawList()->AddText(ImVec2(x + 2, y + 2), IM_COL32(0, 0, 0, 160), "jb");
-
-        ImGui::GetForegroundDrawList()->AddText(ImVec2(x, y), IM_COL32(100, 255, 140, 255), "jb");
 
     }
 
