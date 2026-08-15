@@ -2153,7 +2153,10 @@ static bool ApplyAdminBhopState()
             // killed backward momentum after releasing S.
             const float scaledMultiplier = adminBhopSpeedMultiplier *
                 (adminBhopMaxSpeed / 6.50f);
-            *reinterpret_cast<float*>(jump + 0x14) = scaledMultiplier;
+            // Keep BHop enabled so its state is never reset/reversed, but suspend
+            // only its camera-relative acceleration for the whole Pixel Surf.
+            // Pixel Surf supplies its own fixed world-space displacement below.
+            *reinterpret_cast<float*>(jump + 0x14) = jbActive ? 0.0f : scaledMultiplier;
             *reinterpret_cast<float*>(jump + 0x1C) = adminBhopMaxSpeed;
             strcpy_s(adminBhopStatus, adminBhopCsStrafeMode ?
                 "Native admin BHop active; CS air strafe" :
