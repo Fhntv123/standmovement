@@ -1318,6 +1318,25 @@ static float ReadConfigFloat(const std::wstring& path, const char* key, float fa
     return isfinite(value) ? value : fallback;
 }
 
+static void WriteConfigColor(const std::wstring& path, const char* key, const float color[3])
+{
+    char component[96];
+    for (int i = 0; i < 3; ++i) {
+        sprintf_s(component, "%s_%d", key, i);
+        WriteConfigValue(path, component, color[i]);
+    }
+}
+static void ReadConfigColor(const std::wstring& path, const char* key, float color[3])
+{
+    char component[96];
+    for (int i = 0; i < 3; ++i) {
+        sprintf_s(component, "%s_%d", key, i);
+        color[i] = ReadConfigFloat(path, component, color[i]);
+        if (color[i] < 0.0f) color[i] = 0.0f;
+        if (color[i] > 1.0f) color[i] = 1.0f;
+    }
+}
+
 static bool ApplyAdminBhopState();
 
 static bool SaveConfig(const char* requestedName)
@@ -1341,8 +1360,34 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(weaponChamsEnabled); SAVE_INT(weaponChamsMode); SAVE_BOOL(armChamsEnabled); SAVE_INT(armChamsMode);
     SAVE_BOOL(gloveChamsEnabled); SAVE_INT(gloveChamsMode); SAVE_BOOL(localPlayerChamsEnabled); SAVE_INT(localPlayerChamsMode);
     SAVE_BOOL(enemyChamsEnabled); SAVE_BOOL(enemyChamsThroughWalls); SAVE_INT(enemyChamsMode);
-    SAVE_BOOL(hitMarkerEnabled); SAVE_BOOL(bulletTracerEnabled);
-    SAVE_INT(jbBind.key); SAVE_BOOL(jbBind.toggleMode); SAVE_INT(airJumpBind.key); SAVE_INT(edgeBugBind.key);
+    SAVE_BOOL(hitMarkerEnabled); SAVE_FLOAT(hitMarkerDuration); SAVE_FLOAT(hitMarkerSize); SAVE_FLOAT(hitMarkerGap); SAVE_FLOAT(hitMarkerThickness);
+    SAVE_BOOL(hitLogEnabled); SAVE_FLOAT(hitLogDuration);
+    SAVE_BOOL(bulletTracerEnabled); SAVE_FLOAT(bulletTracerDuration); SAVE_FLOAT(bulletTracerThickness);
+    SAVE_BOOL(showVelocity); SAVE_BOOL(showTrail); SAVE_INT(maxTrailPoints); SAVE_FLOAT(trailMinDistance);
+    SAVE_BOOL(cameraFovEnabled); SAVE_FLOAT(cameraFov); SAVE_FLOAT(aimbotFov); SAVE_FLOAT(visibleAimbotHoldMs);
+    SAVE_BOOL(espHealthGradient);
+    SAVE_FLOAT(worldColorMetallic); SAVE_FLOAT(worldColorSmoothness); SAVE_FLOAT(worldColorAnimationSpeed);
+    SAVE_BOOL(customSkyboxEnabled);
+    SAVE_FLOAT(weaponChamsGlassAlpha); SAVE_FLOAT(weaponChamsMetallic); SAVE_FLOAT(weaponChamsSmoothness); SAVE_FLOAT(weaponChamsAnimationSpeed);
+    SAVE_FLOAT(armChamsAlpha); SAVE_FLOAT(armChamsMetallic); SAVE_FLOAT(armChamsSmoothness); SAVE_FLOAT(armChamsAnimationSpeed);
+    SAVE_FLOAT(gloveChamsAlpha); SAVE_FLOAT(gloveChamsMetallic); SAVE_FLOAT(gloveChamsSmoothness); SAVE_FLOAT(gloveChamsAnimationSpeed);
+    SAVE_FLOAT(localPlayerChamsAlpha); SAVE_FLOAT(localPlayerChamsMetallic); SAVE_FLOAT(localPlayerChamsSmoothness); SAVE_FLOAT(localPlayerChamsAnimationSpeed);
+    SAVE_FLOAT(enemyChamsAlpha); SAVE_FLOAT(enemyChamsMetallic); SAVE_FLOAT(enemyChamsSmoothness); SAVE_FLOAT(enemyChamsAnimationSpeed);
+    SAVE_INT(psBind.key); SAVE_BOOL(psBind.toggleMode); SAVE_INT(jbBind.key); SAVE_BOOL(jbBind.toggleMode);
+    SAVE_INT(airJumpBind.key); SAVE_BOOL(airJumpBind.toggleMode); SAVE_INT(edgeBugBind.key); SAVE_BOOL(edgeBugBind.toggleMode);
+    SAVE_INT(velocityBind.key); SAVE_BOOL(velocityBind.toggleMode); SAVE_INT(trailBind.key); SAVE_BOOL(trailBind.toggleMode);
+    SAVE_INT(ammoBind.key); SAVE_BOOL(ammoBind.toggleMode); SAVE_INT(espBind.key); SAVE_BOOL(espBind.toggleMode);
+    WriteConfigColor(path, "menuColor", menuColor); WriteConfigColor(path, "accentColor", accentColor);
+    WriteConfigColor(path, "worldColor", worldColor); WriteConfigColor(path, "fogColor", fogColor);
+    WriteConfigColor(path, "customSkyboxColor", customSkyboxColor);
+    WriteConfigColor(path, "hitMarkerColor", hitMarkerColor);
+    WriteConfigColor(path, "bulletTracerStartColor", bulletTracerStartColor); WriteConfigColor(path, "bulletTracerEndColor", bulletTracerEndColor);
+    WriteConfigColor(path, "weaponChamsColor", weaponChamsColor); WriteConfigColor(path, "armChamsColor", armChamsColor);
+    WriteConfigColor(path, "gloveChamsColor", gloveChamsColor); WriteConfigColor(path, "localPlayerChamsColor", localPlayerChamsColor);
+    WriteConfigColor(path, "enemyChamsColor", enemyChamsColor);
+    WriteConfigColor(path, "espTopColor", espTopColor); WriteConfigColor(path, "espBottomColor", espBottomColor);
+    WriteConfigColor(path, "espNameColor", espNameColor); WriteConfigColor(path, "espHealthColor", espHealthColor);
+    WriteConfigColor(path, "espHealthBottomColor", espHealthBottomColor);
 #undef SAVE_BOOL
 #undef SAVE_INT
 #undef SAVE_FLOAT
@@ -1379,8 +1424,34 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(weaponChamsEnabled); LOAD_INT(weaponChamsMode); LOAD_BOOL(armChamsEnabled); LOAD_INT(armChamsMode);
     LOAD_BOOL(gloveChamsEnabled); LOAD_INT(gloveChamsMode); LOAD_BOOL(localPlayerChamsEnabled); LOAD_INT(localPlayerChamsMode);
     LOAD_BOOL(enemyChamsEnabled); LOAD_BOOL(enemyChamsThroughWalls); LOAD_INT(enemyChamsMode);
-    LOAD_BOOL(hitMarkerEnabled); LOAD_BOOL(bulletTracerEnabled);
-    LOAD_INT(jbBind.key); LOAD_BOOL(jbBind.toggleMode); LOAD_INT(airJumpBind.key); LOAD_INT(edgeBugBind.key);
+    LOAD_BOOL(hitMarkerEnabled); LOAD_FLOAT(hitMarkerDuration); LOAD_FLOAT(hitMarkerSize); LOAD_FLOAT(hitMarkerGap); LOAD_FLOAT(hitMarkerThickness);
+    LOAD_BOOL(hitLogEnabled); LOAD_FLOAT(hitLogDuration);
+    LOAD_BOOL(bulletTracerEnabled); LOAD_FLOAT(bulletTracerDuration); LOAD_FLOAT(bulletTracerThickness);
+    LOAD_BOOL(showVelocity); LOAD_BOOL(showTrail); LOAD_INT(maxTrailPoints); LOAD_FLOAT(trailMinDistance);
+    LOAD_BOOL(cameraFovEnabled); LOAD_FLOAT(cameraFov); LOAD_FLOAT(aimbotFov); LOAD_FLOAT(visibleAimbotHoldMs);
+    LOAD_BOOL(espHealthGradient);
+    LOAD_FLOAT(worldColorMetallic); LOAD_FLOAT(worldColorSmoothness); LOAD_FLOAT(worldColorAnimationSpeed);
+    LOAD_BOOL(customSkyboxEnabled);
+    LOAD_FLOAT(weaponChamsGlassAlpha); LOAD_FLOAT(weaponChamsMetallic); LOAD_FLOAT(weaponChamsSmoothness); LOAD_FLOAT(weaponChamsAnimationSpeed);
+    LOAD_FLOAT(armChamsAlpha); LOAD_FLOAT(armChamsMetallic); LOAD_FLOAT(armChamsSmoothness); LOAD_FLOAT(armChamsAnimationSpeed);
+    LOAD_FLOAT(gloveChamsAlpha); LOAD_FLOAT(gloveChamsMetallic); LOAD_FLOAT(gloveChamsSmoothness); LOAD_FLOAT(gloveChamsAnimationSpeed);
+    LOAD_FLOAT(localPlayerChamsAlpha); LOAD_FLOAT(localPlayerChamsMetallic); LOAD_FLOAT(localPlayerChamsSmoothness); LOAD_FLOAT(localPlayerChamsAnimationSpeed);
+    LOAD_FLOAT(enemyChamsAlpha); LOAD_FLOAT(enemyChamsMetallic); LOAD_FLOAT(enemyChamsSmoothness); LOAD_FLOAT(enemyChamsAnimationSpeed);
+    LOAD_INT(psBind.key); LOAD_BOOL(psBind.toggleMode); LOAD_INT(jbBind.key); LOAD_BOOL(jbBind.toggleMode);
+    LOAD_INT(airJumpBind.key); LOAD_BOOL(airJumpBind.toggleMode); LOAD_INT(edgeBugBind.key); LOAD_BOOL(edgeBugBind.toggleMode);
+    LOAD_INT(velocityBind.key); LOAD_BOOL(velocityBind.toggleMode); LOAD_INT(trailBind.key); LOAD_BOOL(trailBind.toggleMode);
+    LOAD_INT(ammoBind.key); LOAD_BOOL(ammoBind.toggleMode); LOAD_INT(espBind.key); LOAD_BOOL(espBind.toggleMode);
+    ReadConfigColor(path, "menuColor", menuColor); ReadConfigColor(path, "accentColor", accentColor);
+    ReadConfigColor(path, "worldColor", worldColor); ReadConfigColor(path, "fogColor", fogColor);
+    ReadConfigColor(path, "customSkyboxColor", customSkyboxColor);
+    ReadConfigColor(path, "hitMarkerColor", hitMarkerColor);
+    ReadConfigColor(path, "bulletTracerStartColor", bulletTracerStartColor); ReadConfigColor(path, "bulletTracerEndColor", bulletTracerEndColor);
+    ReadConfigColor(path, "weaponChamsColor", weaponChamsColor); ReadConfigColor(path, "armChamsColor", armChamsColor);
+    ReadConfigColor(path, "gloveChamsColor", gloveChamsColor); ReadConfigColor(path, "localPlayerChamsColor", localPlayerChamsColor);
+    ReadConfigColor(path, "enemyChamsColor", enemyChamsColor);
+    ReadConfigColor(path, "espTopColor", espTopColor); ReadConfigColor(path, "espBottomColor", espBottomColor);
+    ReadConfigColor(path, "espNameColor", espNameColor); ReadConfigColor(path, "espHealthColor", espHealthColor);
+    ReadConfigColor(path, "espHealthBottomColor", espHealthBottomColor);
 #undef LOAD_BOOL
 #undef LOAD_INT
 #undef LOAD_FLOAT
@@ -4589,11 +4660,32 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
             adminBhopLastManualMotion = motion;
             adminBhopLastManualMotionValid = true;
         }
-        else if (adminBhopLastManualMotionValid) {
-            // No A/D: retain world-space momentum. Rotating only the camera cannot
-            // steer the player until a strafe key is pressed again.
-            motion.x = adminBhopLastManualMotion.x;
-            motion.z = adminBhopLastManualMotion.z;
+        else {
+            // A/D was released or the camera turn no longer matches. Never replay
+            // the previous input command: that stale vector caused a sudden throw.
+            // Carry the controller's actual world-space velocity for this frame,
+            // preserving inertia while camera movement alone cannot steer it.
+            bool carriedPhysicsVelocity = false;
+            if (o_CC_get_velocity) {
+                __try {
+                    const Vector3 velocity = o_CC_get_velocity(instance);
+                    float deltaTime = o_Time_get_deltaTime ? o_Time_get_deltaTime() : (1.0f / 60.0f);
+                    if (!isfinite(deltaTime) || deltaTime < (1.0f / 240.0f) || deltaTime > 0.1f)
+                        deltaTime = 1.0f / 60.0f;
+                    if (isfinite(velocity.x) && isfinite(velocity.z)) {
+                        motion.x = velocity.x * deltaTime;
+                        motion.z = velocity.z * deltaTime;
+                        carriedPhysicsVelocity = true;
+                    }
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER) {}
+            }
+            if (!carriedPhysicsVelocity && adminBhopLastManualMotionValid) {
+                motion.x = adminBhopLastManualMotion.x;
+                motion.z = adminBhopLastManualMotion.z;
+            }
+            adminBhopLastManualMotion = motion;
+            adminBhopLastManualMotionValid = true;
         }
     }
 
