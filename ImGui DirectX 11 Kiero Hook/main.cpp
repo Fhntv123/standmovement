@@ -445,11 +445,6 @@ char adminBhopStatus[96] = "Disabled";
 bool infinityAmmo = false;
 bool doubleTapEnabled = false;
 volatile LONG doubleTapExtraShots = 0;
-bool doubleTapCameraRestoreActive = false;
-uintptr_t doubleTapCameraAimingData = 0;
-Vector3 doubleTapCameraAimAngle;
-Vector3 doubleTapCameraAimEuler;
-ULONGLONG doubleTapCameraRestoreUntil = 0;
 uintptr_t frozenAmmoWeapon = 0;
 short frozenAmmoValue = -1;
 volatile LONG infinityAmmoFireCalls = 0;
@@ -2369,21 +2364,6 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
-    if (doubleTapCameraRestoreActive && doubleTapCameraAimingData) {
-        __try {
-            if (GetTickCount64() <= doubleTapCameraRestoreUntil) {
-                *reinterpret_cast<Vector3*>(doubleTapCameraAimingData + 0x18) = doubleTapCameraAimAngle;
-                *reinterpret_cast<Vector3*>(doubleTapCameraAimingData + 0x24) = doubleTapCameraAimEuler;
-            } else {
-                doubleTapCameraRestoreActive = false;
-                doubleTapCameraAimingData = 0;
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            doubleTapCameraRestoreActive = false;
-            doubleTapCameraAimingData = 0;
-        }
-    }
     UpdateVisibleAimbotCamera();
     if (thirdPersonEnabled && !InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0))
         ApplyCustomizedThirdPersonOffsets();
@@ -2878,22 +2858,11 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { capturedDoubleTapRecoil = false; }
-        __try {
-            const uintptr_t aimController = liveHudLocalPlayer ?
-                *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8) : 0;
-            doubleTapCameraAimingData = aimController ?
-                *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
-            if (doubleTapCameraAimingData) {
-                doubleTapCameraAimAngle = *reinterpret_cast<Vector3*>(doubleTapCameraAimingData + 0x18);
-                doubleTapCameraAimEuler = *reinterpret_cast<Vector3*>(doubleTapCameraAimingData + 0x24);
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) { doubleTapCameraAimingData = 0; }
     }
     o_GunController_Fire(instance, playSound, method);
     if (fireSecondShot) {
-        // Keep the real second cast/damage/ammo path, then suppress recoil applied both
-        // immediately and by the weapon's following HUD/update frames.
+        // Keep the real second cast/damage/ammo path, then restore only the native
+        // recoil accumulator. Never lock or rewrite camera aim after the shot.
         o_GunController_Fire(instance, playSound, method);
         if (capturedDoubleTapRecoil) {
             __try {
@@ -2902,18 +2871,6 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
                 *reinterpret_cast<float*>(doubleTapRecoilController + 0x50) = doubleTapRecoilProgress;
             }
             __except (EXCEPTION_EXECUTE_HANDLER) {}
-        }
-        if (doubleTapCameraAimingData) {
-            __try {
-                *reinterpret_cast<Vector3*>(doubleTapCameraAimingData + 0x18) = doubleTapCameraAimAngle;
-                *reinterpret_cast<Vector3*>(doubleTapCameraAimingData + 0x24) = doubleTapCameraAimEuler;
-                doubleTapCameraRestoreUntil = GetTickCount64() + 140;
-                doubleTapCameraRestoreActive = true;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) {
-                doubleTapCameraRestoreActive = false;
-                doubleTapCameraAimingData = 0;
-            }
         }
         InterlockedIncrement(&doubleTapExtraShots);
     }
