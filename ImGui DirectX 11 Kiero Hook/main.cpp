@@ -5210,168 +5210,119 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (menuOpenAnimation > 0.998f) menuOpenAnimation = 1.0f;
 
     if (menuOpenAnimation > 0.0f) {
-    // Liquid Glass is a neutral navigation material: content remains visible below,
-    // tint is restrained, and depth comes from lens-like edge highlights and shadows.
+    // Neverlose-inspired shell: dense near-black navy surfaces, restrained cyan
+    // accent, compact controls and a persistent left navigation rail.
     const float easedOpen = menuOpenAnimation * menuOpenAnimation * (3.0f - 2.0f * menuOpenAnimation);
     style.Alpha = easedOpen;
-    style.WindowRounding = 24.0f;
-    style.ChildRounding = 16.0f;
-    style.FrameRounding = 12.0f;
-    style.GrabRounding = 12.0f;
-    style.PopupRounding = 16.0f;
-    style.ScrollbarRounding = 10.0f;
-    style.WindowBorderSize = 0.0f;
+    style.WindowRounding = 8.0f;
+    style.ChildRounding = 5.0f;
+    style.FrameRounding = 4.0f;
+    style.GrabRounding = 4.0f;
+    style.PopupRounding = 5.0f;
+    style.ScrollbarRounding = 4.0f;
+    style.WindowBorderSize = 1.0f;
     style.ChildBorderSize = 1.0f;
-    style.FrameBorderSize = 1.0f;
-    style.ScrollbarSize = 8.0f;
-    style.GrabMinSize = 10.0f;
-    style.ItemSpacing = ImVec2(10.0f, 10.0f);
-    style.ItemInnerSpacing = ImVec2(8.0f, 6.0f);
-    style.WindowPadding = ImVec2(16.0f, 15.0f);
-    style.FramePadding = ImVec2(11.0f, 7.0f);
+    style.FrameBorderSize = 0.0f;
+    style.ScrollbarSize = 7.0f;
+    style.GrabMinSize = 8.0f;
+    style.ItemSpacing = ImVec2(8.0f, 8.0f);
+    style.ItemInnerSpacing = ImVec2(6.0f, 5.0f);
+    style.WindowPadding = ImVec2(0.0f, 0.0f);
+    style.FramePadding = ImVec2(9.0f, 5.0f);
 
-    const float t = static_cast<float>(ImGui::GetTime());
-    const ImVec4 accent(0.28f, 0.62f, 1.0f, 1.0f);
+    const ImVec4 accent(0.12f, 0.70f, 1.0f, 1.0f);
+    const ImVec4 accentDim(0.06f, 0.37f, 0.56f, 1.0f);
     ImVec4* colors = style.Colors;
-    colors[ImGuiCol_Text] = ImVec4(0.965f, 0.975f, 1.0f, 1.0f);
-    colors[ImGuiCol_TextDisabled] = ImVec4(0.64f, 0.67f, 0.73f, 1.0f);
-    colors[ImGuiCol_WindowBg] = ImVec4(0.08f, 0.085f, 0.105f, 0.0f);
-    colors[ImGuiCol_ChildBg] = ImVec4(0.10f, 0.105f, 0.125f, 0.38f);
-    colors[ImGuiCol_PopupBg] = ImVec4(0.105f, 0.11f, 0.135f, 0.94f);
-    colors[ImGuiCol_Border] = ImVec4(1.0f, 1.0f, 1.0f, 0.13f);
+    colors[ImGuiCol_Text] = ImVec4(0.86f, 0.91f, 0.96f, 1.0f);
+    colors[ImGuiCol_TextDisabled] = ImVec4(0.43f, 0.50f, 0.57f, 1.0f);
+    colors[ImGuiCol_WindowBg] = ImVec4(0.031f, 0.031f, 0.051f, 1.0f);
+    colors[ImGuiCol_ChildBg] = ImVec4(0.035f, 0.067f, 0.102f, 1.0f);
+    colors[ImGuiCol_PopupBg] = ImVec4(0.028f, 0.045f, 0.070f, 0.99f);
+    colors[ImGuiCol_Border] = ImVec4(0.09f, 0.16f, 0.22f, 1.0f);
     colors[ImGuiCol_BorderShadow] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
-    colors[ImGuiCol_FrameBg] = ImVec4(0.95f, 0.97f, 1.0f, 0.075f);
-    colors[ImGuiCol_FrameBgHovered] = ImVec4(1.0f, 1.0f, 1.0f, 0.13f);
-    colors[ImGuiCol_FrameBgActive] = ImVec4(accent.x, accent.y, accent.z, 0.20f);
-    colors[ImGuiCol_Button] = ImVec4(1.0f, 1.0f, 1.0f, 0.055f);
-    colors[ImGuiCol_ButtonHovered] = ImVec4(1.0f, 1.0f, 1.0f, 0.12f);
-    colors[ImGuiCol_ButtonActive] = ImVec4(1.0f, 1.0f, 1.0f, 0.18f);
-    colors[ImGuiCol_Header] = ImVec4(1.0f, 1.0f, 1.0f, 0.07f);
-    colors[ImGuiCol_HeaderHovered] = ImVec4(1.0f, 1.0f, 1.0f, 0.13f);
-    colors[ImGuiCol_HeaderActive] = ImVec4(accent.x, accent.y, accent.z, 0.18f);
+    colors[ImGuiCol_FrameBg] = ImVec4(0.055f, 0.10f, 0.14f, 1.0f);
+    colors[ImGuiCol_FrameBgHovered] = ImVec4(0.075f, 0.15f, 0.21f, 1.0f);
+    colors[ImGuiCol_FrameBgActive] = ImVec4(0.09f, 0.20f, 0.28f, 1.0f);
+    colors[ImGuiCol_Button] = ImVec4(0.035f, 0.067f, 0.102f, 1.0f);
+    colors[ImGuiCol_ButtonHovered] = ImVec4(0.055f, 0.13f, 0.19f, 1.0f);
+    colors[ImGuiCol_ButtonActive] = ImVec4(accent.x, accent.y, accent.z, 0.32f);
+    colors[ImGuiCol_Header] = ImVec4(0.055f, 0.12f, 0.17f, 1.0f);
+    colors[ImGuiCol_HeaderHovered] = ImVec4(0.07f, 0.16f, 0.22f, 1.0f);
+    colors[ImGuiCol_HeaderActive] = ImVec4(accent.x, accent.y, accent.z, 0.28f);
     colors[ImGuiCol_CheckMark] = accent;
-    colors[ImGuiCol_SliderGrab] = ImVec4(0.82f, 0.90f, 1.0f, 0.90f);
-    colors[ImGuiCol_SliderGrabActive] = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-    colors[ImGuiCol_Separator] = ImVec4(1.0f, 1.0f, 1.0f, 0.09f);
-    colors[ImGuiCol_ResizeGrip] = ImVec4(1.0f, 1.0f, 1.0f, 0.08f);
-    colors[ImGuiCol_ScrollbarBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.10f);
-    colors[ImGuiCol_ScrollbarGrab] = ImVec4(1.0f, 1.0f, 1.0f, 0.16f);
-    colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(1.0f, 1.0f, 1.0f, 0.25f);
-    colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(1.0f, 1.0f, 1.0f, 0.34f);
+    colors[ImGuiCol_SliderGrab] = accent;
+    colors[ImGuiCol_SliderGrabActive] = ImVec4(0.36f, 0.82f, 1.0f, 1.0f);
+    colors[ImGuiCol_Separator] = ImVec4(0.09f, 0.17f, 0.23f, 1.0f);
+    colors[ImGuiCol_ScrollbarBg] = ImVec4(0.02f, 0.035f, 0.055f, 1.0f);
+    colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.10f, 0.22f, 0.29f, 1.0f);
+    colors[ImGuiCol_ScrollbarGrabHovered] = accentDim;
+    colors[ImGuiCol_ScrollbarGrabActive] = accent;
 
-    // Smooth materialization: the sheet grows subtly from its center while fading in.
-    const ImVec2 fullSize(850.0f, 540.0f);
-    const float scale = 0.965f + 0.035f * easedOpen;
+    // Keep the existing smooth materialization, but remove all glass/refraction effects.
+    const ImVec2 fullSize(900.0f, 560.0f);
+    const float scale = 0.975f + 0.025f * easedOpen;
     const ImVec2 animatedSize(fullSize.x * scale, fullSize.y * scale);
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowPos(ImVec2((display.x - animatedSize.x) * 0.5f,
         (display.y - animatedSize.y) * 0.5f), ImGuiCond_Always);
     ImGui::SetNextWindowSize(animatedSize, ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.0f);
     ImGui::Begin("ze0nware##main", nullptr,
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-        ImGuiWindowFlags_NoBackground | (menuOpen ? 0 : ImGuiWindowFlags_NoInputs));
+        (menuOpen ? 0 : ImGuiWindowFlags_NoInputs));
 
-    ImDrawList* glass = ImGui::GetWindowDrawList();
+    ImDrawList* shellDraw = ImGui::GetWindowDrawList();
     const ImVec2 wp = ImGui::GetWindowPos();
     const ImVec2 ws = ImGui::GetWindowSize();
     const ImVec2 wmax(wp.x + ws.x, wp.y + ws.y);
-    const float radius = style.WindowRounding;
+    // Thin cyan top rule and restrained outer shadow match the reference hierarchy.
+    shellDraw->AddRectFilled(ImVec2(wp.x, wp.y), ImVec2(wmax.x, wp.y + 2.0f),
+        ImGui::GetColorU32(accent));
+    shellDraw->AddRect(wp, wmax, ImGui::GetColorU32(ImVec4(0.10f, 0.24f, 0.32f, 0.85f)),
+        style.WindowRounding, 0, 1.0f);
 
-    // Dim the scene only enough for readability; the game remains visibly present.
-    ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0.0f, 0.0f), display,
-        ImGui::GetColorU32(ImVec4(0.015f, 0.018f, 0.026f, 0.18f * easedOpen)));
-
-    // Deep soft shadow made from concentric translucent silhouettes.
-    for (int i = 5; i >= 1; --i) {
-        const float spread = static_cast<float>(i) * 4.0f;
-        const float alpha = (0.014f + (6 - i) * 0.007f) * easedOpen;
-        glass->AddRectFilled(ImVec2(wp.x - spread, wp.y - spread + 8.0f),
-            ImVec2(wmax.x + spread, wmax.y + spread + 8.0f),
-            ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.015f, alpha)), radius + spread);
-    }
-
-    // Neutral translucent body. A very small cool shift keeps it from looking flat,
-    // while avoiding the saturated blue-purple gradient of the previous version.
-    glass->AddRectFilledMultiColor(wp, wmax,
-        ImGui::GetColorU32(ImVec4(0.16f, 0.17f, 0.20f, 0.66f * easedOpen)),
-        ImGui::GetColorU32(ImVec4(0.13f, 0.145f, 0.18f, 0.64f * easedOpen)),
-        ImGui::GetColorU32(ImVec4(0.075f, 0.08f, 0.105f, 0.72f * easedOpen)),
-        ImGui::GetColorU32(ImVec4(0.09f, 0.105f, 0.13f, 0.69f * easedOpen)));
-
-    // Lensing cues: bright upper rim, dim lower rim, and a slow specular highlight
-    // traveling around the silhouette rather than a colored band across the content.
-    glass->AddLine(ImVec2(wp.x + radius, wp.y + 1.0f), ImVec2(wmax.x - radius, wp.y + 1.0f),
-        ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.34f * easedOpen)), 1.25f);
-    glass->AddLine(ImVec2(wp.x + radius, wmax.y - 1.0f), ImVec2(wmax.x - radius, wmax.y - 1.0f),
-        ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.02f, 0.35f * easedOpen)), 1.0f);
-    const float orbit = 0.5f + 0.5f * sinf(t * 0.75f);
-    const float shineX = wp.x + radius + (ws.x - radius * 2.0f) * orbit;
-    glass->AddCircleFilled(ImVec2(shineX, wp.y + 1.5f), 2.4f,
-        ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.62f * easedOpen)), 16);
-    glass->AddRect(wp, wmax,
-        ImGui::GetColorU32(ImVec4(0.86f, 0.91f, 1.0f, 0.19f * easedOpen)),
-        radius, 0, 1.0f);
-    glass->AddRect(ImVec2(wp.x + 2.0f, wp.y + 2.0f), ImVec2(wmax.x - 2.0f, wmax.y - 2.0f),
-        ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.055f * easedOpen)),
-        radius - 2.0f, 0, 1.0f);
-
-    ImGui::TextColored(ImVec4(0.95f, 0.97f, 1.0f, 1.0f), "ze0nware");
-    ImGui::SameLine();
-    ImGui::TextDisabled("  /  control center");
-    const ImVec2 line = ImGui::GetCursorScreenPos();
-    glass->AddLine(line, ImVec2(line.x + ImGui::GetContentRegionAvail().x, line.y),
-        ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.12f * easedOpen)), 1.0f);
-    ImGui::Dummy(ImVec2(0.0f, 9.0f));
-
-    // Top Tabs
+    // Persistent left navigation rail, as used by the Neverlose layout.
     static int currentTab = 0;
-    ImGui::BeginChild("TabsPanel", ImVec2(0, 38), true);
-    
-    // Custom tab buttons
-    float tabWidth = (ImGui::GetContentRegionAvail().x - 24.0f) / 4.0f;
-    
-    bool pushed0 = (currentTab == 0);
-    if (pushed0) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.0f, 1.0f, 1.0f, 0.17f));
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.98f, 1.0f, 1.0f));
-    }
-    if (ImGui::Button("RAGEBOT", ImVec2(tabWidth, 0))) currentTab = 0;
-    if (pushed0) ImGui::PopStyleColor(2);
-    
-    ImGui::SameLine();
-    bool pushed1 = (currentTab == 1);
-    if (pushed1) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.0f, 1.0f, 1.0f, 0.17f));
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.98f, 1.0f, 1.0f));
-    }
-    if (ImGui::Button("ANTI-AIM", ImVec2(tabWidth, 0))) currentTab = 1;
-    if (pushed1) ImGui::PopStyleColor(2);
-    
-    ImGui::SameLine();
-    bool pushed2 = (currentTab == 2);
-    if (pushed2) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.0f, 1.0f, 1.0f, 0.17f));
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.98f, 1.0f, 1.0f));
-    }
-    if (ImGui::Button("VISUALS", ImVec2(tabWidth, 0))) currentTab = 2;
-    if (pushed2) ImGui::PopStyleColor(2);
-    
-    ImGui::SameLine();
-    bool pushed3 = (currentTab == 3);
-    if (pushed3) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.0f, 1.0f, 1.0f, 0.17f));
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.98f, 1.0f, 1.0f));
-    }
-    if (ImGui::Button("WEAPONS", ImVec2(tabWidth, 0))) currentTab = 3;
-    if (pushed3) ImGui::PopStyleColor(2);
-    
-    ImGui::EndChild();
+    ImGui::BeginChild("Sidebar", ImVec2(176.0f, 0.0f), false,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::SetCursorPos(ImVec2(18.0f, 20.0f));
+    ImGui::TextColored(accent, "ze0nware");
+    ImGui::SetCursorPosX(18.0f);
+    ImGui::TextDisabled("private build");
+    ImGui::SetCursorPosY(76.0f);
 
-    // Main Content Area
+    const char* navLabels[] = { "AIMBOT", "ANTI-AIM", "VISUALS", "WEAPONS" };
+    for (int tab = 0; tab < 4; ++tab) {
+        const bool selected = currentTab == tab;
+        ImGui::SetCursorPosX(10.0f);
+        ImGui::PushID(tab);
+        if (selected) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(accent.x, accent.y, accent.z, 0.16f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(accent.x, accent.y, accent.z, 0.20f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.88f, 0.96f, 1.0f, 1.0f));
+        }
+        const ImVec2 buttonPos = ImGui::GetCursorScreenPos();
+        if (ImGui::Button(navLabels[tab], ImVec2(156.0f, 38.0f))) currentTab = tab;
+        if (selected) {
+            ImGui::GetWindowDrawList()->AddRectFilled(
+                ImVec2(buttonPos.x, buttonPos.y + 7.0f), ImVec2(buttonPos.x + 3.0f, buttonPos.y + 31.0f),
+                ImGui::GetColorU32(accent), 2.0f);
+            ImGui::PopStyleColor(3);
+        }
+        ImGui::PopID();
+        ImGui::Dummy(ImVec2(0.0f, 3.0f));
+    }
+
+    ImGui::SetCursorPos(ImVec2(18.0f, ImGui::GetWindowHeight() - 48.0f));
+    ImGui::TextDisabled("INSERT  /  close");
+    ImGui::EndChild();
+    ImGui::SameLine(0.0f, 0.0f);
+
+    // Main content area: compact two-column section cards on a dark navy surface.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 14.0f));
     ImGui::BeginChild("ContentPanel", ImVec2(0, 0), true);
+    ImGui::PopStyleVar();
     
-    if (currentTab == 0) { // RAGEBOT (Movement/Misc)
+    if (currentTab == 0) { // AIMBOT / Movement
         ImGui::Columns(2, nullptr, false);
         
         ImGui::BeginChild("Movement", ImVec2(0, 0), true);
@@ -5731,7 +5682,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     ImGui::EndChild(); // ContentPanel
     ImGui::End();
     style.Alpha = 1.0f;
-    } // menuOpenAnimation
+    } // animated menu
 
     } // menuOpen or fade-out
 
