@@ -28,6 +28,7 @@
 
 
 
+extern "C" IMAGE_DOS_HEADER __ImageBase;
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 
@@ -458,6 +459,9 @@ volatile LONG pendingSkyboxCommand = 0;
 
 bool adminBhopEnabled = false;
 bool adminBhopCsStrafeMode = false;
+volatile LONG adminBhopManualStrafeHeld = 0;
+Vector3 adminBhopLastManualMotion;
+bool adminBhopLastManualMotionValid = false;
 float adminBhopSpeedMultiplier = 1.0f;
 float adminBhopMaxSpeed = 6.50f;
 uintptr_t adminBhopObservedMovement = 0;
@@ -1224,6 +1228,9 @@ int currentTab = 0;
 // Config menu
 
 bool showConfigMenu = false;
+char configName[64] = "default";
+char configStatus[128] = "Ready";
+std::vector<std::string> configFiles;
 
 float menuColor[3] = { 0.066f, 0.059f, 0.141f }; // Fatality window_bg
 
@@ -1237,7 +1244,150 @@ bool backgroundLoaded = false;
 
 char backgroundPath[256] = "maxresdefault.jpg"; // Default path
 
+static std::string GetConfigDirectory()
+{
+    char modulePath[MAX_PATH] = {};
+    GetModuleFileNameA(reinterpret_cast<HMODULE>(&__ImageBase), modulePath, MAX_PATH);
+    char* slash = strrchr(modulePath, '\');
+    if (slash) *slash = '\0';
+    std::string directory = std::string(modulePath) + "\\ze0nware\\configs";
+    CreateDirectoryA((std::string(modulePath) + "\\ze0nware").c_str(), nullptr);
+    CreateDirectoryA(directory.c_str(), nullptr);
+    return directory;
+}
 
+static std::string SanitizeConfigName(const char* input)
+{
+    std::string result;
+    for (const char* c = input; c && *c && result.size() < 48; ++c)
+        if ((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') ||
+            (*c >= '0' && *c <= '9') || *c == '-' || *c == '_') result += *c;
+    return result.empty() ? "default" : result;
+}
+
+static std::string GetConfigPath(const char* name)
+{
+    return GetConfigDirectory() + "\\" + SanitizeConfigName(name) + ".ini";
+}
+
+static void RefreshConfigFiles()
+{
+    configFiles.clear();
+    WIN32_FIND_DATAA data = {};
+    HANDLE find = FindFirstFileA((GetConfigDirectory() + "\\*.ini").c_str(), &data);
+    if (find == INVALID_HANDLE_VALUE) return;
+    do {
+        std::string name = data.cFileName;
+        if (name.size() > 4) name.resize(name.size() - 4);
+        configFiles.push_back(name);
+    } while (FindNextFileA(find, &data));
+    FindClose(find);
+    std::sort(configFiles.begin(), configFiles.end());
+}
+
+static void WriteConfigValue(const std::string& path, const char* key, bool value)
+{ WritePrivateProfileStringA("ze0nware", key, value ? "1" : "0", path.c_str()); }
+static void WriteConfigValue(const std::string& path, const char* key, int value)
+{ char text[32]; sprintf_s(text, "%d", value); WritePrivateProfileStringA("ze0nware", key, text, path.c_str()); }
+static void WriteConfigValue(const std::string& path, const char* key, float value)
+{ char text[32]; sprintf_s(text, "%.6f", value); WritePrivateProfileStringA("ze0nware", key, text, path.c_str()); }
+static bool ReadConfigBool(const std::string& path, const char* key, bool fallback)
+{ return GetPrivateProfileIntA("ze0nware", key, fallback ? 1 : 0, path.c_str()) != 0; }
+static int ReadConfigInt(const std::string& path, const char* key, int fallback)
+{ return GetPrivateProfileIntA("ze0nware", key, fallback, path.c_str()); }
+static float ReadConfigFloat(const std::string& path, const char* key, float fallback)
+{
+    char text[64] = {};
+    char fallbackText[32]; sprintf_s(fallbackText, "%.6f", fallback);
+    GetPrivateProfileStringA("ze0nware", key, fallbackText, text, sizeof(text), path.c_str());
+    const float value = static_cast<float>(atof(text));
+    return isfinite(value) ? value : fallback;
+}
+
+static bool SaveConfig(const char* requestedName)
+{
+    const std::string name = SanitizeConfigName(requestedName);
+    const std::string path = GetConfigPath(name.c_str());
+#define SAVE_BOOL(v) WriteConfigValue(path, #v, v)
+#define SAVE_INT(v) WriteConfigValue(path, #v, v)
+#define SAVE_FLOAT(v) WriteConfigValue(path, #v, v)
+    SAVE_BOOL(jbActive); SAVE_BOOL(pixelSurfReleaseHop); SAVE_FLOAT(surfSpeed);
+    SAVE_BOOL(adminBhopEnabled); SAVE_BOOL(adminBhopCsStrafeMode); SAVE_FLOAT(adminBhopMaxSpeed);
+    SAVE_BOOL(airJump); SAVE_BOOL(edgeBugEnabled); SAVE_FLOAT(edgeBugPullForce);
+    SAVE_BOOL(velocityLimiterEnabled); SAVE_FLOAT(velocityLimit);
+    SAVE_BOOL(aimbotEnabled); SAVE_BOOL(visibleAimbotEnabled); SAVE_BOOL(aimbotVisibleCheck); SAVE_BOOL(aimbotAutoFire);
+    SAVE_BOOL(silentAntiAimEnabled); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
+    SAVE_BOOL(espShowName); SAVE_BOOL(espShowHealth); SAVE_BOOL(espShowWeapon); SAVE_BOOL(espGradient);
+    SAVE_BOOL(worldColorEnabled); SAVE_INT(worldColorMode); SAVE_FLOAT(worldColorStrength); SAVE_FLOAT(worldColorAlpha);
+    SAVE_BOOL(fogEnabled); SAVE_FLOAT(fogStartDistance); SAVE_FLOAT(fogEndDistance); SAVE_FLOAT(fogDensity);
+    SAVE_BOOL(thirdPersonEnabled); SAVE_FLOAT(thirdPersonHorizontalOffset); SAVE_FLOAT(thirdPersonHeightAdjustment); SAVE_FLOAT(thirdPersonDistanceAdjustment);
+    SAVE_BOOL(infinityAmmo); SAVE_BOOL(doubleTapEnabled); SAVE_BOOL(noSpreadEnabled); SAVE_BOOL(removeScopeBorders);
+    SAVE_BOOL(weaponChamsEnabled); SAVE_INT(weaponChamsMode); SAVE_BOOL(armChamsEnabled); SAVE_INT(armChamsMode);
+    SAVE_BOOL(gloveChamsEnabled); SAVE_INT(gloveChamsMode); SAVE_BOOL(localPlayerChamsEnabled); SAVE_INT(localPlayerChamsMode);
+    SAVE_BOOL(enemyChamsEnabled); SAVE_BOOL(enemyChamsThroughWalls); SAVE_INT(enemyChamsMode);
+    SAVE_BOOL(hitMarkerEnabled); SAVE_BOOL(bulletTracerEnabled);
+    SAVE_INT(jbBind.key); SAVE_BOOL(jbBind.toggleMode); SAVE_INT(airJumpBind.key); SAVE_INT(edgeBugBind.key);
+#undef SAVE_BOOL
+#undef SAVE_INT
+#undef SAVE_FLOAT
+    WritePrivateProfileStringA(nullptr, nullptr, nullptr, path.c_str());
+    strcpy_s(configName, name.c_str());
+    sprintf_s(configStatus, "Saved %s", name.c_str());
+    RefreshConfigFiles();
+    return true;
+}
+
+static bool LoadConfig(const char* requestedName)
+{
+    const std::string name = SanitizeConfigName(requestedName);
+    const std::string path = GetConfigPath(name.c_str());
+    if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        sprintf_s(configStatus, "Config %s not found", name.c_str());
+        return false;
+    }
+#define LOAD_BOOL(v) v = ReadConfigBool(path, #v, v)
+#define LOAD_INT(v) v = ReadConfigInt(path, #v, v)
+#define LOAD_FLOAT(v) v = ReadConfigFloat(path, #v, v)
+    LOAD_BOOL(jbActive); pixelSurf = jbActive; LOAD_BOOL(pixelSurfReleaseHop); LOAD_FLOAT(surfSpeed);
+    LOAD_BOOL(adminBhopEnabled); LOAD_BOOL(adminBhopCsStrafeMode); LOAD_FLOAT(adminBhopMaxSpeed);
+    if (adminBhopMaxSpeed < 1.0f) adminBhopMaxSpeed = 1.0f; if (adminBhopMaxSpeed > 30.0f) adminBhopMaxSpeed = 30.0f;
+    LOAD_BOOL(airJump); LOAD_BOOL(edgeBugEnabled); LOAD_FLOAT(edgeBugPullForce);
+    LOAD_BOOL(velocityLimiterEnabled); LOAD_FLOAT(velocityLimit);
+    LOAD_BOOL(aimbotEnabled); LOAD_BOOL(visibleAimbotEnabled); LOAD_BOOL(aimbotVisibleCheck); LOAD_BOOL(aimbotAutoFire);
+    LOAD_BOOL(silentAntiAimEnabled); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
+    LOAD_BOOL(espShowName); LOAD_BOOL(espShowHealth); LOAD_BOOL(espShowWeapon); LOAD_BOOL(espGradient);
+    LOAD_BOOL(worldColorEnabled); LOAD_INT(worldColorMode); LOAD_FLOAT(worldColorStrength); LOAD_FLOAT(worldColorAlpha);
+    LOAD_BOOL(fogEnabled); LOAD_FLOAT(fogStartDistance); LOAD_FLOAT(fogEndDistance); LOAD_FLOAT(fogDensity);
+    LOAD_BOOL(thirdPersonEnabled); LOAD_FLOAT(thirdPersonHorizontalOffset); LOAD_FLOAT(thirdPersonHeightAdjustment); LOAD_FLOAT(thirdPersonDistanceAdjustment);
+    LOAD_BOOL(infinityAmmo); LOAD_BOOL(doubleTapEnabled); LOAD_BOOL(noSpreadEnabled); LOAD_BOOL(removeScopeBorders);
+    LOAD_BOOL(weaponChamsEnabled); LOAD_INT(weaponChamsMode); LOAD_BOOL(armChamsEnabled); LOAD_INT(armChamsMode);
+    LOAD_BOOL(gloveChamsEnabled); LOAD_INT(gloveChamsMode); LOAD_BOOL(localPlayerChamsEnabled); LOAD_INT(localPlayerChamsMode);
+    LOAD_BOOL(enemyChamsEnabled); LOAD_BOOL(enemyChamsThroughWalls); LOAD_INT(enemyChamsMode);
+    LOAD_BOOL(hitMarkerEnabled); LOAD_BOOL(bulletTracerEnabled);
+    LOAD_INT(jbBind.key); LOAD_BOOL(jbBind.toggleMode); LOAD_INT(airJumpBind.key); LOAD_INT(edgeBugBind.key);
+#undef LOAD_BOOL
+#undef LOAD_INT
+#undef LOAD_FLOAT
+    adminBhopLastManualMotionValid = false;
+    InterlockedExchange(&adminBhopManualStrafeHeld, 0);
+    InterlockedExchange(&pendingWorldColorCommand, worldColorEnabled ? 1 : 2);
+    InterlockedExchange(&pendingFogCommand, fogEnabled ? 1 : 2);
+    InterlockedExchange(&pendingWeaponChamsRefresh, 1); InterlockedExchange(&pendingArmChamsRefresh, 1);
+    InterlockedExchange(&pendingGloveChamsRefresh, 1); InterlockedExchange(&pendingLocalPlayerChamsRefresh, 1);
+    InterlockedExchange(&pendingEnemyChamsRefresh, 1); InterlockedExchange(&pendingThirdPersonCommand, 1);
+    strcpy_s(configName, name.c_str());
+    sprintf_s(configStatus, "Loaded %s", name.c_str());
+    return true;
+}
+
+static bool DeleteConfig(const char* requestedName)
+{
+    const std::string name = SanitizeConfigName(requestedName);
+    const bool removed = DeleteFileA(GetConfigPath(name.c_str()).c_str()) != 0;
+    sprintf_s(configStatus, removed ? "Deleted %s" : "Could not delete %s", name.c_str());
+    RefreshConfigFiles();
+    return removed;
+}
 
 // Load background texture from custom path
 
@@ -2357,7 +2507,9 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
                 float& strafeInput = *reinterpret_cast<float*>(command + 0x10);
                 float& forwardInput = *reinterpret_cast<float*>(command + 0x14);
                 const float manualStrafe = strafeInput;
-                if (fabsf(manualStrafe) > 0.01f) {
+                const bool hasManualStrafe = fabsf(manualStrafe) > 0.01f;
+                InterlockedExchange(&adminBhopManualStrafeHeld, hasManualStrafe ? 1 : 0);
+                if (hasManualStrafe) {
                     // Standoff's native BHop interprets raw A/D as pure sideways
                     // movement. Convert A/D into forward acceleration relative to
                     // the live camera; mouse-left with A / mouse-right with D then
@@ -2369,6 +2521,10 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
                     // No A/D means no automatic W propulsion in manual mode.
                     forwardInput = 0.0f;
                 }
+            }
+            else {
+                InterlockedExchange(&adminBhopManualStrafeHeld, 0);
+                adminBhopLastManualMotionValid = false;
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -4377,6 +4533,28 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         ApplyFogSettings();
     }
 
+    if (keyValidated && adminBhopEnabled && adminBhopCsStrafeMode && instance) {
+        bool grounded = false;
+        __try { grounded = o_CC_get_isGrounded ? o_CC_get_isGrounded(instance) : false; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { grounded = false; }
+        if (grounded) {
+            adminBhopLastManualMotion = motion;
+            adminBhopLastManualMotionValid = true;
+        }
+        else if (InterlockedCompareExchange(&adminBhopManualStrafeHeld, 0, 0)) {
+            // A/D is physically held: accept the camera-relative arc generated by
+            // the native movement code and remember it as the latest legal motion.
+            adminBhopLastManualMotion = motion;
+            adminBhopLastManualMotionValid = true;
+        }
+        else if (adminBhopLastManualMotionValid) {
+            // No A/D: retain world-space momentum. Rotating only the camera cannot
+            // steer the player until a strafe key is pressed again.
+            motion.x = adminBhopLastManualMotion.x;
+            motion.z = adminBhopLastManualMotion.z;
+        }
+    }
+
     if (keyValidated && jbActive) {
         pixelSurfCharacterController = instance;
         float speed = sqrt(motion.x * motion.x + motion.z * motion.z);
@@ -5258,22 +5436,24 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (menuOpen || menuOpenAnimation > 0.0f) {
 
     if (menuOpen && showConfigMenu) {
-        ImGui::Begin("Config", &showConfigMenu);
-        ImGui::Text("ze0nware appearance");
+        ImGui::SetNextWindowSize(ImVec2(360.0f, 330.0f), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Configs##ze0nware", &showConfigMenu);
+        ImGui::InputText("Name", configName, sizeof(configName));
+        if (ImGui::Button("Save", ImVec2(100.0f, 0.0f))) SaveConfig(configName);
+        ImGui::SameLine();
+        if (ImGui::Button("Load", ImVec2(100.0f, 0.0f))) LoadConfig(configName);
+        ImGui::SameLine();
+        if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f))) DeleteConfig(configName);
         ImGui::Separator();
-        ImGui::ColorEdit3("Menu Color", menuColor);
-        ImGui::ColorEdit3("Accent Color", accentColor);
-        ImGui::Checkbox("Custom Background", &useCustomBackground);
-        if (useCustomBackground) {
-            ImGui::Text("Background Path:");
-            ImGui::InputText("##bgpath", backgroundPath, sizeof(backgroundPath));
-            if (ImGui::Button("Load Background")) {
-                backgroundLoaded = false;
-                LoadBackgroundTexture();
-            }
-            ImGui::SameLine();
-            ImGui::TextColored(backgroundLoaded ? ImVec4(0, 1, 0, 1) : ImVec4(1, 0, 0, 1), backgroundLoaded ? "Loaded!" : "Not found");
+        if (ImGui::Button("Refresh")) RefreshConfigFiles();
+        ImGui::BeginChild("ConfigList", ImVec2(0.0f, 210.0f), true);
+        for (const std::string& saved : configFiles) {
+            const bool selected = saved == configName;
+            if (ImGui::Selectable(saved.c_str(), selected))
+                strcpy_s(configName, saved.c_str());
         }
+        ImGui::EndChild();
+        ImGui::TextDisabled("%s", configStatus);
         ImGui::End();
     }
 
@@ -5419,6 +5599,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Dummy(ImVec2(0.0f, 3.0f));
     }
 
+    ImGui::SetCursorPos(ImVec2(3.0f, ImGui::GetWindowHeight() - 38.0f));
+    if (ImGui::Button("CONFIGS", ImVec2(134.0f, 32.0f))) {
+        showConfigMenu = !showConfigMenu;
+        if (showConfigMenu) RefreshConfigFiles();
+    }
     ImGui::EndChild();
     ImGui::SameLine(0.0f, 0.0f);
 
