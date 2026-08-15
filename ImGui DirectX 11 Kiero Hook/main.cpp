@@ -5258,13 +5258,30 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     colors[ImGuiCol_ScrollbarGrabHovered] = accentDim;
     colors[ImGuiCol_ScrollbarGrabActive] = accent;
 
-    // Keep the existing smooth materialization, but remove all glass/refraction effects.
-    const ImVec2 fullSize(900.0f, 560.0f);
+    // Fit smaller resolutions instead of letting the bottom/right controls leave the screen.
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const ImVec2 fullSize(
+        (display.x - 24.0f < 900.0f) ? display.x - 24.0f : 900.0f,
+        (display.y - 24.0f < 560.0f) ? display.y - 24.0f : 560.0f);
     const float scale = 0.975f + 0.025f * easedOpen;
     const ImVec2 animatedSize(fullSize.x * scale, fullSize.y * scale);
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    ImGui::SetNextWindowPos(ImVec2((display.x - animatedSize.x) * 0.5f,
-        (display.y - animatedSize.y) * 0.5f), ImGuiCond_Always);
+    static ImVec2 menuPosition(0.0f, 0.0f);
+    static ImVec2 lastDisplaySize(0.0f, 0.0f);
+    static bool menuPositionInitialized = false;
+    if (!menuPositionInitialized || display.x != lastDisplaySize.x || display.y != lastDisplaySize.y) {
+        menuPosition = ImVec2((display.x - animatedSize.x) * 0.5f,
+            (display.y - animatedSize.y) * 0.5f);
+        lastDisplaySize = display;
+        menuPositionInitialized = true;
+    }
+    // Clamp after resolution changes and after dragging near an edge.
+    if (menuPosition.x < 8.0f) menuPosition.x = 8.0f;
+    if (menuPosition.y < 8.0f) menuPosition.y = 8.0f;
+    if (menuPosition.x + animatedSize.x > display.x - 8.0f)
+        menuPosition.x = display.x - animatedSize.x - 8.0f;
+    if (menuPosition.y + animatedSize.y > display.y - 8.0f)
+        menuPosition.y = display.y - animatedSize.y - 8.0f;
+    ImGui::SetNextWindowPos(menuPosition, ImGuiCond_Always);
     ImGui::SetNextWindowSize(animatedSize, ImGuiCond_Always);
     ImGui::Begin("ze0nware##main", nullptr,
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
@@ -5274,16 +5291,40 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     const ImVec2 wp = ImGui::GetWindowPos();
     const ImVec2 ws = ImGui::GetWindowSize();
     const ImVec2 wmax(wp.x + ws.x, wp.y + ws.y);
-    // Thin cyan top rule and restrained outer shadow match the reference hierarchy.
+    // Restrained cyan glow: several faint outlines behind the window, then a crisp rim.
+    ImDrawList* background = ImGui::GetBackgroundDrawList();
+    for (int glow = 5; glow >= 1; --glow) {
+        const float spread = static_cast<float>(glow) * 2.5f;
+        const float alpha = (0.010f + (6 - glow) * 0.009f) * easedOpen;
+        background->AddRect(ImVec2(wp.x - spread, wp.y - spread),
+            ImVec2(wmax.x + spread, wmax.y + spread),
+            ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, alpha)),
+            style.WindowRounding + spread, 0, 2.0f);
+    }
     shellDraw->AddRectFilled(ImVec2(wp.x, wp.y), ImVec2(wmax.x, wp.y + 2.0f),
         ImGui::GetColorU32(accent));
-    shellDraw->AddRect(wp, wmax, ImGui::GetColorU32(ImVec4(0.10f, 0.24f, 0.32f, 0.85f)),
+    shellDraw->AddRect(wp, wmax, ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.42f)),
         style.WindowRounding, 0, 1.0f);
 
     // Persistent left navigation rail, as used by the Neverlose layout.
     static int currentTab = 0;
     ImGui::BeginChild("Sidebar", ImVec2(176.0f, 0.0f), false,
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    // Dedicated drag zone above navigation. Child panels otherwise consume the whole
+    // window, so relying on ImGui's background dragging cannot move this menu.
+    ImGui::SetCursorPos(ImVec2(0.0f, 0.0f));
+    ImGui::InvisibleButton("##MenuDragZone", ImVec2(176.0f, 68.0f));
+    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        menuPosition.x += ImGui::GetIO().MouseDelta.x;
+        menuPosition.y += ImGui::GetIO().MouseDelta.y;
+        if (menuPosition.x < 8.0f) menuPosition.x = 8.0f;
+        if (menuPosition.y < 8.0f) menuPosition.y = 8.0f;
+        if (menuPosition.x + animatedSize.x > display.x - 8.0f)
+            menuPosition.x = display.x - animatedSize.x - 8.0f;
+        if (menuPosition.y + animatedSize.y > display.y - 8.0f)
+            menuPosition.y = display.y - animatedSize.y - 8.0f;
+        ImGui::SetWindowPos("ze0nware##main", menuPosition, ImGuiCond_Always);
+    }
     ImGui::SetCursorPos(ImVec2(18.0f, 20.0f));
     ImGui::TextColored(accent, "ze0nware");
     ImGui::SetCursorPosX(18.0f);
@@ -5319,7 +5360,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     // Main content area: compact two-column section cards on a dark navy surface.
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 14.0f));
-    ImGui::BeginChild("ContentPanel", ImVec2(0, 0), true);
+    ImGui::BeginChild("ContentPanel", ImVec2(0, 0), true,
+        ImGuiWindowFlags_AlwaysVerticalScrollbar);
     ImGui::PopStyleVar();
     
     if (currentTab == 0) { // AIMBOT / Movement
