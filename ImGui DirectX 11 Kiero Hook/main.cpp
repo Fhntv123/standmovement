@@ -235,6 +235,8 @@ struct Matrix16 {
 #define OFFSET_PLAYER_HEALTH_APPLY_B                   0x8B6F90  // bqw.scv(...)
 #define OFFSET_PLAYER_HEALTH_APPLY_C                   0x8B7210  // bqw.scw(...)
 #define OFFSET_PLAYER_HEALTH_APPLY_D                   0x8B7660  // bqw.scx(...)
+#define OFFSET_PLAYER_HIT_RECEIVE_A                    0x878FD0  // PlayerHitController.res(chv, shooter)
+#define OFFSET_PLAYER_HIT_RECEIVE_B                    0x8790E0  // PlayerHitController.rfj(chv, shooter)
 #define OFFSET_PLAYER_HIT_CONFIRMED_A                  0x87A690  // PlayerHitController.ria(boo)
 #define OFFSET_PLAYER_HIT_CONFIRMED_B                  0x87A890  // PlayerHitController.rib(boo)
 #define OFFSET_DAMAGE_RESULT_GET_HEALTH                0x880990  // boo.rfu() / dcxl
@@ -513,6 +515,7 @@ uintptr_t hitLogLastResult = 0;
 ULONGLONG hitLogLastResultAt = 0;
 struct PendingHitLogShot {
     uintptr_t victim;
+    uintptr_t shotData;
     int healthBefore;
     char hitbox[16];
     ULONGLONG firedAt;
@@ -774,6 +777,7 @@ static int ReadHealthStateNow(uintptr_t state) {
 static void* GetLocalPC();
 static unsigned char GetPCTeam(void* pc);
 static void GetPCName(void* pc, char* output, int outputSize);
+static int GetPCHealth(void* pc);
 
 static void CacheUpdatedHealth(uintptr_t state) {
     const int hp = ReadHealthStateNow(state);
@@ -805,6 +809,98 @@ void __fastcall hk_HealthApplyC(uintptr_t state, int a, bool b, const Il2CppMeth
 void __fastcall hk_HealthApplyD(uintptr_t state, int a, bool b, const Il2CppMethod* method) {
     o_HealthApplyD(state, a, b, method);
     InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, -1); CacheUpdatedHealth(state);
+}
+
+using t_PlayerHitReceive = void(__fastcall*)(uintptr_t, uintptr_t, uintptr_t, const Il2CppMethod*);
+t_PlayerHitReceive o_PlayerHitReceiveA = nullptr;
+t_PlayerHitReceive o_PlayerHitReceiveB = nullptr;
+
+static uintptr_t SafeHitControllerPlayer(uintptr_t hitController) {
+    if (!hitController) return 0;
+    __try { return *reinterpret_cast<uintptr_t*>(hitController + 0x90); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+static uintptr_t SafePlayerHitController(void* player) {
+    if (!player) return 0;
+    __try { return *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(player) + 0xF0); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+static void ReadShotHitbox(uintptr_t shotData, char* output, size_t outputSize) {
+    if (!output || outputSize < 8) return;
+    strcpy_s(output, outputSize, "Unknown");
+    if (!shotData) return;
+    __try {
+        const uintptr_t hits = *reinterpret_cast<uintptr_t*>(shotData + 0x38); // chv.cdwv: chs[]
+        if (!hits) return;
+        const uintptr_t count = *reinterpret_cast<uintptr_t*>(hits + 0x18);
+        if (!count || count > 64) return;
+        int head = 0, body = 0, legs = 0;
+        for (uintptr_t i = 0; i < count; ++i) {
+            const uintptr_t hit = *reinterpret_cast<uintptr_t*>(hits + 0x20 + i * sizeof(uintptr_t));
+            if (!hit) continue;
+            const int bone = *reinterpret_cast<int*>(hit + 0x34); // chs.cdvy: BipedMap.blh
+            if (bone == 0 || bone == 1) ++head;
+            else if (bone >= 13 && bone <= 18) ++legs;
+            else if ((bone >= 2 && bone <= 12) || bone == 19) ++body;
+        }
+        if (head >= body && head >= legs && head > 0) strcpy_s(output, outputSize, "Head");
+        else if (body >= legs && body > 0) strcpy_s(output, outputSize, "Body");
+        else if (legs > 0) strcpy_s(output, outputSize, "Legs");
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { strcpy_s(output, outputSize, "Unknown"); }
+}
+
+static void CaptureAuthoritativeOutgoingHit(uintptr_t victimHitController,
+    uintptr_t shotData, uintptr_t shooterHitController) {
+    if (!keyValidated || !hitLogEnabled || !victimHitController || !shotData || !shooterHitController) return;
+    void* localPlayer = GetLocalPC();
+    if (!localPlayer) return;
+    const uintptr_t localHitController = SafePlayerHitController(localPlayer);
+    if (!localHitController || shooterHitController != localHitController || victimHitController == localHitController) return;
+
+    const uintptr_t victim = SafeHitControllerPlayer(victimHitController);
+    if (!victim || victim == reinterpret_cast<uintptr_t>(localPlayer)) return;
+    const unsigned char localTeam = GetPCTeam(localPlayer);
+    const unsigned char victimTeam = GetPCTeam(reinterpret_cast<void*>(victim));
+    if (!localTeam || localTeam == 3 || !victimTeam || victimTeam == 3 || victimTeam == localTeam) return;
+
+    PendingHitLogShot shot = {};
+    shot.victim = victim;
+    shot.shotData = shotData;
+    shot.healthBefore = GetPCHealth(reinterpret_cast<void*>(victim));
+    ReadShotHitbox(shotData, shot.hitbox, sizeof(shot.hitbox));
+    shot.firedAt = GetTickCount64();
+    shot.confirmedAt = shot.firedAt; // res/rfj is itself the authoritative player-hit callback
+
+    AcquireSRWLockExclusive(&hitLogLock);
+    bool duplicate = false;
+    for (const PendingHitLogShot& pending : pendingHitLogShots) {
+        if (pending.victim == victim && pending.shotData == shotData &&
+            shot.firedAt >= pending.firedAt && shot.firedAt - pending.firedAt <= 500) {
+            duplicate = true;
+            break;
+        }
+    }
+    if (!duplicate) {
+        pendingHitLogShots.push_back(shot);
+        if (pendingHitLogShots.size() > 12)
+            pendingHitLogShots.erase(pendingHitLogShots.begin(),
+                pendingHitLogShots.begin() + (pendingHitLogShots.size() - 12));
+    }
+    ReleaseSRWLockExclusive(&hitLogLock);
+}
+
+void __fastcall hk_PlayerHitReceiveA(uintptr_t victimHitController, uintptr_t shotData,
+    uintptr_t shooterHitController, const Il2CppMethod* method) {
+    // Capture before the original mutates replicated health, so damage is an exact HP delta.
+    CaptureAuthoritativeOutgoingHit(victimHitController, shotData, shooterHitController);
+    o_PlayerHitReceiveA(victimHitController, shotData, shooterHitController, method);
+}
+void __fastcall hk_PlayerHitReceiveB(uintptr_t victimHitController, uintptr_t shotData,
+    uintptr_t shooterHitController, const Il2CppMethod* method) {
+    CaptureAuthoritativeOutgoingHit(victimHitController, shotData, shooterHitController);
+    o_PlayerHitReceiveB(victimHitController, shotData, shooterHitController, method);
 }
 
 using t_PlayerHitConfirmed = void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*);
@@ -2487,93 +2583,14 @@ static bool ResolveConfirmedPlayerImpact(Vector3& impactPoint, Vector3& castEndF
     return found;
 }
 
-static void CaptureOutgoingHitLogTarget(const Vector3& castStart, const Vector3& castEnd)
-{
-    if (!hitLogEnabled) return;
-    void* localPlayer = GetLocalPC();
-    if (!localPlayer) return;
-    const unsigned char localTeam = GetPCTeam(localPlayer);
-    const Vector3 segment = castEnd - castStart;
-    const float lengthSquared = segment.x * segment.x + segment.y * segment.y + segment.z * segment.z;
-    if (lengthSquared <= 0.0001f) return;
-
-    void* players[64] = {};
-    int playerCount = 0;
-    CollectPlayers(players, 64, playerCount);
-    uintptr_t bestVictim = 0;
-    const char* bestHitbox = "Unknown";
-    float bestDistance = 3.0f;
-    for (int i = 0; i < playerCount; ++i) {
-        void* player = players[i];
-        if (!player || player == localPlayer) continue;
-        const unsigned char team = GetPCTeam(player);
-        if (team == 0 || team == 3 || team == localTeam) continue;
-        __try {
-            const uintptr_t biped = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(player) + 0x118);
-            if (!biped) continue;
-            struct BoneCandidate { uintptr_t offset; const char* hitbox; };
-            static const BoneCandidate bones[] = {
-                { 0x20, "Head" }, { 0x28, "Head" },
-                { 0x30, "Body" }, { 0x38, "Body" }, { 0x40, "Body" }, { 0x88, "Body" },
-                { 0x90, "Legs" }, { 0x98, "Legs" }, { 0xA0, "Legs" },
-                { 0xB0, "Legs" }, { 0xB8, "Legs" }, { 0xC0, "Legs" }
-            };
-            for (const BoneCandidate& candidate : bones) {
-                const uintptr_t bone = *reinterpret_cast<uintptr_t*>(biped + candidate.offset);
-                if (!bone || !o_Transform_get_position) continue;
-                const Vector3 anchorPoint = o_Transform_get_position(bone);
-                const Vector3 toAnchor = anchorPoint - castStart;
-                float t = (toAnchor.x * segment.x + toAnchor.y * segment.y + toAnchor.z * segment.z) / lengthSquared;
-                if (t < 0.0f || t > 1.05f) continue;
-                const Vector3 point(castStart.x + segment.x * t,
-                    castStart.y + segment.y * t, castStart.z + segment.z * t);
-                const float distance = point.Distance(anchorPoint);
-                if (distance < bestDistance) {
-                    bestDistance = distance;
-                    bestVictim = reinterpret_cast<uintptr_t>(player);
-                    bestHitbox = candidate.hitbox;
-                }
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
-    if (bestVictim) {
-        PendingHitLogShot shot = {};
-        shot.victim = bestVictim;
-        shot.healthBefore = GetPCHealth(reinterpret_cast<void*>(bestVictim));
-        strcpy_s(shot.hitbox, bestHitbox);
-        shot.firedAt = GetTickCount64();
-        shot.confirmedAt = 0;
-        AcquireSRWLockExclusive(&hitLogLock);
-        pendingHitLogShots.push_back(shot);
-        if (pendingHitLogShots.size() > 12)
-            pendingHitLogShots.erase(pendingHitLogShots.begin(),
-                pendingHitLogShots.begin() + (pendingHitLogShots.size() - 12));
-        ReleaseSRWLockExclusive(&hitLogLock);
-    }
-}
-
 void __fastcall hk_HitMarkerView_Show(uintptr_t instance, bool value, bool playSound, const Il2CppMethod* method)
 {
     // HitMarkerView.bbcx is the game's confirmed marker-display path. Restrict the
     // overlay to the marker owned by the active local HUD; remote HUD instances and
     // raw world/surface casts cannot trigger it.
-    if (keyValidated && value && instance && instance == liveHitMarkerView &&
-        (hitMarkerEnabled || hitLogEnabled)) {
+    if (keyValidated && value && hitMarkerEnabled && instance && instance == liveHitMarkerView) {
         const ULONGLONG now = GetTickCount64();
-        if (hitLogEnabled) {
-            AcquireSRWLockExclusive(&hitLogLock);
-            // Confirm the newest unconfirmed local shot. Double Tap generates two casts
-            // and two marker callbacks, so each callback consumes one queue item.
-            for (auto it = pendingHitLogShots.rbegin(); it != pendingHitLogShots.rend(); ++it) {
-                if (!it->confirmedAt && now >= it->firedAt && now - it->firedAt <= 2000) {
-                    it->confirmedAt = now;
-                    break;
-                }
-            }
-            ReleaseSRWLockExclusive(&hitLogLock);
-        }
-        if (hitMarkerEnabled) {
+        {
             InterlockedIncrement(&hitMarkerCalls);
             Vector3 impactPoint, castEndFallback;
             const bool resolved = ResolveConfirmedPlayerImpact(impactPoint, castEndFallback);
@@ -2846,14 +2863,13 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
         strcpy_s(aimbotStatus, "Auto Fire reached HitCaster, but native cast returned null");
     }
     if (keyValidated && insideLocalGunFire && result &&
-        (hitMarkerEnabled || hitLogEnabled || bulletTracerEnabled)) {
+        (hitMarkerEnabled || bulletTracerEnabled)) {
         __try {
             // cjr stores the authoritative cast start/end at 0x24/0x30.
             const Vector3 actualStart = *(Vector3*)(result + 0x24);
             const Vector3 actualEnd = *(Vector3*)(result + 0x30);
             const ULONGLONG now = GetTickCount64();
-            if (hitLogEnabled) CaptureOutgoingHitLogTarget(actualStart, actualEnd);
-            if (hitMarkerEnabled || hitLogEnabled) {
+            if (hitMarkerEnabled) {
                 AcquireSRWLockExclusive(&hitMarkerLock);
                 latestHitMarkerCastStart = actualStart;
                 latestHitMarkerCastEnd = actualEnd;
@@ -5623,6 +5639,15 @@ DWORD WINAPI HackThread(LPVOID)
     if (healthCCreate == MH_OK || healthCCreate == MH_ERROR_ALREADY_CREATED) MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HEALTH_APPLY_C));
     const MH_STATUS healthDCreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYER_HEALTH_APPLY_D), hk_HealthApplyD, (LPVOID*)&o_HealthApplyD);
     if (healthDCreate == MH_OK || healthDCreate == MH_ERROR_ALREADY_CREATED) MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HEALTH_APPLY_D));
+
+    const MH_STATUS hitReceiveACreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYER_HIT_RECEIVE_A),
+        hk_PlayerHitReceiveA, (LPVOID*)&o_PlayerHitReceiveA);
+    if (hitReceiveACreate == MH_OK || hitReceiveACreate == MH_ERROR_ALREADY_CREATED)
+        MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HIT_RECEIVE_A));
+    const MH_STATUS hitReceiveBCreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYER_HIT_RECEIVE_B),
+        hk_PlayerHitReceiveB, (LPVOID*)&o_PlayerHitReceiveB);
+    if (hitReceiveBCreate == MH_OK || hitReceiveBCreate == MH_ERROR_ALREADY_CREATED)
+        MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HIT_RECEIVE_B));
 
     const MH_STATUS hitConfirmedACreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYER_HIT_CONFIRMED_A), hk_PlayerHitConfirmedA, (LPVOID*)&o_PlayerHitConfirmedA);
     if (hitConfirmedACreate == MH_OK || hitConfirmedACreate == MH_ERROR_ALREADY_CREATED) MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HIT_CONFIRMED_A));
