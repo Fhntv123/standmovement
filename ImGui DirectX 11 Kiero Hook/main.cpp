@@ -1246,27 +1246,18 @@ bool backgroundLoaded = false;
 
 char backgroundPath[256] = "maxresdefault.jpg"; // Default path
 
-static std::string GetConfigDirectory()
+static std::wstring GetConfigDirectory()
 {
-    PWSTR documentsWide = nullptr;
-    std::string documents;
+    PWSTR documents = nullptr;
+    std::wstring directory;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_CREATE,
-        nullptr, &documentsWide)) && documentsWide) {
-        char utf8[MAX_PATH * 4] = {};
-        WideCharToMultiByte(CP_UTF8, 0, documentsWide, -1,
-            utf8, static_cast<int>(sizeof(utf8)), nullptr, nullptr);
-        documents = utf8;
+        nullptr, &documents)) && documents) {
+        directory = documents;
+        directory += L"\\ze0nware";
     }
-    if (documentsWide) CoTaskMemFree(documentsWide);
-    if (documents.empty()) {
-        char fallback[MAX_PATH] = {};
-        if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_PERSONAL | CSIDL_FLAG_CREATE,
-            nullptr, SHGFP_TYPE_CURRENT, fallback)))
-            documents = fallback;
-    }
-    if (documents.empty()) documents = ".";
-    const std::string directory = documents + "\\ze0nware";
-    CreateDirectoryA(directory.c_str(), nullptr);
+    if (documents) CoTaskMemFree(documents);
+    if (directory.empty()) directory = L".\\ze0nware";
+    CreateDirectoryW(directory.c_str(), nullptr);
     return directory;
 }
 
@@ -1279,49 +1270,56 @@ static std::string SanitizeConfigName(const char* input)
     return result.empty() ? "default" : result;
 }
 
-static std::string GetConfigPath(const char* name)
+static std::wstring AsciiToWide(const std::string& text)
+{ return std::wstring(text.begin(), text.end()); }
+
+static std::wstring GetConfigPath(const char* name)
 {
-    return GetConfigDirectory() + "\\" + SanitizeConfigName(name) + ".ini";
+    return GetConfigDirectory() + L"\\" + AsciiToWide(SanitizeConfigName(name)) + L".ini";
 }
 
 static void RefreshConfigFiles()
 {
     configFiles.clear();
-    WIN32_FIND_DATAA data = {};
-    HANDLE find = FindFirstFileA((GetConfigDirectory() + "\\*.ini").c_str(), &data);
+    WIN32_FIND_DATAW data = {};
+    HANDLE find = FindFirstFileW((GetConfigDirectory() + L"\\*.ini").c_str(), &data);
     if (find == INVALID_HANDLE_VALUE) return;
     do {
-        std::string name = data.cFileName;
-        if (name.size() > 4) name.resize(name.size() - 4);
-        configFiles.push_back(name);
-    } while (FindNextFileA(find, &data));
+        std::wstring wideName = data.cFileName;
+        if (wideName.size() > 4) wideName.resize(wideName.size() - 4);
+        configFiles.emplace_back(wideName.begin(), wideName.end());
+    } while (FindNextFileW(find, &data));
     FindClose(find);
     std::sort(configFiles.begin(), configFiles.end());
 }
 
-static void WriteConfigValue(const std::string& path, const char* key, bool value)
-{ WritePrivateProfileStringA("ze0nware", key, value ? "1" : "0", path.c_str()); }
-static void WriteConfigValue(const std::string& path, const char* key, int value)
-{ char text[32]; sprintf_s(text, "%d", value); WritePrivateProfileStringA("ze0nware", key, text, path.c_str()); }
-static void WriteConfigValue(const std::string& path, const char* key, float value)
-{ char text[32]; sprintf_s(text, "%.6f", value); WritePrivateProfileStringA("ze0nware", key, text, path.c_str()); }
-static bool ReadConfigBool(const std::string& path, const char* key, bool fallback)
-{ return GetPrivateProfileIntA("ze0nware", key, fallback ? 1 : 0, path.c_str()) != 0; }
-static int ReadConfigInt(const std::string& path, const char* key, int fallback)
-{ return GetPrivateProfileIntA("ze0nware", key, fallback, path.c_str()); }
-static float ReadConfigFloat(const std::string& path, const char* key, float fallback)
+static std::wstring WideKey(const char* key)
+{ std::string text(key); return std::wstring(text.begin(), text.end()); }
+static void WriteConfigValue(const std::wstring& path, const char* key, bool value)
+{ const std::wstring k = WideKey(key); WritePrivateProfileStringW(L"ze0nware", k.c_str(), value ? L"1" : L"0", path.c_str()); }
+static void WriteConfigValue(const std::wstring& path, const char* key, int value)
+{ wchar_t text[32]; swprintf_s(text, L"%d", value); const std::wstring k = WideKey(key); WritePrivateProfileStringW(L"ze0nware", k.c_str(), text, path.c_str()); }
+static void WriteConfigValue(const std::wstring& path, const char* key, float value)
+{ wchar_t text[32]; swprintf_s(text, L"%.6f", value); const std::wstring k = WideKey(key); WritePrivateProfileStringW(L"ze0nware", k.c_str(), text, path.c_str()); }
+static bool ReadConfigBool(const std::wstring& path, const char* key, bool fallback)
+{ const std::wstring k = WideKey(key); return GetPrivateProfileIntW(L"ze0nware", k.c_str(), fallback ? 1 : 0, path.c_str()) != 0; }
+static int ReadConfigInt(const std::wstring& path, const char* key, int fallback)
+{ const std::wstring k = WideKey(key); return GetPrivateProfileIntW(L"ze0nware", k.c_str(), fallback, path.c_str()); }
+static float ReadConfigFloat(const std::wstring& path, const char* key, float fallback)
 {
-    char text[64] = {};
-    char fallbackText[32]; sprintf_s(fallbackText, "%.6f", fallback);
-    GetPrivateProfileStringA("ze0nware", key, fallbackText, text, sizeof(text), path.c_str());
-    const float value = static_cast<float>(atof(text));
+    wchar_t text[64] = {}, fallbackText[32] = {};
+    swprintf_s(fallbackText, L"%.6f", fallback);
+    const std::wstring k = WideKey(key);
+    GetPrivateProfileStringW(L"ze0nware", k.c_str(), fallbackText, text,
+        static_cast<DWORD>(sizeof(text) / sizeof(text[0])), path.c_str());
+    const float value = static_cast<float>(_wtof(text));
     return isfinite(value) ? value : fallback;
 }
 
 static bool SaveConfig(const char* requestedName)
 {
     const std::string name = SanitizeConfigName(requestedName);
-    const std::string path = GetConfigPath(name.c_str());
+    const std::wstring path = GetConfigPath(name.c_str());
 #define SAVE_BOOL(v) WriteConfigValue(path, #v, v)
 #define SAVE_INT(v) WriteConfigValue(path, #v, v)
 #define SAVE_FLOAT(v) WriteConfigValue(path, #v, v)
@@ -1344,18 +1342,18 @@ static bool SaveConfig(const char* requestedName)
 #undef SAVE_BOOL
 #undef SAVE_INT
 #undef SAVE_FLOAT
-    WritePrivateProfileStringA(nullptr, nullptr, nullptr, path.c_str());
+    WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
     strcpy_s(configName, name.c_str());
     sprintf_s(configStatus, "Saved %s", name.c_str());
     RefreshConfigFiles();
-    return true;
+    return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
 }
 
 static bool LoadConfig(const char* requestedName)
 {
     const std::string name = SanitizeConfigName(requestedName);
-    const std::string path = GetConfigPath(name.c_str());
-    if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    const std::wstring path = GetConfigPath(name.c_str());
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
         sprintf_s(configStatus, "Config %s not found", name.c_str());
         return false;
     }
@@ -1389,6 +1387,7 @@ static bool LoadConfig(const char* requestedName)
     InterlockedExchange(&pendingWeaponChamsRefresh, 1); InterlockedExchange(&pendingArmChamsRefresh, 1);
     InterlockedExchange(&pendingGloveChamsRefresh, 1); InterlockedExchange(&pendingLocalPlayerChamsRefresh, 1);
     InterlockedExchange(&pendingEnemyChamsRefresh, 1); InterlockedExchange(&pendingThirdPersonCommand, 1);
+    ApplyAdminBhopState();
     strcpy_s(configName, name.c_str());
     sprintf_s(configStatus, "Loaded %s", name.c_str());
     return true;
@@ -1397,7 +1396,7 @@ static bool LoadConfig(const char* requestedName)
 static bool DeleteConfig(const char* requestedName)
 {
     const std::string name = SanitizeConfigName(requestedName);
-    const bool removed = DeleteFileA(GetConfigPath(name.c_str()).c_str()) != 0;
+    const bool removed = DeleteFileW(GetConfigPath(name.c_str()).c_str()) != 0;
     sprintf_s(configStatus, removed ? "Deleted %s" : "Could not delete %s", name.c_str());
     RefreshConfigFiles();
     return removed;
@@ -5212,6 +5211,7 @@ void InitImGui()
     ImGui_ImplDX11_Init(pDevice, pContext);
 
     io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 16.0f);
+    RefreshConfigFiles(); // Creates Documents\ze0nware immediately.
 
 }
 
@@ -5449,27 +5449,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // Menu windows are rendered only while Insert toggle is open.
     if (menuOpen || menuOpenAnimation > 0.0f) {
 
-    if (menuOpen && showConfigMenu) {
-        ImGui::SetNextWindowSize(ImVec2(360.0f, 330.0f), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Configs##ze0nware", &showConfigMenu);
-        ImGui::InputText("Name", configName, sizeof(configName));
-        if (ImGui::Button("Save", ImVec2(100.0f, 0.0f))) SaveConfig(configName);
-        ImGui::SameLine();
-        if (ImGui::Button("Load", ImVec2(100.0f, 0.0f))) LoadConfig(configName);
-        ImGui::SameLine();
-        if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f))) DeleteConfig(configName);
-        ImGui::Separator();
-        if (ImGui::Button("Refresh")) RefreshConfigFiles();
-        ImGui::BeginChild("ConfigList", ImVec2(0.0f, 210.0f), true);
-        for (const std::string& saved : configFiles) {
-            const bool selected = saved == configName;
-            if (ImGui::Selectable(saved.c_str(), selected))
-                strcpy_s(configName, saved.c_str());
-        }
-        ImGui::EndChild();
-        ImGui::TextDisabled("%s", configStatus);
-        ImGui::End();
-    }
+
 
     ImGuiStyle& style = ImGui::GetStyle();
     const float menuTarget = menuOpen ? 1.0f : 0.0f;
@@ -5591,8 +5571,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     ImGui::TextColored(accent, "ze0nware");
     ImGui::SetCursorPosY(93.0f);
 
-    const char* navLabels[] = { "AIMBOT", "ANTI-AIM", "VISUALS", "WEAPONS" };
-    for (int tab = 0; tab < 4; ++tab) {
+    const char* navLabels[] = { "AIMBOT", "ANTI-AIM", "VISUALS", "WEAPONS", "CONFIGS" };
+    for (int tab = 0; tab < 5; ++tab) {
         const bool selected = currentTab == tab;
         ImGui::SetCursorPosX(3.0f);
         ImGui::PushID(tab);
@@ -5613,11 +5593,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Dummy(ImVec2(0.0f, 3.0f));
     }
 
-    ImGui::SetCursorPos(ImVec2(3.0f, ImGui::GetWindowHeight() - 38.0f));
-    if (ImGui::Button("CONFIGS", ImVec2(134.0f, 32.0f))) {
-        showConfigMenu = !showConfigMenu;
-        if (showConfigMenu) RefreshConfigFiles();
-    }
     ImGui::EndChild();
     ImGui::SameLine(0.0f, 0.0f);
 
@@ -5987,6 +5962,31 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Tracer Thickness", &bulletTracerThickness, 1.0f, 8.0f, "%.1f");
         }
         
+        ImGui::EndChild();
+    }
+    else if (currentTab == 4) { // CONFIGS
+        ImGui::BeginChild("Configs", ImVec2(0, 0), true);
+        ImGui::TextColored(accent, "Configs");
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::SetNextItemWidth(240.0f);
+        ImGui::InputText("Name", configName, sizeof(configName));
+        if (ImGui::Button("Save", ImVec2(100.0f, 0.0f))) SaveConfig(configName);
+        ImGui::SameLine();
+        if (ImGui::Button("Load", ImVec2(100.0f, 0.0f))) LoadConfig(configName);
+        ImGui::SameLine();
+        if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f))) DeleteConfig(configName);
+        ImGui::Spacing();
+        if (ImGui::Button("Refresh")) RefreshConfigFiles();
+        ImGui::Separator();
+        ImGui::BeginChild("ConfigList", ImVec2(0.0f, 0.0f), true);
+        for (const std::string& saved : configFiles) {
+            const bool selected = saved == configName;
+            if (ImGui::Selectable(saved.c_str(), selected))
+                strcpy_s(configName, saved.c_str());
+        }
+        ImGui::EndChild();
+        ImGui::TextDisabled("%s", configStatus);
         ImGui::EndChild();
     }
     
