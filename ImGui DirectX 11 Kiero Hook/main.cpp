@@ -4661,31 +4661,14 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
             adminBhopLastManualMotionValid = true;
         }
         else {
-            // A/D was released or the camera turn no longer matches. Never replay
-            // the previous input command: that stale vector caused a sudden throw.
-            // Carry the controller's actual world-space velocity for this frame,
-            // preserving inertia while camera movement alone cannot steer it.
-            bool carriedPhysicsVelocity = false;
-            if (o_CC_get_velocity) {
-                __try {
-                    const Vector3 velocity = o_CC_get_velocity(instance);
-                    float deltaTime = o_Time_get_deltaTime ? o_Time_get_deltaTime() : (1.0f / 60.0f);
-                    if (!isfinite(deltaTime) || deltaTime < (1.0f / 240.0f) || deltaTime > 0.1f)
-                        deltaTime = 1.0f / 60.0f;
-                    if (isfinite(velocity.x) && isfinite(velocity.z)) {
-                        motion.x = velocity.x * deltaTime;
-                        motion.z = velocity.z * deltaTime;
-                        carriedPhysicsVelocity = true;
-                    }
-                }
-                __except (EXCEPTION_EXECUTE_HANDLER) {}
-            }
-            if (!carriedPhysicsVelocity && adminBhopLastManualMotionValid) {
-                motion.x = adminBhopLastManualMotion.x;
-                motion.z = adminBhopLastManualMotion.z;
-            }
-            adminBhopLastManualMotion = motion;
-            adminBhopLastManualMotionValid = true;
+            // CharacterController.Move expects this frame's requested displacement,
+            // not the controller's measured velocity. Feeding get_velocity back into
+            // Move added movement twice and could launch/teleport the player.
+            // With no valid A/D + camera pair, submit no horizontal steering at all;
+            // native Admin BHop keeps its own momentum without duplicated displacement.
+            motion.x = 0.0f;
+            motion.z = 0.0f;
+            adminBhopLastManualMotionValid = false;
         }
     }
 
