@@ -3509,9 +3509,9 @@ static uintptr_t GetCurrentLocalCharacterLodGroup()
     __except (EXCEPTION_EXECUTE_HANDLER) { return currentLocalCharacterLodGroupCache; }
 }
 
-static uintptr_t EnsureSelectedEnemyChamsMaterial()
+static uintptr_t EnsureEnemyChamsMaterial(int requestedMode)
 {
-    const int mode = enemyChamsThroughWalls ? 7 : ((enemyChamsMode >= 0 && enemyChamsMode < 7) ? enemyChamsMode : 0);
+    const int mode = (requestedMode >= 0 && requestedMode < 8) ? requestedMode : 0;
     if (enemyChamsMaterials[mode]) return enemyChamsMaterials[mode];
     static const char* shaderCandidates[8][5] = {
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
@@ -3536,6 +3536,8 @@ static uintptr_t EnsureSelectedEnemyChamsMaterial()
         o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_ZTest"), 8.0f);
         o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_ZWrite"), 0.0f);
         o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_Cull"), 0.0f);
+        o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_SrcBlend"), 5.0f);
+        o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_DstBlend"), 10.0f);
         if (o_Material_set_renderQueue) o_Material_set_renderQueue(enemyChamsMaterials[mode], 4000);
     }
     const uintptr_t material = enemyChamsMaterials[mode];
@@ -3543,6 +3545,11 @@ static uintptr_t EnsureSelectedEnemyChamsMaterial()
     if (g_il2cpp.gchandle_new)
         enemyChamsMaterialHandles[mode] = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(material), false);
     return material;
+}
+
+static uintptr_t EnsureSelectedEnemyChamsMaterial()
+{
+    return EnsureEnemyChamsMaterial(enemyChamsMode);
 }
 
 static Color GetEnemyChamsDisplayColor()
@@ -3633,7 +3640,8 @@ static void CaptureEnemyChamsRenderers(const std::vector<uintptr_t>& renderers)
     sprintf_s(enemyChamsStatus, "Applied to %zu enemy renderer(s)", enemyChamsRenderers.size());
 }
 
-static bool ApplyEnemyChamsRendererMaterial(uintptr_t renderer, uintptr_t replacement, bool throughWalls)
+static bool ApplyEnemyChamsRendererMaterial(uintptr_t renderer, uintptr_t replacement,
+    uintptr_t wallOverlay, bool throughWalls)
 {
     if (!renderer || !replacement) return false;
     __try {
@@ -3641,6 +3649,12 @@ static bool ApplyEnemyChamsRendererMaterial(uintptr_t renderer, uintptr_t replac
             if (o_Renderer_set_enabled) o_Renderer_set_enabled(renderer, true);
             if (o_SkinnedMeshRenderer_set_updateWhenOffscreen)
                 o_SkinnedMeshRenderer_set_updateWhenOffscreen(renderer, true);
+            if (wallOverlay && o_Renderer_set_materials && g_il2cpp.array_new) {
+                // First pass preserves the selected Lit/Metallic/etc. appearance. The
+                // translucent depth-ignoring pass only adds visibility through geometry.
+                SetRendererMaterialArray(renderer, { replacement, wallOverlay });
+                return true;
+            }
         }
         const uintptr_t currentMaterial = o_Renderer_get_material ? o_Renderer_get_material(renderer) : 0;
         if (currentMaterial != replacement) o_Renderer_set_material(renderer, replacement);
@@ -3675,14 +3689,19 @@ static void UpdateEnemyChams()
 
     const uintptr_t replacement = EnsureSelectedEnemyChamsMaterial();
     if (!replacement) return;
+    const uintptr_t wallOverlay = enemyChamsThroughWalls ? EnsureEnemyChamsMaterial(7) : 0;
+    if (enemyChamsThroughWalls && !wallOverlay) return;
     if (enemyChamsMode == 3 && o_Material_SetFloat && g_il2cpp.string_new) {
         o_Material_SetFloat(replacement, g_il2cpp.string_new("_Metallic"), enemyChamsMetallic);
         o_Material_SetFloat(replacement, g_il2cpp.string_new("_Glossiness"), enemyChamsSmoothness);
     }
-    o_Material_set_color(replacement, GetEnemyChamsDisplayColor());
+    const Color displayColor = GetEnemyChamsDisplayColor();
+    o_Material_set_color(replacement, displayColor);
+    if (wallOverlay)
+        o_Material_set_color(wallOverlay, Color(displayColor.r, displayColor.g, displayColor.b, 0.28f));
     size_t applied = 0;
     for (const EnemyChamsRenderer& entry : enemyChamsRenderers)
-        if (ApplyEnemyChamsRendererMaterial(entry.renderer, replacement, enemyChamsThroughWalls)) ++applied;
+        if (ApplyEnemyChamsRendererMaterial(entry.renderer, replacement, wallOverlay, enemyChamsThroughWalls)) ++applied;
     sprintf_s(enemyChamsStatus, "Active on %zu enemy renderer(s)", applied);
 }
 
