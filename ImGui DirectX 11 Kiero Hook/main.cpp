@@ -3543,15 +3543,15 @@ static uintptr_t EnsureEnemyChamsMaterial(int requestedMode)
         if (enemyChamsMaterials[mode]) break;
     }
     if (mode == 7 && enemyChamsMaterials[mode] && o_Material_SetFloat && g_il2cpp.string_new) {
-        // Render the x-ray pass only where geometry occludes the enemy (Greater), not
-        // over its visible pixels. One/Zero blending keeps the hidden silhouette opaque;
-        // the selected Lit/Metallic/etc. pass remains unchanged when directly visible.
-        o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_ZTest"), 5.0f);
+        // Draw the opaque x-ray silhouette after world geometry. The selected visual
+        // material is queued immediately after it and overwrites this pass only on pixels
+        // where its normal depth test succeeds.
+        o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_ZTest"), 8.0f);
         o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_ZWrite"), 0.0f);
         o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_Cull"), 0.0f);
         o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_SrcBlend"), 1.0f);
         o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_DstBlend"), 0.0f);
-        if (o_Material_set_renderQueue) o_Material_set_renderQueue(enemyChamsMaterials[mode], 4000);
+        if (o_Material_set_renderQueue) o_Material_set_renderQueue(enemyChamsMaterials[mode], 3998);
     }
     const uintptr_t material = enemyChamsMaterials[mode];
     if (!material) { strcpy_s(enemyChamsStatus, "Selected enemy shader not found"); return 0; }
@@ -3663,9 +3663,9 @@ static bool ApplyEnemyChamsRendererMaterial(uintptr_t renderer, uintptr_t replac
             if (o_SkinnedMeshRenderer_set_updateWhenOffscreen)
                 o_SkinnedMeshRenderer_set_updateWhenOffscreen(renderer, true);
             if (wallOverlay && o_Renderer_set_materials && g_il2cpp.array_new) {
-                // First pass preserves the selected Lit/Metallic/etc. appearance. The
-                // second pass draws an opaque silhouette only on occluded pixels.
-                SetRendererMaterialPair(renderer, replacement, wallOverlay);
+                // X-ray is rendered first; selected Lit/Metallic/etc. renders after it
+                // and replaces Flat wherever the enemy is directly visible.
+                SetRendererMaterialPair(renderer, wallOverlay, replacement);
                 return true;
             }
         }
@@ -3708,6 +3708,9 @@ static void UpdateEnemyChams()
         o_Material_SetFloat(replacement, g_il2cpp.string_new("_Metallic"), enemyChamsMetallic);
         o_Material_SetFloat(replacement, g_il2cpp.string_new("_Glossiness"), enemyChamsSmoothness);
     }
+    if (o_Material_set_renderQueue)
+        o_Material_set_renderQueue(replacement, enemyChamsThroughWalls ? 3999 :
+            ((enemyChamsMode == 1 || enemyChamsMode == 4) ? 3000 : 2000));
     const Color displayColor = GetEnemyChamsDisplayColor();
     o_Material_set_color(replacement, displayColor);
     if (wallOverlay)
