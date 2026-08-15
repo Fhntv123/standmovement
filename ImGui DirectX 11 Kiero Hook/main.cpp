@@ -347,6 +347,8 @@ std::vector<Vector3> trailPoints;
 bool pixelSurf = false; // legacy alias; real Pixel Surf state is jbActive
 
 bool jbActive = false;
+bool pixelSurfReleaseHop = false;
+volatile LONG64 pixelSurfReleasedAt = 0;
 volatile LONG64 pixelSurfReleaseGraceUntil = 0;
 
 static void SetPixelSurfActive(bool active)
@@ -355,14 +357,15 @@ static void SetPixelSurfActive(bool active)
     jbActive = active;
     pixelSurf = active;
     if (active) {
+        InterlockedExchange64(&pixelSurfReleasedAt, 0);
         InterlockedExchange64(&pixelSurfReleaseGraceUntil, 0);
     }
     else if (wasActive) {
-        // While surfing, outgoing Y motion is held at zero, but the game can keep
-        // accumulating gravity internally. Briefly report grounded after release
-        // so that accumulator is reset instead of being applied as a downward burst.
+        const LONG64 now = static_cast<LONG64>(GetTickCount64());
+        InterlockedExchange64(&pixelSurfReleasedAt, now);
+        // Optional legacy mode keeps the small release hop the user liked.
         InterlockedExchange64(&pixelSurfReleaseGraceUntil,
-            static_cast<LONG64>(GetTickCount64() + 100));
+            pixelSurfReleaseHop ? now + 100 : 0);
     }
 }
 
@@ -3385,11 +3388,14 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
 
     const LONG64 releaseGraceUntil = InterlockedCompareExchange64(
         &pixelSurfReleaseGraceUntil, 0, 0);
-    if (!jbActive && releaseGraceUntil > static_cast<LONG64>(GetTickCount64()))
+    if (!jbActive && pixelSurfReleaseHop &&
+        releaseGraceUntil > static_cast<LONG64>(GetTickCount64()))
         return true;
 
     if (jbActive) return false;
 
+    if (grounded)
+        InterlockedExchange64(&pixelSurfReleasedAt, 0);
     return grounded;
 
 }
@@ -4348,10 +4354,27 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         motion.y = 0;
     }
     else if (keyValidated) {
+        const LONG64 now = static_cast<LONG64>(GetTickCount64());
         const LONG64 releaseGraceUntil = InterlockedCompareExchange64(
             &pixelSurfReleaseGraceUntil, 0, 0);
-        if (releaseGraceUntil > static_cast<LONG64>(GetTickCount64()) && motion.y < 0.0f)
+        const LONG64 releasedAt = InterlockedCompareExchange64(
+            &pixelSurfReleasedAt, 0, 0);
+        if (pixelSurfReleaseHop && releaseGraceUntil > now && motion.y < 0.0f) {
             motion.y = 0.0f;
+        }
+        else if (!pixelSurfReleaseHop && releasedAt > 0 && now >= releasedAt &&
+            now - releasedAt < 5000 && motion.y < 0.0f) {
+            // Normal release: never fake grounded (which triggers a jump). Replace the
+            // accumulated fall burst with a gravity-speed ramp until actual landing.
+            float deltaTime = o_Time_get_deltaTime ? o_Time_get_deltaTime() : (1.0f / 60.0f);
+            if (!isfinite(deltaTime) || deltaTime < (1.0f / 240.0f) || deltaTime > 0.1f)
+                deltaTime = 1.0f / 60.0f;
+            const float elapsed = static_cast<float>(now - releasedAt) * 0.001f;
+            float normalDownSpeed = 1.5f + 9.81f * elapsed;
+            if (normalDownSpeed > 20.0f) normalDownSpeed = 20.0f;
+            const float normalDownMotion = -normalDownSpeed * deltaTime;
+            if (motion.y < normalDownMotion) motion.y = normalDownMotion;
+        }
     }
 
     if (keyValidated) {
@@ -5385,6 +5408,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (jbActive) {
             ImGui::SliderFloat("Pixel Surf Speed", &surfSpeed, 0.5f, 3.0f, "%.2f");
         }
+        ImGui::Checkbox("Release Hop", &pixelSurfReleaseHop);
         if (ImGui::Checkbox("Admin Panel BHop", &adminBhopEnabled)) ApplyAdminBhopState();
         if (adminBhopEnabled) {
             if (ImGui::SliderFloat("Admin BHop Multiplier", &adminBhopSpeedMultiplier, 0.25f, 5.0f, "%.2f")) ApplyAdminBhopState();
