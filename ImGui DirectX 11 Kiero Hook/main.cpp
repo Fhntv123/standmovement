@@ -4949,62 +4949,75 @@ void InitImGui()
 
 
 
+static bool IsMouseOrRawInputMessage(UINT message)
+{
+    switch (message) {
+    case WM_INPUT:
+    case WM_MOUSEMOVE:
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_LBUTTONDBLCLK:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_RBUTTONDBLCLK:
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_MBUTTONDBLCLK:
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP:
+    case WM_XBUTTONDBLCLK:
+        return true;
+    default:
+        return false;
+    }
+}
+
 LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
     if (uMsg == WM_KEYUP && wParam == VK_INSERT) {
         menuOpen = !menuOpen;
-        if (!menuOpen) {
+        if (menuOpen) {
+            ReleaseCapture();
+            ClipCursor(nullptr);
+        } else {
             showConfigMenu = false;
             waitingForBind = nullptr;
         }
         return true;
     }
 
-    if (keyValidated && menuOpen && ImGui::GetCurrentContext() &&
-        ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam)) return true;
+    bool imguiHandled = false;
+    if (keyValidated && menuOpen && ImGui::GetCurrentContext())
+        imguiHandled = ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam) != 0;
 
-
-
-    if (keyValidated && waitingForBind && (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN || uMsg == WM_LBUTTONDOWN || uMsg == WM_RBUTTONDOWN || uMsg == WM_MBUTTONDOWN || uMsg == WM_XBUTTONDOWN)) {
-
+    if (keyValidated && menuOpen && waitingForBind &&
+        (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN || uMsg == WM_LBUTTONDOWN ||
+         uMsg == WM_RBUTTONDOWN || uMsg == WM_MBUTTONDOWN || uMsg == WM_XBUTTONDOWN)) {
         int key = 0;
-
         if (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN) key = (int)wParam;
-
         else if (uMsg == WM_LBUTTONDOWN) key = VK_LBUTTON;
-
         else if (uMsg == WM_RBUTTONDOWN) key = VK_RBUTTON;
-
         else if (uMsg == WM_MBUTTONDOWN) key = VK_MBUTTON;
-
         else if (uMsg == WM_XBUTTONDOWN) key = (HIWORD(wParam) == 1) ? VK_XBUTTON1 : VK_XBUTTON2;
 
-
-
         if (key == VK_ESCAPE) {
-
             waitingForBind = nullptr;
-
             return true;
-
         }
-
-
-
         *waitingForBind = key;
-
         waitingForBind = nullptr;
-
         return true;
-
     }
 
-
+    // Feed ImGui first, then prevent Unity from receiving any mouse/raw input while
+    // the overlay is open. This blocks camera movement, firing, aiming and wheel input.
+    if (keyValidated && menuOpen && IsMouseOrRawInputMessage(uMsg)) return 0;
+    if (keyValidated && menuOpen && imguiHandled) return true;
 
     return CallWindowProc(oWndProc, hWnd, uMsg, wParam, lParam);
-
 }
-
 
 
 static bool DrawSmallCheckbox(const char* strId, bool value) {
@@ -5142,6 +5155,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     ImGui_ImplWin32_NewFrame();
 
     ImGui::NewFrame();
+    ImGui::GetIO().MouseDrawCursor = keyValidated && menuOpen;
 
 
 
