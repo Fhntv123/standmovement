@@ -848,8 +848,8 @@ static void CacheConfirmedDamageResult(uintptr_t hitController, uintptr_t result
     uintptr_t shooterActor = 0;
     __try {
         controllerPlayer = *reinterpret_cast<uintptr_t*>(hitController + 0x90);
-        victimActor = *reinterpret_cast<uintptr_t*>(result + 0x10);  // boq.carm: damaged actor
-        shooterActor = *reinterpret_cast<uintptr_t*>(result + 0x40); // boo.card: shooter actor
+        shooterActor = *reinterpret_cast<uintptr_t*>(result + 0x10); // boq.carm: attacker actor
+        victimActor = *reinterpret_cast<uintptr_t*>(result + 0x40);  // boo.card: damaged actor
         headHits = *reinterpret_cast<int*>(result + 0x18);
         bodyHits = *reinterpret_cast<int*>(result + 0x1C);
         feetHits = *reinterpret_cast<int*>(result + 0x20);
@@ -874,8 +874,8 @@ static void CacheConfirmedDamageResult(uintptr_t hitController, uintptr_t result
     const unsigned char victimTeam = GetPCTeam(victimPlayer);
     const ULONGLONG now = GetTickCount64();
 
-    // Only boo.card identifies who dealt the damage. The old implementation used
-    // hitController+0x90, which is the damaged controller and therefore logged hits on us.
+    // Runtime direction is definitive: on an incoming hit boo.card (+0x40) resolves
+    // to the local player, so card is the victim and inherited carm (+0x10) is attacker.
     if (keyValidated && hitLogEnabled && localActor && shooterActor == localActor &&
         victimPlayer && victimPlayer != localPlayer && localTeam && localTeam != 3 &&
         victimTeam && victimTeam != 3 && victimTeam != localTeam &&
