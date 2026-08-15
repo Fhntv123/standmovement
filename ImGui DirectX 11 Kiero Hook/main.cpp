@@ -202,6 +202,11 @@ struct Matrix16 {
 #define OFFSET_MATERIAL_GET_COLOR_ID                0x2ECD9E0
 #define OFFSET_MATERIAL_SET_COLOR_ID                0x2ECE1E0
 #define OFFSET_SHADER_PROPERTY_TO_ID                0x2ED9E40
+#define OFFSET_RENDERSETTINGS_GET_FOG               0x2ED8D30
+#define OFFSET_RENDERSETTINGS_GET_FOG_START         0x2ED8D00
+#define OFFSET_RENDERSETTINGS_GET_FOG_END           0x2ED8CD0
+#define OFFSET_RENDERSETTINGS_GET_FOG_COLOR         0x2ED8C20
+#define OFFSET_RENDERSETTINGS_GET_FOG_DENSITY       0x2ED8CA0
 #define OFFSET_RENDERSETTINGS_GET_SKYBOX            0x2ED8D60
 #define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x2ED8D90
 #define OFFSET_GLOVES_SET_ARMS                    0x8F8110
@@ -393,6 +398,18 @@ ULONGLONG worldColorNextRetryTick = 0;
 int worldColorRetryCount = 0;
 const int worldColorMaxRetries = 12;
 char worldColorStatus[128] = "Disabled";
+bool fogEnabled = false;
+float fogColor[3] = { 0.55f, 0.62f, 0.72f };
+float fogStartDistance = 0.0f;
+float fogEndDistance = 120.0f;
+float fogDensity = 0.01f;
+volatile LONG fogEnabledGetterCalls = 0;
+volatile LONG fogStartGetterCalls = 0;
+volatile LONG fogEndGetterCalls = 0;
+volatile LONG fogColorGetterCalls = 0;
+volatile LONG fogDensityGetterCalls = 0;
+char fogStatus[128] = "Hooks not installed";
+
 bool customSkyboxEnabled = false;
 float customSkyboxColor[3] = { 0.15f, 0.25f, 0.55f };
 bool imageSkyboxEnabled = false;
@@ -1228,8 +1245,42 @@ bool(__fastcall* o_Material_HasProperty)(uintptr_t, int) = nullptr;
 Color(__fastcall* o_Material_GetColorId)(uintptr_t, int) = nullptr;
 void(__fastcall* o_Material_SetColorId)(uintptr_t, int, Color) = nullptr;
 int(__fastcall* o_Shader_PropertyToID)(Il2CppString*, const Il2CppMethod*) = nullptr;
+bool(__fastcall* o_RenderSettings_get_fog)(const Il2CppMethod*) = nullptr;
+float(__fastcall* o_RenderSettings_get_fogStartDistance)(const Il2CppMethod*) = nullptr;
+float(__fastcall* o_RenderSettings_get_fogEndDistance)(const Il2CppMethod*) = nullptr;
+void(__fastcall* o_RenderSettings_get_fogColor_Injected)(Color*, const Il2CppMethod*) = nullptr;
+float(__fastcall* o_RenderSettings_get_fogDensity)(const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_RenderSettings_get_skybox)(const Il2CppMethod*) = nullptr;
 void(__fastcall* o_RenderSettings_set_skybox)(uintptr_t, const Il2CppMethod*) = nullptr;
+
+bool __fastcall hk_RenderSettings_get_fog(const Il2CppMethod* method) {
+    InterlockedIncrement(&fogEnabledGetterCalls);
+    return (keyValidated && fogEnabled) ? true : o_RenderSettings_get_fog(method);
+}
+
+float __fastcall hk_RenderSettings_get_fogStartDistance(const Il2CppMethod* method) {
+    InterlockedIncrement(&fogStartGetterCalls);
+    return (keyValidated && fogEnabled) ? fogStartDistance : o_RenderSettings_get_fogStartDistance(method);
+}
+
+float __fastcall hk_RenderSettings_get_fogEndDistance(const Il2CppMethod* method) {
+    InterlockedIncrement(&fogEndGetterCalls);
+    return (keyValidated && fogEnabled) ? fogEndDistance : o_RenderSettings_get_fogEndDistance(method);
+}
+
+void __fastcall hk_RenderSettings_get_fogColor_Injected(Color* result, const Il2CppMethod* method) {
+    InterlockedIncrement(&fogColorGetterCalls);
+    if (keyValidated && fogEnabled && result) {
+        *result = Color(fogColor[0], fogColor[1], fogColor[2], 1.0f);
+        return;
+    }
+    o_RenderSettings_get_fogColor_Injected(result, method);
+}
+
+float __fastcall hk_RenderSettings_get_fogDensity(const Il2CppMethod* method) {
+    InterlockedIncrement(&fogDensityGetterCalls);
+    return (keyValidated && fogEnabled) ? fogDensity : o_RenderSettings_get_fogDensity(method);
+}
 
 Vector3(__fastcall* o_WorldToScreenPoint)(uintptr_t, Vector3) = nullptr;
 
@@ -4708,6 +4759,22 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 if (cameraFov > 150.0f) cameraFov = 150.0f;
             }
         }
+        ImGui::Checkbox("Fog", &fogEnabled);
+        if (fogEnabled) {
+            ImGui::ColorEdit3("Fog Color", fogColor);
+            if (ImGui::SliderFloat("Fog Start Distance", &fogStartDistance, 0.0f, 500.0f, "%.1f m") && fogStartDistance > fogEndDistance)
+                fogEndDistance = fogStartDistance;
+            if (ImGui::SliderFloat("Fog End Distance", &fogEndDistance, 1.0f, 1000.0f, "%.1f m") && fogEndDistance < fogStartDistance)
+                fogStartDistance = fogEndDistance;
+            ImGui::SliderFloat("Fog Density", &fogDensity, 0.0f, 0.20f, "%.4f");
+            ImGui::TextWrapped("Fog status: %s", fogStatus);
+            ImGui::Text("Fog calls - on: %ld | start: %ld | end: %ld | color: %ld | density: %ld",
+                InterlockedCompareExchange(&fogEnabledGetterCalls, 0, 0),
+                InterlockedCompareExchange(&fogStartGetterCalls, 0, 0),
+                InterlockedCompareExchange(&fogEndGetterCalls, 0, 0),
+                InterlockedCompareExchange(&fogColorGetterCalls, 0, 0),
+                InterlockedCompareExchange(&fogDensityGetterCalls, 0, 0));
+        }
         ImGui::Checkbox("Custom Skybox", &customSkyboxEnabled);
         if (customSkyboxEnabled) {
             ImGui::ColorEdit3("Skybox Color", customSkyboxColor);
@@ -5040,6 +5107,33 @@ DWORD WINAPI HackThread(LPVOID)
     o_Material_GetColorId = (Color(__fastcall*)(uintptr_t, int))(base + OFFSET_MATERIAL_GET_COLOR_ID);
     o_Material_SetColorId = (void(__fastcall*)(uintptr_t, int, Color))(base + OFFSET_MATERIAL_SET_COLOR_ID);
     o_Shader_PropertyToID = (int(__fastcall*)(Il2CppString*, const Il2CppMethod*))(base + OFFSET_SHADER_PROPERTY_TO_ID);
+    const MH_STATUS fogEnabledCreate = MH_CreateHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG), hk_RenderSettings_get_fog, (LPVOID*)&o_RenderSettings_get_fog);
+    const MH_STATUS fogStartCreate = MH_CreateHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_START), hk_RenderSettings_get_fogStartDistance, (LPVOID*)&o_RenderSettings_get_fogStartDistance);
+    const MH_STATUS fogEndCreate = MH_CreateHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_END), hk_RenderSettings_get_fogEndDistance, (LPVOID*)&o_RenderSettings_get_fogEndDistance);
+    const MH_STATUS fogColorCreate = MH_CreateHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_COLOR), hk_RenderSettings_get_fogColor_Injected, (LPVOID*)&o_RenderSettings_get_fogColor_Injected);
+    const MH_STATUS fogDensityCreate = MH_CreateHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_DENSITY), hk_RenderSettings_get_fogDensity, (LPVOID*)&o_RenderSettings_get_fogDensity);
+    const bool fogHooksCreated =
+        (fogEnabledCreate == MH_OK || fogEnabledCreate == MH_ERROR_ALREADY_CREATED) &&
+        (fogStartCreate == MH_OK || fogStartCreate == MH_ERROR_ALREADY_CREATED) &&
+        (fogEndCreate == MH_OK || fogEndCreate == MH_ERROR_ALREADY_CREATED) &&
+        (fogColorCreate == MH_OK || fogColorCreate == MH_ERROR_ALREADY_CREATED) &&
+        (fogDensityCreate == MH_OK || fogDensityCreate == MH_ERROR_ALREADY_CREATED);
+    bool fogHooksEnabled = false;
+    if (fogHooksCreated) {
+        const MH_STATUS fogEnabledResult = MH_EnableHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG));
+        const MH_STATUS fogStartResult = MH_EnableHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_START));
+        const MH_STATUS fogEndResult = MH_EnableHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_END));
+        const MH_STATUS fogColorResult = MH_EnableHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_COLOR));
+        const MH_STATUS fogDensityResult = MH_EnableHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_DENSITY));
+        fogHooksEnabled =
+            (fogEnabledResult == MH_OK || fogEnabledResult == MH_ERROR_ENABLED) &&
+            (fogStartResult == MH_OK || fogStartResult == MH_ERROR_ENABLED) &&
+            (fogEndResult == MH_OK || fogEndResult == MH_ERROR_ENABLED) &&
+            (fogColorResult == MH_OK || fogColorResult == MH_ERROR_ENABLED) &&
+            (fogDensityResult == MH_OK || fogDensityResult == MH_ERROR_ENABLED);
+    }
+    strcpy_s(fogStatus, fogHooksEnabled ? "Hooks installed; enable and verify runtime calls" : "Fog hook installation failed");
+
     o_RenderSettings_get_skybox = (uintptr_t(__fastcall*)(const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_GET_SKYBOX);
     o_RenderSettings_set_skybox = (void(__fastcall*)(uintptr_t, const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_SET_SKYBOX);
 
