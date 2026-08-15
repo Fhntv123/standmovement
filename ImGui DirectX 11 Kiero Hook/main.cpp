@@ -526,24 +526,11 @@ float freezeCorpsesDuration = 4.0f;
 bool freezeCorpsesFadeEnabled = true;
 float freezeCorpsesFadeDuration = 1.0f;
 int freezeCorpsesChamsMode = 0; // None, Flat, Glass, Lit, Metallic, Rainbow, Pulse
-int freezeCorpsesVisualMode = 0; // Frozen Model, Falling Dots, Model + Dots
 float freezeCorpsesChamsColor[3] = { 1.0f, 0.20f, 0.35f };
-float freezeCorpsesDotGradientColor[3] = { 0.25f, 0.55f, 1.0f };
 float freezeCorpsesChamsAlpha = 0.55f;
 float freezeCorpsesMetallic = 0.9f;
 float freezeCorpsesSmoothness = 0.8f;
 float freezeCorpsesAnimationSpeed = 1.0f;
-float freezeCorpsesDotSize = 2.5f;
-float freezeCorpsesDotFallSpeed = 1.2f;
-struct CorpseDotParticle {
-    Vector3 position;
-    float driftX;
-    float driftY;
-    float driftZ;
-    float worldRadius;
-    float gradientT;
-    float delay;
-};
 struct FrozenCorpseEntry {
     uintptr_t ragdoll;
     uintptr_t manager;
@@ -555,7 +542,6 @@ struct FrozenCorpseEntry {
     uint32_t fadeMaterialHandle;
     int materialMode;
     ULONGLONG createdAt;
-    std::vector<CorpseDotParticle> dots;
     std::vector<std::pair<uintptr_t, bool>> rigidbodies;
 };
 std::vector<FrozenCorpseEntry> frozenCorpses;
@@ -1412,7 +1398,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(airJump); SAVE_BOOL(edgeBugEnabled); SAVE_FLOAT(edgeBugPullForce);
     SAVE_BOOL(velocityLimiterEnabled); SAVE_FLOAT(velocityLimit);
     SAVE_BOOL(aimbotEnabled); SAVE_BOOL(visibleAimbotEnabled); SAVE_BOOL(aimbotVisibleCheck); SAVE_BOOL(aimbotAutoWall); SAVE_FLOAT(aimbotAutoWallMinDamage); SAVE_BOOL(aimbotAutoFire);
-    SAVE_BOOL(silentAntiAimEnabled); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(freezeCorpsesFadeEnabled); SAVE_FLOAT(freezeCorpsesFadeDuration); SAVE_INT(freezeCorpsesChamsMode); SAVE_INT(freezeCorpsesVisualMode); SAVE_FLOAT(freezeCorpsesChamsAlpha); SAVE_FLOAT(freezeCorpsesMetallic); SAVE_FLOAT(freezeCorpsesSmoothness); SAVE_FLOAT(freezeCorpsesAnimationSpeed); SAVE_FLOAT(freezeCorpsesDotSize); SAVE_FLOAT(freezeCorpsesDotFallSpeed); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
+    SAVE_BOOL(silentAntiAimEnabled); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(freezeCorpsesFadeEnabled); SAVE_FLOAT(freezeCorpsesFadeDuration); SAVE_INT(freezeCorpsesChamsMode); SAVE_FLOAT(freezeCorpsesChamsAlpha); SAVE_FLOAT(freezeCorpsesMetallic); SAVE_FLOAT(freezeCorpsesSmoothness); SAVE_FLOAT(freezeCorpsesAnimationSpeed); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
     SAVE_BOOL(espShowName); SAVE_BOOL(espShowHealth); SAVE_BOOL(espShowWeapon); SAVE_BOOL(espGradient);
     SAVE_BOOL(worldColorEnabled); SAVE_INT(worldColorMode); SAVE_FLOAT(worldColorStrength); SAVE_FLOAT(worldColorAlpha);
     SAVE_BOOL(fogEnabled); SAVE_FLOAT(fogStartDistance); SAVE_FLOAT(fogEndDistance); SAVE_FLOAT(fogDensity);
@@ -1444,7 +1430,6 @@ static bool SaveConfig(const char* requestedName)
     WriteConfigColor(path, "customSkyboxColor", customSkyboxColor);
     WriteConfigColor(path, "hitMarkerColor", hitMarkerColor);
     WriteConfigColor(path, "freezeCorpsesChamsColor", freezeCorpsesChamsColor);
-    WriteConfigColor(path, "freezeCorpsesDotGradientColor", freezeCorpsesDotGradientColor);
     WriteConfigColor(path, "bulletTracerStartColor", bulletTracerStartColor); WriteConfigColor(path, "bulletTracerEndColor", bulletTracerEndColor);
     WriteConfigColor(path, "bulletImpactsClientColor", bulletImpactsClientColor); WriteConfigColor(path, "bulletImpactsConfirmedColor", bulletImpactsConfirmedColor);
     WriteConfigColor(path, "weaponChamsColor", weaponChamsColor); WriteConfigColor(path, "armChamsColor", armChamsColor);
@@ -1480,7 +1465,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(airJump); LOAD_BOOL(edgeBugEnabled); LOAD_FLOAT(edgeBugPullForce);
     LOAD_BOOL(velocityLimiterEnabled); LOAD_FLOAT(velocityLimit);
     LOAD_BOOL(aimbotEnabled); LOAD_BOOL(visibleAimbotEnabled); LOAD_BOOL(aimbotVisibleCheck); LOAD_BOOL(aimbotAutoWall); LOAD_FLOAT(aimbotAutoWallMinDamage); LOAD_BOOL(aimbotAutoFire);
-    LOAD_BOOL(silentAntiAimEnabled); LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(freezeCorpsesFadeEnabled); LOAD_FLOAT(freezeCorpsesFadeDuration); LOAD_INT(freezeCorpsesChamsMode); LOAD_INT(freezeCorpsesVisualMode); LOAD_FLOAT(freezeCorpsesChamsAlpha); LOAD_FLOAT(freezeCorpsesMetallic); LOAD_FLOAT(freezeCorpsesSmoothness); LOAD_FLOAT(freezeCorpsesAnimationSpeed); LOAD_FLOAT(freezeCorpsesDotSize); LOAD_FLOAT(freezeCorpsesDotFallSpeed); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
+    LOAD_BOOL(silentAntiAimEnabled); LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(freezeCorpsesFadeEnabled); LOAD_FLOAT(freezeCorpsesFadeDuration); LOAD_INT(freezeCorpsesChamsMode); LOAD_FLOAT(freezeCorpsesChamsAlpha); LOAD_FLOAT(freezeCorpsesMetallic); LOAD_FLOAT(freezeCorpsesSmoothness); LOAD_FLOAT(freezeCorpsesAnimationSpeed); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
     LOAD_BOOL(espShowName); LOAD_BOOL(espShowHealth); LOAD_BOOL(espShowWeapon); LOAD_BOOL(espGradient);
     LOAD_BOOL(worldColorEnabled); LOAD_INT(worldColorMode); LOAD_FLOAT(worldColorStrength); LOAD_FLOAT(worldColorAlpha);
     LOAD_BOOL(fogEnabled); LOAD_FLOAT(fogStartDistance); LOAD_FLOAT(fogEndDistance); LOAD_FLOAT(fogDensity);
@@ -1512,7 +1497,6 @@ static bool LoadConfig(const char* requestedName)
     ReadConfigColor(path, "customSkyboxColor", customSkyboxColor);
     ReadConfigColor(path, "hitMarkerColor", hitMarkerColor);
     ReadConfigColor(path, "freezeCorpsesChamsColor", freezeCorpsesChamsColor);
-    ReadConfigColor(path, "freezeCorpsesDotGradientColor", freezeCorpsesDotGradientColor);
     ReadConfigColor(path, "bulletTracerStartColor", bulletTracerStartColor); ReadConfigColor(path, "bulletTracerEndColor", bulletTracerEndColor);
     ReadConfigColor(path, "bulletImpactsClientColor", bulletImpactsClientColor); ReadConfigColor(path, "bulletImpactsConfirmedColor", bulletImpactsConfirmedColor);
     ReadConfigColor(path, "weaponChamsColor", weaponChamsColor); ReadConfigColor(path, "armChamsColor", armChamsColor);
@@ -2625,7 +2609,7 @@ static void SetupFrozenCorpseMaterial(FrozenCorpseEntry& corpse)
         const uintptr_t lodGroup = *reinterpret_cast<uintptr_t*>(corpse.ragdoll + 0x90);
         corpse.renderer = lodGroup ? *reinterpret_cast<uintptr_t*>(lodGroup + 0x60) : 0;
         corpse.originalMaterial = corpse.renderer ? o_Renderer_get_material(corpse.renderer) : 0;
-        if (!corpse.renderer || !corpse.originalMaterial || freezeCorpsesVisualMode == 1) return;
+        if (!corpse.renderer || !corpse.originalMaterial) return;
         corpse.materialMode = freezeCorpsesChamsMode;
         corpse.fadeMaterial = CreateFrozenCorpseMaterial(corpse.originalMaterial, corpse.materialMode);
         if (!corpse.fadeMaterial) return;
@@ -2651,121 +2635,6 @@ static void RestoreFrozenCorpseMaterial(FrozenCorpseEntry& corpse)
         g_il2cpp.gchandle_free(corpse.fadeMaterialHandle);
     corpse.fadeMaterialHandle = 0;
     corpse.fadeMaterial = 0;
-}
-
-static bool TryGetCorpseBonePosition(uintptr_t biped, uintptr_t offset, Vector3* out)
-{
-    if (!biped || !out || !o_Transform_get_position) return false;
-    __try {
-        const uintptr_t transform = *reinterpret_cast<uintptr_t*>(biped + offset);
-        if (!transform) return false;
-        *out = o_Transform_get_position(transform);
-        return isfinite(out->x) && isfinite(out->y) && isfinite(out->z);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
-
-static void AddCorpseVolumeDot(FrozenCorpseEntry& corpse, const Vector3& center,
-    float offsetX, float offsetY, float offsetZ, const Vector3& bodyCenter,
-    float worldRadius, float phase, float gradientT)
-{
-    CorpseDotParticle dot{};
-    dot.position = Vector3(center.x + offsetX, center.y + offsetY, center.z + offsetZ);
-    float dx = dot.position.x - bodyCenter.x + sinf(phase * 0.29f) * 0.12f;
-    float dy = (dot.position.y - bodyCenter.y) * 0.35f + cosf(phase * 0.47f) * 0.08f;
-    float dz = dot.position.z - bodyCenter.z + cosf(phase * 0.41f) * 0.12f;
-    const float length = sqrtf(dx * dx + dy * dy + dz * dz);
-    if (length > 0.001f) { dx /= length; dy /= length; dz /= length; }
-    dot.driftX = dx;
-    dot.driftY = dy;
-    dot.driftZ = dz;
-    dot.worldRadius = worldRadius;
-    dot.gradientT = gradientT;
-    dot.delay = 0.10f * (0.5f + 0.5f * sinf(phase * 0.6180339887f));
-    corpse.dots.push_back(dot);
-}
-
-static void CaptureCorpsePoseDots(FrozenCorpseEntry& corpse, uintptr_t biped)
-{
-    if (!biped || freezeCorpsesVisualMode == 0) return;
-    static const uintptr_t offsets[] = {
-        0x20,0x28,0x40,0x38,0x30,0x88,
-        0x48,0x50,0x58,0x60, 0x68,0x70,0x78,0x80,
-        0x90,0x98,0xA0,0xA8, 0xB0,0xB8,0xC0,0xC8
-    };
-    static const int segments[][2] = {
-        {0,1},{1,2},{2,3},{3,4},{4,5},
-        {2,6},{6,7},{7,8},{8,9}, {2,10},{10,11},{11,12},{12,13},
-        {5,14},{14,15},{15,16},{16,17}, {5,18},{18,19},{19,20},{20,21}
-    };
-    Vector3 bones[IM_ARRAYSIZE(offsets)] = {};
-    bool valid[IM_ARRAYSIZE(offsets)] = {};
-    float floorY = 1.0e9f;
-    Vector3 bodyCenter(0.0f, 0.0f, 0.0f);
-    int validCount = 0;
-    for (int i = 0; i < IM_ARRAYSIZE(offsets); ++i) {
-        valid[i] = TryGetCorpseBonePosition(biped, offsets[i], &bones[i]);
-        if (valid[i]) {
-            if (bones[i].y < floorY) floorY = bones[i].y;
-            bodyCenter.x += bones[i].x; bodyCenter.y += bones[i].y; bodyCenter.z += bones[i].z;
-            ++validCount;
-        }
-    }
-    if (floorY > 1.0e8f || validCount <= 0) return;
-    bodyCenter.x /= validCount; bodyCenter.y /= validCount; bodyCenter.z /= validCount;
-    corpse.dots.clear();
-    corpse.dots.reserve(160);
-    for (int segmentIndex = 0; segmentIndex < IM_ARRAYSIZE(segments); ++segmentIndex) {
-        const int a = segments[segmentIndex][0], b = segments[segmentIndex][1];
-        if (!valid[a] || !valid[b]) continue;
-        const Vector3 delta = bones[b] - bones[a];
-        const float length = sqrtf(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
-        if (length < 0.001f) continue;
-        const Vector3 direction(delta.x / length, delta.y / length, delta.z / length);
-        Vector3 reference = fabsf(direction.y) < 0.85f ? Vector3(0.0f, 1.0f, 0.0f) : Vector3(1.0f, 0.0f, 0.0f);
-        Vector3 side(
-            direction.y * reference.z - direction.z * reference.y,
-            direction.z * reference.x - direction.x * reference.z,
-            direction.x * reference.y - direction.y * reference.x);
-        const float sideLength = sqrtf(side.x * side.x + side.y * side.y + side.z * side.z);
-        if (sideLength < 0.001f) continue;
-        side = Vector3(side.x / sideLength, side.y / sideLength, side.z / sideLength);
-        const Vector3 up(
-            side.y * direction.z - side.z * direction.y,
-            side.z * direction.x - side.x * direction.z,
-            side.x * direction.y - side.y * direction.x);
-        // Wider capsules on torso/head/thighs, narrower on forearms/calves/hands.
-        float bodyRadius = 0.075f;
-        if (segmentIndex <= 4) bodyRadius = segmentIndex <= 1 ? 0.13f : 0.18f;
-        else if (segmentIndex == 5 || segmentIndex == 9) bodyRadius = 0.12f;
-        else if (segmentIndex == 13 || segmentIndex == 17) bodyRadius = 0.14f;
-        else if (segmentIndex == 14 || segmentIndex == 18) bodyRadius = 0.12f;
-        const int alongSteps = static_cast<int>(fminf(4.0f, fmaxf(2.0f, length / 0.18f)));
-        for (int step = 0; step <= alongSteps; ++step) {
-            const float t = static_cast<float>(step) / static_cast<float>(alongSteps);
-            const Vector3 center(
-                bones[a].x + delta.x * t,
-                bones[a].y + delta.y * t,
-                bones[a].z + delta.z * t);
-            const int rings = 3;
-            for (int ring = 0; ring < rings; ++ring) {
-                const float angle = 6.28318530718f * static_cast<float>(ring) / static_cast<float>(rings);
-                const float radial = bodyRadius * (0.72f + 0.28f * sinf((step + 1) * 1.91f + ring));
-                const float ox = (side.x * cosf(angle) + up.x * sinf(angle)) * radial;
-                const float oy = (side.y * cosf(angle) + up.y * sinf(angle)) * radial;
-                const float oz = (side.z * cosf(angle) + up.z * sinf(angle)) * radial;
-                const float phase = static_cast<float>(segmentIndex * 71 + step * 13 + ring * 7);
-                if (corpse.dots.size() < 160)
-                    AddCorpseVolumeDot(corpse, center, ox, oy, oz, bodyCenter, 0.032f,
-                        phase, fminf(1.0f, fmaxf(0.0f, (center.y - floorY) / 1.8f)));
-            }
-            // A center particle closes holes so limbs read as solid volume, not a wire skeleton.
-            const float phase = static_cast<float>(segmentIndex * 83 + step * 19);
-            if (corpse.dots.size() < 160)
-                AddCorpseVolumeDot(corpse, center, 0.0f, 0.0f, 0.0f, bodyCenter, 0.035f,
-                    phase, fminf(1.0f, fmaxf(0.0f, (center.y - floorY) / 1.8f)));
-        }
-    }
 }
 
 static uintptr_t GetCorpseRendererUnsafe(uintptr_t ragdoll)
@@ -2802,11 +2671,6 @@ void __fastcall hk_RagdollActivate(uintptr_t ragdoll, uintptr_t biped, Vector3 v
     corpse.materialMode = freezeCorpsesChamsMode;
     SetCorpseRigidbodiesFrozen(corpse, true);
     SetupFrozenCorpseMaterial(corpse);
-    CaptureCorpsePoseDots(corpse, biped);
-    if (freezeCorpsesVisualMode == 1) {
-        corpse.renderer = GetCorpseRendererUnsafe(ragdoll);
-        SetCorpseRendererVisibleUnsafe(corpse.renderer, false);
-    }
     AcquireSRWLockExclusive(&frozenCorpseLock);
     for (auto it = frozenCorpses.begin(); it != frozenCorpses.end();) {
         if (it->ragdoll != ragdoll) { ++it; continue; }
@@ -5504,127 +5368,6 @@ static bool ProjectTracerEnd(const Vector3& pos, ImVec2& screen) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-struct CorpseDotDrawItem {
-    Vector3 position;
-    ULONGLONG createdAt;
-    ULONGLONG releaseAt;
-    float driftX;
-    float driftY;
-    float driftZ;
-    float worldRadius;
-    float gradientT;
-    float delay;
-};
-
-static void DrawFrozenCorpseDots()
-{
-    if (!keyValidated || !freezeCorpsesEnabled || freezeCorpsesVisualMode == 0 ||
-        !o_WorldToScreenPoint) return;
-    const ULONGLONG now = GetTickCount64();
-    std::vector<CorpseDotDrawItem> snapshot;
-    AcquireSRWLockShared(&frozenCorpseLock);
-    for (const FrozenCorpseEntry& corpse : frozenCorpses) {
-        for (const CorpseDotParticle& dot : corpse.dots)
-            snapshot.push_back({ dot.position, corpse.createdAt, corpse.releaseAt,
-                dot.driftX, dot.driftY, dot.driftZ, dot.worldRadius, dot.gradientT, dot.delay });
-    }
-    ReleaseSRWLockShared(&frozenCorpseLock);
-    ImDrawList* draw = ImGui::GetForegroundDrawList();
-    for (const CorpseDotDrawItem& dot : snapshot) {
-        if (now >= dot.releaseAt || dot.releaseAt <= dot.createdAt) continue;
-        const float life = static_cast<float>(dot.releaseAt - dot.createdAt);
-        const float age = static_cast<float>(now - dot.createdAt);
-        const float progress = fminf(1.0f, fmaxf(0.0f, age / life));
-        // Hold the complete frozen body for most of its lifetime. During the final
-        // phase, disperse every orb radially in real XYZ world space and fade it.
-        const float spreadStart = 0.52f + dot.delay;
-        const float spreadProgress = progress <= spreadStart ? 0.0f :
-            fminf(1.0f, (progress - spreadStart) / (1.0f - spreadStart));
-        // Quintic smootherstep has zero velocity and acceleration at both ends.
-        const float smoothSpread = spreadProgress * spreadProgress * spreadProgress *
-            (spreadProgress * (spreadProgress * 6.0f - 15.0f) + 10.0f);
-        const float spreadDistance = freezeCorpsesDotFallSpeed * 0.85f * smoothSpread;
-        Vector3 world(
-            dot.position.x + dot.driftX * spreadDistance,
-            dot.position.y + dot.driftY * spreadDistance,
-            dot.position.z + dot.driftZ * spreadDistance);
-        float alpha = 1.0f - smoothSpread;
-        if (freezeCorpsesFadeEnabled) {
-            const float fadeMs = fmaxf(50.0f, freezeCorpsesFadeDuration * 1000.0f);
-            const float remaining = static_cast<float>(dot.releaseAt - now);
-            alpha *= fminf(1.0f, fmaxf(0.0f, remaining / fadeMs));
-        }
-        if (alpha <= 0.01f) continue;
-        const float gradient = fminf(1.0f, fmaxf(0.0f, dot.gradientT));
-        const float r = freezeCorpsesChamsColor[0] +
-            (freezeCorpsesDotGradientColor[0] - freezeCorpsesChamsColor[0]) * gradient;
-        const float g = freezeCorpsesChamsColor[1] +
-            (freezeCorpsesDotGradientColor[1] - freezeCorpsesChamsColor[1]) * gradient;
-        const float b = freezeCorpsesChamsColor[2] +
-            (freezeCorpsesDotGradientColor[2] - freezeCorpsesChamsColor[2]) * gradient;
-
-        // Rounded world-space icosphere: 12 normalized spherical vertices and
-        // 20 triangular faces. This reads as a ball from every camera angle.
-        const float radius = dot.worldRadius * freezeCorpsesDotSize;
-        const float phi = 1.61803398875f;
-        const float invLength = 0.52573111212f;
-        static const float unitVertices[12][3] = {
-            {-1, phi, 0},{1, phi, 0},{-1,-phi,0},{1,-phi,0},
-            {0,-1,phi},{0,1,phi},{0,-1,-phi},{0,1,-phi},
-            {phi,0,-1},{phi,0,1},{-phi,0,-1},{-phi,0,1}
-        };
-        Vector3 vertices[12];
-        ImVec2 projected[12];
-        bool visible = true;
-        for (int vertex = 0; vertex < 12; ++vertex) {
-            vertices[vertex] = Vector3(
-                world.x + unitVertices[vertex][0] * invLength * radius,
-                world.y + unitVertices[vertex][1] * invLength * radius,
-                world.z + unitVertices[vertex][2] * invLength * radius);
-            if (!ProjectTracerEnd(vertices[vertex], projected[vertex])) { visible = false; break; }
-        }
-        if (!visible) continue;
-        static const int faces[20][3] = {
-            {0,11,5},{0,5,1},{0,1,7},{0,7,10},{0,10,11},
-            {1,5,9},{5,11,4},{11,10,2},{10,7,6},{7,1,8},
-            {3,9,4},{3,4,2},{3,2,6},{3,6,8},{3,8,9},
-            {4,9,5},{2,4,11},{6,2,10},{8,6,7},{9,8,1}
-        };
-        ImVec2 centerScreen;
-        if (!ProjectTracerEnd(world, centerScreen)) continue;
-        float screenRadius = 0.0f;
-        for (int vertex = 0; vertex < 12; ++vertex) {
-            const float dx = projected[vertex].x - centerScreen.x;
-            const float dy = projected[vertex].y - centerScreen.y;
-            screenRadius = fmaxf(screenRadius, sqrtf(dx * dx + dy * dy));
-        }
-        // One cheap bloom halo per mesh; eight solid faces provide the real 3D body.
-        draw->AddCircleFilled(centerScreen, screenRadius * 1.55f,
-            IM_COL32(static_cast<int>(r * 255.0f), static_cast<int>(g * 255.0f),
-                static_cast<int>(b * 255.0f), static_cast<int>(alpha * 28.0f)), 12);
-        for (int face = 0; face < 20; ++face) {
-            ImVec2 triangle[3] = {
-                projected[faces[face][0]], projected[faces[face][1]], projected[faces[face][2]]
-            };
-            const Vector3& va = vertices[faces[face][0]];
-            const Vector3& vb = vertices[faces[face][1]];
-            const Vector3& vc = vertices[faces[face][2]];
-            const float ux = vb.x - va.x, uy = vb.y - va.y, uz = vb.z - va.z;
-            const float vx = vc.x - va.x, vy = vc.y - va.y, vz = vc.z - va.z;
-            float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-            const float normalLength = sqrtf(nx * nx + ny * ny + nz * nz);
-            if (normalLength > 0.001f) { nx /= normalLength; ny /= normalLength; nz /= normalLength; }
-            const float light = fmaxf(0.0f, nx * -0.35f + ny * 0.75f + nz * -0.55f);
-            const float shade = 0.30f + light * 0.70f;
-            draw->AddConvexPolyFilled(triangle, 3,
-                IM_COL32(static_cast<int>(fminf(1.0f, r * shade) * 255.0f),
-                    static_cast<int>(fminf(1.0f, g * shade) * 255.0f),
-                    static_cast<int>(fminf(1.0f, b * shade) * 255.0f),
-                    static_cast<int>(alpha * 245.0f)));
-        }
-    }
-}
-
 void DrawBulletImpacts()
 {
     if (!keyValidated || !bulletImpactsEnabled || !o_WorldToScreenPoint) return;
@@ -6597,16 +6340,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (freezeCorpsesFadeEnabled)
                 ImGui::SliderFloat("Corpse Fade Duration", &freezeCorpsesFadeDuration,
                     0.1f, 4.0f, "%.1f s");
-            const char* corpseVisualModes[] = { "Frozen Model", "Falling 3D Dots", "Model + Falling Dots" };
-            ImGui::Combo("Corpse Effect", &freezeCorpsesVisualMode,
-                corpseVisualModes, IM_ARRAYSIZE(corpseVisualModes));
             const char* corpseChamsModes[] = { "None", "Flat", "Glass", "Lit", "Metallic", "Rainbow", "Pulse" };
             ImGui::Combo("Corpse Chams", &freezeCorpsesChamsMode,
                 corpseChamsModes, IM_ARRAYSIZE(corpseChamsModes));
-            if (freezeCorpsesChamsMode != 0 || freezeCorpsesVisualMode != 0)
+            if (freezeCorpsesChamsMode != 0)
                 ImGui::ColorEdit3("Corpse Color", freezeCorpsesChamsColor);
-            if (freezeCorpsesVisualMode != 0)
-                ImGui::ColorEdit3("Corpse Dot Gradient", freezeCorpsesDotGradientColor);
             if (freezeCorpsesChamsMode == 2)
                 ImGui::SliderFloat("Corpse Glass Alpha", &freezeCorpsesChamsAlpha, 0.05f, 0.95f, "%.2f");
             if (freezeCorpsesChamsMode == 4) {
@@ -6615,10 +6353,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             }
             if (freezeCorpsesChamsMode == 5 || freezeCorpsesChamsMode == 6)
                 ImGui::SliderFloat("Corpse Animation Speed", &freezeCorpsesAnimationSpeed, 0.1f, 5.0f, "%.2f");
-            if (freezeCorpsesVisualMode != 0) {
-                ImGui::SliderFloat("Corpse Orb Scale", &freezeCorpsesDotSize, 1.0f, 6.0f, "%.1f");
-                ImGui::SliderFloat("Corpse Spread Distance", &freezeCorpsesDotFallSpeed, 0.2f, 4.0f, "%.1f");
-            }
         }
         if (ImGui::Checkbox("World Color", &worldColorEnabled))
             InterlockedExchange(&pendingWorldColorCommand, worldColorEnabled ? 1 : 2);
@@ -6930,7 +6664,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     DrawHitMarker();
     DrawHitLog();
-    DrawFrozenCorpseDots();
     DrawBulletImpacts();
     DrawBulletTracers();
     DrawBorderlessScopeReticle();
