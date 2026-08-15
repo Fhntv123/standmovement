@@ -223,7 +223,7 @@ struct Matrix16 {
 #define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
 #define OFFSET_HUDVIEW_UPDATE                       0xA68C60
 #define OFFSET_HITMARKERVIEW_SHOW                    0xA6AFC0
-#define OFFSET_HITMARKERVIEW_RESULT                  0xA6B5E0  // HitMarkerView.irq(boo), local outgoing result
+#define OFFSET_HITMARKERVIEW_LOCAL_HIT               0xA6B470  // HitMarkerView.bbcz(PlayerController, chv)
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xA5D6C0
 #define OFFSET_CHEAT_RUNTIME_SET_BHOP              0xA5DD90
 #define OFFSET_PLAYERCONTROLLER_COMMAND             0x83D210
@@ -1486,7 +1486,7 @@ bool(__fastcall* o_GameObject_get_activeInHierarchy)(uintptr_t) = nullptr;
 void(__fastcall* o_CanvasGroup_set_alpha)(uintptr_t, float) = nullptr;
 void(__fastcall* o_HUDView_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_HitMarkerView_Show)(uintptr_t, bool, bool, const Il2CppMethod*) = nullptr;
-void(__fastcall* o_HitMarkerView_Result)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_HitMarkerView_LocalHit)(uintptr_t, void*, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_PlayerController_Command)(uintptr_t, uintptr_t, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_KeyboardControl_BuildCommand)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_AimController_GetSnapshot)(uintptr_t, const Il2CppMethod*) = nullptr;
@@ -2519,59 +2519,80 @@ static bool ResolveConfirmedPlayerImpact(Vector3& impactPoint, Vector3& castEndF
     return found;
 }
 
-void __fastcall hk_HitMarkerView_Result(uintptr_t instance, uintptr_t result, const Il2CppMethod* method)
+static void ReadLocalHitPayload(uintptr_t shotData, int& damage, char* hitbox, size_t hitboxSize)
 {
-    // HitMarkerView.irq(boo) is the active local HUD's confirmed outgoing damage path.
-    if (keyValidated && hitLogEnabled && instance && instance == liveHitMarkerView && result) {
-        int headHits = -1, bodyHits = -1, feetHits = -1, damage = -1;
-        uintptr_t actorA = 0, actorB = 0;
-        __try {
-            actorA = *reinterpret_cast<uintptr_t*>(result + 0x10);
-            actorB = *reinterpret_cast<uintptr_t*>(result + 0x40);
-            headHits = *reinterpret_cast<int*>(result + 0x18);
-            bodyHits = *reinterpret_cast<int*>(result + 0x1C);
-            feetHits = *reinterpret_cast<int*>(result + 0x20);
-            using GetResultDamageFn = int(__fastcall*)(uintptr_t, const Il2CppMethod*);
-            static GetResultDamageFn getResultDamage = nullptr;
-            if (!getResultDamage)
-                getResultDamage = reinterpret_cast<GetResultDamageFn>(base + OFFSET_DAMAGE_RESULT_GET_HEALTH);
-            damage = getResultDamage(result, nullptr);
+    damage = -1;
+    if (!hitbox || hitboxSize < 8) return;
+    strcpy_s(hitbox, hitboxSize, "Unknown");
+    if (!shotData) return;
+    __try {
+        const uintptr_t hits = *reinterpret_cast<uintptr_t*>(shotData + 0x38); // chv.cdwv: chs[]
+        const uintptr_t count = hits ? *reinterpret_cast<uintptr_t*>(hits + 0x18) : 0;
+        int damageSum = 0, head = 0, body = 0, legs = 0;
+        if (count > 0 && count <= 64) {
+            for (uintptr_t i = 0; i < count; ++i) {
+                const uintptr_t hit = *reinterpret_cast<uintptr_t*>(hits + 0x20 + i * sizeof(uintptr_t));
+                if (!hit) continue;
+                const int hitDamage = *reinterpret_cast<int*>(hit + 0x2C); // chs.cdvw
+                if (hitDamage > 0 && hitDamage <= 500) damageSum += hitDamage;
+                const int bone = *reinterpret_cast<int*>(hit + 0x34); // chs.cdvy: BipedMap.blh
+                if (bone == 0 || bone == 1) ++head;
+                else if (bone >= 13 && bone <= 18) ++legs;
+                else if ((bone >= 2 && bone <= 12) || bone == 19) ++body;
+            }
         }
-        __except (EXCEPTION_EXECUTE_HANDLER) { actorA = actorB = 0; damage = -1; }
+        if (damageSum > 0 && damageSum <= 500) damage = damageSum;
+        else {
+            const int total = *reinterpret_cast<int*>(shotData + 0x2C); // chv.cdwt fallback
+            if (total > 0 && total <= 500) damage = total;
+        }
+        if (head >= body && head >= legs && head > 0) strcpy_s(hitbox, hitboxSize, "Head");
+        else if (body >= legs && body > 0) strcpy_s(hitbox, hitboxSize, "Body");
+        else if (legs > 0) strcpy_s(hitbox, hitboxSize, "Legs");
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        damage = -1;
+        strcpy_s(hitbox, hitboxSize, "Unknown");
+    }
+}
 
+void __fastcall hk_HitMarkerView_LocalHit(uintptr_t instance, void* victim,
+    uintptr_t shotData, const Il2CppMethod* method)
+{
+    // bbcz supplies the victim PlayerController directly. Accept it only when it is on
+    // the active local HUD and follows an actual local GunController -> HitCaster cast.
+    if (keyValidated && hitLogEnabled && instance && instance == liveHitMarkerView && victim && shotData) {
+        const ULONGLONG now = GetTickCount64();
+        ULONGLONG localCastAt = 0;
+        AcquireSRWLockShared(&hitMarkerLock);
+        localCastAt = latestHitMarkerCastAt;
+        ReleaseSRWLockShared(&hitMarkerLock);
         void* localPlayer = GetLocalPC();
         const unsigned char localTeam = GetPCTeam(localPlayer);
-        // irq(boo) may receive replicated results for the whole match. A result is ours
-        // only when exactly one actor field is one of the local player's eva identities;
-        // the opposite field is then the victim. Enemy-vs-enemy results are rejected.
-        const bool actorAIsLocal = ActorBelongsToPlayer(actorA, localPlayer);
-        const bool actorBIsLocal = ActorBelongsToPlayer(actorB, localPlayer);
-        void* victim = nullptr;
-        if (actorAIsLocal != actorBIsLocal)
-            victim = FindPlayerByActor(actorAIsLocal ? actorB : actorA);
         const unsigned char victimTeam = GetPCTeam(victim);
-        const bool localDealtThisDamage = localPlayer && localTeam && localTeam != 3 &&
-            (actorAIsLocal != actorBIsLocal) && victim && victim != localPlayer &&
-            victimTeam && victimTeam != 3 && victimTeam != localTeam;
-
-        const ULONGLONG now = GetTickCount64();
-        if (localDealtThisDamage && damage > 0 && damage <= 500 &&
-            (result != hitLogLastResult || now - hitLogLastResultAt > 250)) {
+        const bool followsLocalShot = localCastAt && now >= localCastAt && now - localCastAt <= 2000;
+        if (followsLocalShot && localPlayer && victim != localPlayer &&
+            localTeam && localTeam != 3 && victimTeam && victimTeam != 3 && victimTeam != localTeam &&
+            (shotData != hitLogLastResult || now - hitLogLastResultAt > 250)) {
             HitLogEntry entry = {};
-            GetPCName(victim, entry.enemyName, sizeof(entry.enemyName));
-            entry.damage = damage;
-            strcpy_s(entry.hitbox, HitboxNameFromDamageCounts(headHits, bodyHits, feetHits));
-            entry.createdAt = now;
-            AcquireSRWLockExclusive(&hitLogLock);
-            hitLogEntries.push_back(entry);
-            if (hitLogEntries.size() > 6)
-                hitLogEntries.erase(hitLogEntries.begin(), hitLogEntries.begin() + (hitLogEntries.size() - 6));
-            hitLogLastResult = result;
-            hitLogLastResultAt = now;
-            ReleaseSRWLockExclusive(&hitLogLock);
+            ReadLocalHitPayload(shotData, entry.damage, entry.hitbox, sizeof(entry.hitbox));
+            if (entry.damage > 0) {
+                GetPCName(victim, entry.enemyName, sizeof(entry.enemyName));
+                entry.createdAt = now;
+                AcquireSRWLockExclusive(&hitLogLock);
+                hitLogEntries.push_back(entry);
+                if (hitLogEntries.size() > 6)
+                    hitLogEntries.erase(hitLogEntries.begin(), hitLogEntries.begin() + (hitLogEntries.size() - 6));
+                hitLogLastResult = shotData;
+                hitLogLastResultAt = now;
+                ReleaseSRWLockExclusive(&hitLogLock);
+                AcquireSRWLockExclusive(&hitMarkerLock);
+                latestHitMarkerCastAt = 0; // consume one confirmed callback per local cast
+                ReleaseSRWLockExclusive(&hitMarkerLock);
+            }
         }
     }
-    o_HitMarkerView_Result(instance, result, method);
+    o_HitMarkerView_LocalHit(instance, victim, shotData, method);
 }
 
 void __fastcall hk_HitMarkerView_Show(uintptr_t instance, bool value, bool playSound, const Il2CppMethod* method)
@@ -2828,13 +2849,13 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
         strcpy_s(aimbotStatus, "Auto Fire reached HitCaster, but native cast returned null");
     }
     if (keyValidated && insideLocalGunFire && result &&
-        (hitMarkerEnabled || bulletTracerEnabled)) {
+        (hitMarkerEnabled || hitLogEnabled || bulletTracerEnabled)) {
         __try {
             // cjr stores the authoritative cast start/end at 0x24/0x30.
             const Vector3 actualStart = *(Vector3*)(result + 0x24);
             const Vector3 actualEnd = *(Vector3*)(result + 0x30);
             const ULONGLONG now = GetTickCount64();
-            if (hitMarkerEnabled) {
+            if (hitMarkerEnabled || hitLogEnabled) {
                 AcquireSRWLockExclusive(&hitMarkerLock);
                 latestHitMarkerCastStart = actualStart;
                 latestHitMarkerCastEnd = actualEnd;
@@ -5718,12 +5739,12 @@ DWORD WINAPI HackThread(LPVOID)
         MH_EnableHook((LPVOID)(base + OFFSET_HITMARKERVIEW_SHOW)) : hitMarkerCreateStatus;
     if (hitMarkerCreateStatus != MH_OK || hitMarkerEnableStatus != MH_OK)
         hitMarkerEnabled = false;
-    const MH_STATUS hitLogResultCreateStatus = MH_CreateHook(
-        (LPVOID)(base + OFFSET_HITMARKERVIEW_RESULT), hk_HitMarkerView_Result,
-        (LPVOID*)&o_HitMarkerView_Result);
-    const MH_STATUS hitLogResultEnableStatus = hitLogResultCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_HITMARKERVIEW_RESULT)) : hitLogResultCreateStatus;
-    if (hitLogResultCreateStatus != MH_OK || hitLogResultEnableStatus != MH_OK)
+    const MH_STATUS hitLogCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_HITMARKERVIEW_LOCAL_HIT), hk_HitMarkerView_LocalHit,
+        (LPVOID*)&o_HitMarkerView_LocalHit);
+    const MH_STATUS hitLogEnableStatus = hitLogCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_HITMARKERVIEW_LOCAL_HIT)) : hitLogCreateStatus;
+    if (hitLogCreateStatus != MH_OK || hitLogEnableStatus != MH_OK)
         hitLogEnabled = false;
     o_AimingData_Clone = (uintptr_t(__fastcall*)(uintptr_t, const Il2CppMethod*))
         (base + OFFSET_AIMINGDATA_CLONE);
