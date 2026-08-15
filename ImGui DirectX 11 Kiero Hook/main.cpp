@@ -584,7 +584,6 @@ uintptr_t currentLocalCharacterLodGroupCache = 0;
 char enemyChamsStatus[128] = "Disabled";
 volatile LONG pendingEnemyChamsRefresh = 0;
 ULONGLONG chamsLastMaintenanceTick = 0;
-ULONGLONG enemyWallChamsLastTick = 0;
 
 struct BulletTracerEntry {
     Vector3 start;
@@ -1267,6 +1266,25 @@ bool(__fastcall* o_Renderer_get_enabled)(uintptr_t) = nullptr;
 void(__fastcall* o_Renderer_set_enabled)(uintptr_t, bool) = nullptr;
 void(__fastcall* o_SkinnedMeshRenderer_set_updateWhenOffscreen)(uintptr_t, bool) = nullptr;
 void(__fastcall* o_ObjectOccludee_SetVisibleState)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
+
+void __fastcall hk_ObjectOccludee_SetVisibleState(uintptr_t instance, bool visible, const Il2CppMethod* method)
+{
+    if (keyValidated && enemyChamsEnabled && enemyChamsThroughWalls && instance && !visible) {
+        __try {
+            // PlayerOcclusionController inherits ObjectOccludee and owns its PlayerController at +0x48.
+            void* player = *reinterpret_cast<void**>(instance + 0x48);
+            void* localPlayer = GetLocalPC();
+            const unsigned char localTeam = GetPCTeam(localPlayer);
+            const unsigned char team = GetPCTeam(player);
+            if (player && player != localPlayer && localTeam != 0 && localTeam != 3 &&
+                team != 0 && team != 3 && team != localTeam)
+                visible = true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    o_ObjectOccludee_SetVisibleState(instance, visible, method);
+}
+
 Il2CppArray*(__fastcall* o_Object_FindObjectsOfType)(Il2CppObject*, bool, const Il2CppMethod*) = nullptr;
 Color(__fastcall* o_Material_get_color)(uintptr_t) = nullptr;
 void(__fastcall* o_Material_set_color)(uintptr_t, Color) = nullptr;
@@ -3561,13 +3579,6 @@ static void CollectEnemyBodyRenderers(std::vector<uintptr_t>& renderers)
         const unsigned char team = GetPCTeam(player);
         if (team == 0 || team == 3 || team == localTeam) continue;
         __try {
-            if (enemyChamsThroughWalls && o_ObjectOccludee_SetVisibleState) {
-                // PlayerController::PlayerOcclusionController +0xF8. ObjectOccludee.rkg(true)
-                // updates the game's visibility listeners, including remote Mecanim, so
-                // distant wall-chams do not keep rendering a frozen pose.
-                const uintptr_t occlusionController = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(player) + 0xF8);
-                if (occlusionController) o_ObjectOccludee_SetVisibleState(occlusionController, true, nullptr);
-            }
             // PlayerController::CharacterLodGroup +0x130 -> CharacterLodGroup::_meshRenderer +0x60.
             const uintptr_t characterLodGroup = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(player) + 0x130);
             const uintptr_t renderer = characterLodGroup ? *reinterpret_cast<uintptr_t*>(characterLodGroup + 0x60) : 0;
@@ -3784,20 +3795,14 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     const bool enemyRefreshRequested = InterlockedExchange(&pendingEnemyChamsRefresh, 0) != 0;
     const ULONGLONG chamsNow = GetTickCount64();
     const bool maintenanceDue = chamsNow - chamsLastMaintenanceTick >= 500;
-    // The game's occlusion manager can mark a hidden player invisible again on the next
-    // frame. Reassert wall-chams visibility at frame cadence instead of every 500 ms;
-    // the old maintenance gap caused the distant model to blink on and off.
-    const bool enemyWallRefreshDue = enemyChamsEnabled && enemyChamsThroughWalls &&
-        chamsNow - enemyWallChamsLastTick >= 16;
-    if (enemyWallRefreshDue) enemyWallChamsLastTick = chamsNow;
-    if (weaponRefreshRequested || armRefreshRequested || gloveRefreshRequested || enemyRefreshRequested || enemyWallRefreshDue || maintenanceDue) {
+    if (weaponRefreshRequested || armRefreshRequested || gloveRefreshRequested || enemyRefreshRequested || maintenanceDue) {
         if (maintenanceDue) chamsLastMaintenanceTick = chamsNow;
         if (weaponRefreshRequested || (maintenanceDue && weaponChamsEnabled))
             UpdateWeaponChams(GetCurrentLocalWeaponController());
         const uintptr_t liveArmsLodGroup = GetCurrentLocalArmsLodGroup();
         if (armRefreshRequested || (maintenanceDue && armChamsEnabled)) UpdateArmChams(liveArmsLodGroup);
         if (gloveRefreshRequested || (maintenanceDue && gloveChamsEnabled)) UpdateGloveChams(liveArmsLodGroup);
-        if (enemyRefreshRequested || enemyWallRefreshDue || (maintenanceDue && enemyChamsEnabled))
+        if (enemyRefreshRequested || (maintenanceDue && enemyChamsEnabled))
             UpdateEnemyChams();
     }
 
@@ -5346,7 +5351,14 @@ DWORD WINAPI HackThread(LPVOID)
     o_Renderer_get_enabled = (bool(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_GET_ENABLED);
     o_Renderer_set_enabled = (void(__fastcall*)(uintptr_t, bool))(base + OFFSET_RENDERER_SET_ENABLED);
     o_SkinnedMeshRenderer_set_updateWhenOffscreen = (void(__fastcall*)(uintptr_t, bool))(base + OFFSET_SKINNEDMESHRENDERER_SET_UPDATE_WHEN_OFFSCREEN);
-    o_ObjectOccludee_SetVisibleState = (void(__fastcall*)(uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_OBJECT_OCCLUDEE_SET_VISIBLE_STATE);
+    const MH_STATUS enemyOcclusionCreate = MH_CreateHook(
+        (LPVOID)(base + OFFSET_OBJECT_OCCLUDEE_SET_VISIBLE_STATE),
+        hk_ObjectOccludee_SetVisibleState,
+        (LPVOID*)&o_ObjectOccludee_SetVisibleState);
+    const MH_STATUS enemyOcclusionEnable = enemyOcclusionCreate == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_OBJECT_OCCLUDEE_SET_VISIBLE_STATE)) : enemyOcclusionCreate;
+    LINDY_LOG("[EnemyChams] occlusion visibility hook create=%d enable=%d",
+        (int)enemyOcclusionCreate, (int)enemyOcclusionEnable);
     o_Object_FindObjectsOfType = (Il2CppArray*(__fastcall*)(Il2CppObject*, bool, const Il2CppMethod*))(base + OFFSET_OBJECT_FIND_OBJECTS_OF_TYPE);
     o_Material_get_color = (Color(__fastcall*)(uintptr_t))(base + OFFSET_MATERIAL_GET_COLOR);
     o_Material_set_color = (void(__fastcall*)(uintptr_t, Color))(base + OFFSET_MATERIAL_SET_COLOR);
