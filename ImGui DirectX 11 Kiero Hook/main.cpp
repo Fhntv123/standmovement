@@ -350,6 +350,7 @@ bool jbActive = false;
 bool pixelSurfReleaseHop = false;
 volatile LONG64 pixelSurfReleasedAt = 0;
 volatile LONG64 pixelSurfReleaseGraceUntil = 0;
+uintptr_t pixelSurfCharacterController = 0;
 
 static void SetPixelSurfActive(bool active)
 {
@@ -3394,8 +3395,10 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
 
     if (jbActive) return false;
 
-    if (grounded)
+    if (grounded && instance && instance == pixelSurfCharacterController) {
         InterlockedExchange64(&pixelSurfReleasedAt, 0);
+        pixelSurfCharacterController = 0;
+    }
     return grounded;
 
 }
@@ -4345,6 +4348,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     }
 
     if (keyValidated && jbActive) {
+        pixelSurfCharacterController = instance;
         float speed = sqrt(motion.x * motion.x + motion.z * motion.z);
         if (speed > 0.1f) {
             motion.x = (motion.x / speed) * surfSpeed * 10.0f;
@@ -4363,15 +4367,15 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
             motion.y = 0.0f;
         }
         else if (!pixelSurfReleaseHop && releasedAt > 0 && now >= releasedAt &&
-            now - releasedAt < 5000 && motion.y < 0.0f) {
-            // Normal release: never fake grounded (which triggers a jump). Replace the
-            // accumulated fall burst with a gravity-speed ramp until actual landing.
+            instance == pixelSurfCharacterController && motion.y < 0.0f) {
+            // Normal release: never fake grounded. Keep replacing the stale accumulated
+            // gravity until this exact controller actually lands; do not expire mid-air.
             float deltaTime = o_Time_get_deltaTime ? o_Time_get_deltaTime() : (1.0f / 60.0f);
             if (!isfinite(deltaTime) || deltaTime < (1.0f / 240.0f) || deltaTime > 0.1f)
                 deltaTime = 1.0f / 60.0f;
             const float elapsed = static_cast<float>(now - releasedAt) * 0.001f;
-            float normalDownSpeed = 1.5f + 9.81f * elapsed;
-            if (normalDownSpeed > 20.0f) normalDownSpeed = 20.0f;
+            float normalDownSpeed = 0.5f + 4.0f * elapsed;
+            if (normalDownSpeed > 8.0f) normalDownSpeed = 8.0f;
             const float normalDownMotion = -normalDownSpeed * deltaTime;
             if (motion.y < normalDownMotion) motion.y = normalDownMotion;
         }
