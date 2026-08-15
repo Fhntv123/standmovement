@@ -5016,11 +5016,12 @@ void DrawBulletImpacts()
             (bulletImpactsDuration * 1000.0f);
         const float alpha = 1.0f - (age < 0.0f ? 0.0f : (age > 1.0f ? 1.0f : age));
         const float half = bulletImpactsSize * 0.5f;
-        const ImU32 shadow = IM_COL32(0, 0, 0, static_cast<int>(210.0f * alpha));
-        // CS2 convention: client prediction is red, server-confirmed is blue.
-        const ImU32 color = impact.serverConfirmed ?
-            IM_COL32(45, 125, 255, static_cast<int>(255.0f * alpha)) :
-            IM_COL32(255, 55, 55, static_cast<int>(255.0f * alpha));
+        // CS2-style solid 3D impact cube: filled faces only, with no wireframe
+        // border. Slight face shading keeps its volume readable while the inside
+        // remains completely filled.
+        const int baseR = impact.serverConfirmed ? 45 : 255;
+        const int baseG = impact.serverConfirmed ? 125 : 55;
+        const int baseB = impact.serverConfirmed ? 255 : 55;
         Vector3 corners[8];
         ImVec2 projected[8];
         bool allProjected = true;
@@ -5032,13 +5033,23 @@ void DrawBulletImpacts()
             if (!ProjectTracerEnd(corners[corner], projected[corner])) allProjected = false;
         }
         if (!allProjected) continue;
-        static const int edges[12][2] = {
-            {0,1},{2,3},{4,5},{6,7}, {0,2},{1,3},{4,6},{5,7},
-            {0,4},{1,5},{2,6},{3,7}
+        static const int faces[6][4] = {
+            {0,2,3,1}, {4,5,7,6}, {0,1,5,4},
+            {2,6,7,3}, {0,4,6,2}, {1,3,7,5}
         };
-        for (int edge = 0; edge < 12; ++edge) {
-            draw->AddLine(projected[edges[edge][0]], projected[edges[edge][1]], shadow, 3.0f);
-            draw->AddLine(projected[edges[edge][0]], projected[edges[edge][1]], color, 1.5f);
+        static const float faceShade[6] = { 0.78f, 1.00f, 0.88f, 0.70f, 0.82f, 0.94f };
+        for (int face = 0; face < 6; ++face) {
+            ImVec2 quad[4] = {
+                projected[faces[face][0]], projected[faces[face][1]],
+                projected[faces[face][2]], projected[faces[face][3]]
+            };
+            const float shade = faceShade[face];
+            const ImU32 faceColor = IM_COL32(
+                static_cast<int>(baseR * shade),
+                static_cast<int>(baseG * shade),
+                static_cast<int>(baseB * shade),
+                static_cast<int>(255.0f * alpha));
+            draw->AddConvexPolyFilled(quad, 4, faceColor);
         }
     }
 }
