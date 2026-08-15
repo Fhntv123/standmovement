@@ -807,6 +807,7 @@ t_PlayerHitConfirmed o_PlayerHitConfirmedB = nullptr;
 
 static void* GetLocalPC();
 static void GetPCName(void* pc, char* output, int outputSize);
+static void CollectPlayers(void** out, int maxN, int& outN);
 
 static const char* HitboxNameFromDamageCounts(int headHits, int bodyHits, int feetHits) {
     if (headHits > 0) return "Head";
