@@ -193,6 +193,9 @@ struct Matrix16 {
 #define OFFSET_RENDERER_GET_MATERIALS                0x2ED8E20
 #define OFFSET_RENDERER_IS_STATIC_BATCH              0x2ED9370
 #define OFFSET_RENDERER_SET_MATERIALS                0x2ED91C0
+#define OFFSET_RENDERER_GET_ENABLED                  0x2ED9330
+#define OFFSET_RENDERER_SET_ENABLED                  0x2ED9560
+#define OFFSET_SKINNEDMESHRENDERER_SET_UPDATE_WHEN_OFFSCREEN 0x2EDA260
 #define OFFSET_OBJECT_FIND_OBJECTS_OF_TYPE            0x2EF9B30
 #define OFFSET_MATERIAL_GET_COLOR                   0x2ECEBB0
 #define OFFSET_MATERIAL_SET_COLOR                   0x2ECF040
@@ -564,6 +567,7 @@ char gloveChamsStatus[128] = "Disabled";
 volatile LONG pendingGloveChamsRefresh = 0;
 
 bool enemyChamsEnabled = false;
+bool enemyChamsThroughWalls = false;
 int enemyChamsMode = 0;
 float enemyChamsColor[3] = { 0.45f, 0.20f, 1.0f };
 float enemyChamsAlpha = 0.35f;
@@ -573,7 +577,7 @@ float enemyChamsAnimationSpeed = 1.0f;
 ULONGLONG enemyChamsLastAnimationTick = 0;
 uintptr_t enemyChamsMaterials[8] = {};
 uint32_t enemyChamsMaterialHandles[8] = {};
-struct EnemyChamsRenderer { uintptr_t renderer; uintptr_t originalMaterial; };
+struct EnemyChamsRenderer { uintptr_t renderer; uintptr_t originalMaterial; bool originalEnabled; };
 std::vector<EnemyChamsRenderer> enemyChamsRenderers;
 uintptr_t currentLocalCharacterLodGroupCache = 0;
 char enemyChamsStatus[128] = "Disabled";
@@ -1257,6 +1261,9 @@ void(__fastcall* o_Renderer_set_material)(uintptr_t, uintptr_t) = nullptr;
 Il2CppArray*(__fastcall* o_Renderer_get_materials)(uintptr_t) = nullptr;
 bool(__fastcall* o_Renderer_get_isPartOfStaticBatch)(uintptr_t) = nullptr;
 void(__fastcall* o_Renderer_set_materials)(uintptr_t, Il2CppArray*) = nullptr;
+bool(__fastcall* o_Renderer_get_enabled)(uintptr_t) = nullptr;
+void(__fastcall* o_Renderer_set_enabled)(uintptr_t, bool) = nullptr;
+void(__fastcall* o_SkinnedMeshRenderer_set_updateWhenOffscreen)(uintptr_t, bool) = nullptr;
 Il2CppArray*(__fastcall* o_Object_FindObjectsOfType)(Il2CppObject*, bool, const Il2CppMethod*) = nullptr;
 Color(__fastcall* o_Material_get_color)(uintptr_t) = nullptr;
 void(__fastcall* o_Material_set_color)(uintptr_t, Color) = nullptr;
@@ -3113,7 +3120,10 @@ static void RestoreWeaponChams()
     if (o_Renderer_set_material) {
         for (const WeaponChamsRenderer& entry : weaponChamsRenderers) {
             if (!entry.renderer || !entry.originalMaterial) continue;
-            __try { o_Renderer_set_material(entry.renderer, entry.originalMaterial); }
+            __try {
+                o_Renderer_set_material(entry.renderer, entry.originalMaterial);
+                if (o_Renderer_set_enabled) o_Renderer_set_enabled(entry.renderer, entry.originalEnabled);
+            }
             __except (EXCEPTION_EXECUTE_HANDLER) {}
         }
     }
@@ -3470,7 +3480,7 @@ static uintptr_t GetCurrentLocalCharacterLodGroup()
 
 static uintptr_t EnsureSelectedEnemyChamsMaterial()
 {
-    const int mode = (enemyChamsMode >= 0 && enemyChamsMode < 8) ? enemyChamsMode : 0;
+    const int mode = enemyChamsThroughWalls ? 7 : ((enemyChamsMode >= 0 && enemyChamsMode < 7) ? enemyChamsMode : 0);
     if (enemyChamsMaterials[mode]) return enemyChamsMaterials[mode];
     static const char* shaderCandidates[8][5] = {
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
@@ -3566,17 +3576,23 @@ static void CaptureEnemyChamsRenderers(const std::vector<uintptr_t>& renderers)
         if (!renderer) continue;
         __try {
             const uintptr_t originalMaterial = o_Renderer_get_material(renderer);
-            if (originalMaterial) enemyChamsRenderers.push_back({ renderer, originalMaterial });
+            const bool originalEnabled = o_Renderer_get_enabled ? o_Renderer_get_enabled(renderer) : true;
+            if (originalMaterial) enemyChamsRenderers.push_back({ renderer, originalMaterial, originalEnabled });
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
     sprintf_s(enemyChamsStatus, "Applied to %zu enemy renderer(s)", enemyChamsRenderers.size());
 }
 
-static bool ApplyEnemyChamsRendererMaterial(uintptr_t renderer, uintptr_t replacement)
+static bool ApplyEnemyChamsRendererMaterial(uintptr_t renderer, uintptr_t replacement, bool throughWalls)
 {
     if (!renderer || !replacement) return false;
     __try {
+        if (throughWalls) {
+            if (o_Renderer_set_enabled) o_Renderer_set_enabled(renderer, true);
+            if (o_SkinnedMeshRenderer_set_updateWhenOffscreen)
+                o_SkinnedMeshRenderer_set_updateWhenOffscreen(renderer, true);
+        }
         const uintptr_t currentMaterial = o_Renderer_get_material ? o_Renderer_get_material(renderer) : 0;
         if (currentMaterial != replacement) o_Renderer_set_material(renderer, replacement);
         return true;
@@ -3613,7 +3629,7 @@ static void UpdateEnemyChams()
     o_Material_set_color(replacement, GetEnemyChamsDisplayColor());
     size_t applied = 0;
     for (const EnemyChamsRenderer& entry : enemyChamsRenderers)
-        if (ApplyEnemyChamsRendererMaterial(entry.renderer, replacement)) ++applied;
+        if (ApplyEnemyChamsRendererMaterial(entry.renderer, replacement, enemyChamsThroughWalls)) ++applied;
     sprintf_s(enemyChamsStatus, "Active on %zu enemy renderer(s)", applied);
 }
 
@@ -5086,8 +5102,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&pendingEnemyChamsRefresh, 1);
         }
         if (enemyChamsEnabled) {
-            const char* enemyModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse", "Through Walls" };
+            const char* enemyModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse" };
             if (ImGui::Combo("Enemy Material", &enemyChamsMode, enemyModes, IM_ARRAYSIZE(enemyModes)))
+                InterlockedExchange(&pendingEnemyChamsRefresh, 1);
+            if (ImGui::Checkbox("Through Walls", &enemyChamsThroughWalls))
                 InterlockedExchange(&pendingEnemyChamsRefresh, 1);
             if (ImGui::ColorEdit3("Enemy Color", enemyChamsColor))
                 InterlockedExchange(&pendingEnemyChamsRefresh, 1);
@@ -5309,6 +5327,9 @@ DWORD WINAPI HackThread(LPVOID)
     o_Renderer_get_materials = (Il2CppArray*(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_GET_MATERIALS);
     o_Renderer_get_isPartOfStaticBatch = (bool(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_IS_STATIC_BATCH);
     o_Renderer_set_materials = (void(__fastcall*)(uintptr_t, Il2CppArray*))(base + OFFSET_RENDERER_SET_MATERIALS);
+    o_Renderer_get_enabled = (bool(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_GET_ENABLED);
+    o_Renderer_set_enabled = (void(__fastcall*)(uintptr_t, bool))(base + OFFSET_RENDERER_SET_ENABLED);
+    o_SkinnedMeshRenderer_set_updateWhenOffscreen = (void(__fastcall*)(uintptr_t, bool))(base + OFFSET_SKINNEDMESHRENDERER_SET_UPDATE_WHEN_OFFSCREEN);
     o_Object_FindObjectsOfType = (Il2CppArray*(__fastcall*)(Il2CppObject*, bool, const Il2CppMethod*))(base + OFFSET_OBJECT_FIND_OBJECTS_OF_TYPE);
     o_Material_get_color = (Color(__fastcall*)(uintptr_t))(base + OFFSET_MATERIAL_GET_COLOR);
     o_Material_set_color = (void(__fastcall*)(uintptr_t, Color))(base + OFFSET_MATERIAL_SET_COLOR);
