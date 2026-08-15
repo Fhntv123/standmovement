@@ -523,11 +523,19 @@ char aimbotStatus[96] = "Disabled";
 
 bool freezeCorpsesEnabled = false;
 float freezeCorpsesDuration = 4.0f;
+bool freezeCorpsesFadeEnabled = true;
+float freezeCorpsesFadeDuration = 1.0f;
+bool freezeCorpsesChamsEnabled = false;
+float freezeCorpsesChamsColor[3] = { 1.0f, 0.20f, 0.35f };
 struct FrozenCorpseEntry {
     uintptr_t ragdoll;
     uintptr_t manager;
     ULONGLONG releaseAt;
     bool releaseRequested;
+    uintptr_t renderer;
+    uintptr_t originalMaterial;
+    uintptr_t fadeMaterial;
+    uint32_t fadeMaterialHandle;
     std::vector<std::pair<uintptr_t, bool>> rigidbodies;
 };
 std::vector<FrozenCorpseEntry> frozenCorpses;
@@ -1384,7 +1392,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(airJump); SAVE_BOOL(edgeBugEnabled); SAVE_FLOAT(edgeBugPullForce);
     SAVE_BOOL(velocityLimiterEnabled); SAVE_FLOAT(velocityLimit);
     SAVE_BOOL(aimbotEnabled); SAVE_BOOL(visibleAimbotEnabled); SAVE_BOOL(aimbotVisibleCheck); SAVE_BOOL(aimbotAutoWall); SAVE_FLOAT(aimbotAutoWallMinDamage); SAVE_BOOL(aimbotAutoFire);
-    SAVE_BOOL(silentAntiAimEnabled); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
+    SAVE_BOOL(silentAntiAimEnabled); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(freezeCorpsesFadeEnabled); SAVE_FLOAT(freezeCorpsesFadeDuration); SAVE_BOOL(freezeCorpsesChamsEnabled); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
     SAVE_BOOL(espShowName); SAVE_BOOL(espShowHealth); SAVE_BOOL(espShowWeapon); SAVE_BOOL(espGradient);
     SAVE_BOOL(worldColorEnabled); SAVE_INT(worldColorMode); SAVE_FLOAT(worldColorStrength); SAVE_FLOAT(worldColorAlpha);
     SAVE_BOOL(fogEnabled); SAVE_FLOAT(fogStartDistance); SAVE_FLOAT(fogEndDistance); SAVE_FLOAT(fogDensity);
@@ -1415,6 +1423,7 @@ static bool SaveConfig(const char* requestedName)
     WriteConfigColor(path, "worldColor", worldColor); WriteConfigColor(path, "fogColor", fogColor);
     WriteConfigColor(path, "customSkyboxColor", customSkyboxColor);
     WriteConfigColor(path, "hitMarkerColor", hitMarkerColor);
+    WriteConfigColor(path, "freezeCorpsesChamsColor", freezeCorpsesChamsColor);
     WriteConfigColor(path, "bulletTracerStartColor", bulletTracerStartColor); WriteConfigColor(path, "bulletTracerEndColor", bulletTracerEndColor);
     WriteConfigColor(path, "bulletImpactsClientColor", bulletImpactsClientColor); WriteConfigColor(path, "bulletImpactsConfirmedColor", bulletImpactsConfirmedColor);
     WriteConfigColor(path, "weaponChamsColor", weaponChamsColor); WriteConfigColor(path, "armChamsColor", armChamsColor);
@@ -1450,7 +1459,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(airJump); LOAD_BOOL(edgeBugEnabled); LOAD_FLOAT(edgeBugPullForce);
     LOAD_BOOL(velocityLimiterEnabled); LOAD_FLOAT(velocityLimit);
     LOAD_BOOL(aimbotEnabled); LOAD_BOOL(visibleAimbotEnabled); LOAD_BOOL(aimbotVisibleCheck); LOAD_BOOL(aimbotAutoWall); LOAD_FLOAT(aimbotAutoWallMinDamage); LOAD_BOOL(aimbotAutoFire);
-    LOAD_BOOL(silentAntiAimEnabled); LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
+    LOAD_BOOL(silentAntiAimEnabled); LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(freezeCorpsesFadeEnabled); LOAD_FLOAT(freezeCorpsesFadeDuration); LOAD_BOOL(freezeCorpsesChamsEnabled); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
     LOAD_BOOL(espShowName); LOAD_BOOL(espShowHealth); LOAD_BOOL(espShowWeapon); LOAD_BOOL(espGradient);
     LOAD_BOOL(worldColorEnabled); LOAD_INT(worldColorMode); LOAD_FLOAT(worldColorStrength); LOAD_FLOAT(worldColorAlpha);
     LOAD_BOOL(fogEnabled); LOAD_FLOAT(fogStartDistance); LOAD_FLOAT(fogEndDistance); LOAD_FLOAT(fogDensity);
@@ -1481,6 +1490,7 @@ static bool LoadConfig(const char* requestedName)
     ReadConfigColor(path, "worldColor", worldColor); ReadConfigColor(path, "fogColor", fogColor);
     ReadConfigColor(path, "customSkyboxColor", customSkyboxColor);
     ReadConfigColor(path, "hitMarkerColor", hitMarkerColor);
+    ReadConfigColor(path, "freezeCorpsesChamsColor", freezeCorpsesChamsColor);
     ReadConfigColor(path, "bulletTracerStartColor", bulletTracerStartColor); ReadConfigColor(path, "bulletTracerEndColor", bulletTracerEndColor);
     ReadConfigColor(path, "bulletImpactsClientColor", bulletImpactsClientColor); ReadConfigColor(path, "bulletImpactsConfirmedColor", bulletImpactsConfirmedColor);
     ReadConfigColor(path, "weaponChamsColor", weaponChamsColor); ReadConfigColor(path, "armChamsColor", armChamsColor);
@@ -2501,6 +2511,8 @@ uintptr_t GetPlayerController() {
 
 // Hook на GunController::gcloafhgkcb() - возвращает текущие патроны
 
+static uintptr_t CreateWeaponChamsMaterial(const char* shaderName, bool glass);
+
 using t_RagdollActivate = void(__fastcall*)(uintptr_t, uintptr_t, Vector3, bool,
     void*, uintptr_t, bool, bool, const Il2CppMethod*);
 using t_RagdollManagerRelease = void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*);
@@ -2544,6 +2556,45 @@ static void SetCorpseRigidbodiesFrozen(FrozenCorpseEntry& corpse, bool frozen)
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
+static void SetupFrozenCorpseMaterial(FrozenCorpseEntry& corpse)
+{
+    if (!corpse.ragdoll || !o_Renderer_get_material || !o_Renderer_set_material ||
+        !o_Material_set_color) return;
+    __try {
+        // RagdollController.cafy (+0x90) is CharacterLodGroup; its body renderer is +0x60.
+        const uintptr_t lodGroup = *reinterpret_cast<uintptr_t*>(corpse.ragdoll + 0x90);
+        corpse.renderer = lodGroup ? *reinterpret_cast<uintptr_t*>(lodGroup + 0x60) : 0;
+        corpse.originalMaterial = corpse.renderer ? o_Renderer_get_material(corpse.renderer) : 0;
+        if (!corpse.renderer || !corpse.originalMaterial ||
+            (!freezeCorpsesFadeEnabled && !freezeCorpsesChamsEnabled)) return;
+        corpse.fadeMaterial = CreateWeaponChamsMaterial("Unlit/Transparent", true);
+        if (!corpse.fadeMaterial)
+            corpse.fadeMaterial = CreateWeaponChamsMaterial("Legacy Shaders/Transparent/Diffuse", true);
+        if (!corpse.fadeMaterial) return;
+        if (g_il2cpp.gchandle_new)
+            corpse.fadeMaterialHandle = g_il2cpp.gchandle_new(
+                reinterpret_cast<Il2CppObject*>(corpse.fadeMaterial), false);
+        o_Material_set_color(corpse.fadeMaterial, Color(
+            freezeCorpsesChamsColor[0], freezeCorpsesChamsColor[1],
+            freezeCorpsesChamsColor[2], 1.0f));
+        o_Renderer_set_material(corpse.renderer, corpse.fadeMaterial);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+static void RestoreFrozenCorpseMaterial(FrozenCorpseEntry& corpse)
+{
+    __try {
+        if (corpse.renderer && corpse.originalMaterial && o_Renderer_set_material)
+            o_Renderer_set_material(corpse.renderer, corpse.originalMaterial);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (corpse.fadeMaterialHandle && g_il2cpp.gchandle_free)
+        g_il2cpp.gchandle_free(corpse.fadeMaterialHandle);
+    corpse.fadeMaterialHandle = 0;
+    corpse.fadeMaterial = 0;
+}
+
 void __fastcall hk_RagdollActivate(uintptr_t ragdoll, uintptr_t biped, Vector3 velocity,
     bool c, void* skinName, uintptr_t shotData, bool f, bool g, const Il2CppMethod* method)
 {
@@ -2555,11 +2606,19 @@ void __fastcall hk_RagdollActivate(uintptr_t ragdoll, uintptr_t biped, Vector3 v
     corpse.releaseAt = GetTickCount64() +
         static_cast<ULONGLONG>(freezeCorpsesDuration * 1000.0f);
     corpse.releaseRequested = false;
+    corpse.renderer = 0;
+    corpse.originalMaterial = 0;
+    corpse.fadeMaterial = 0;
+    corpse.fadeMaterialHandle = 0;
     SetCorpseRigidbodiesFrozen(corpse, true);
+    SetupFrozenCorpseMaterial(corpse);
     AcquireSRWLockExclusive(&frozenCorpseLock);
-    frozenCorpses.erase(std::remove_if(frozenCorpses.begin(), frozenCorpses.end(),
-        [ragdoll](const FrozenCorpseEntry& entry) { return entry.ragdoll == ragdoll; }),
-        frozenCorpses.end());
+    for (auto it = frozenCorpses.begin(); it != frozenCorpses.end();) {
+        if (it->ragdoll != ragdoll) { ++it; continue; }
+        RestoreFrozenCorpseMaterial(*it);
+        SetCorpseRigidbodiesFrozen(*it, false);
+        it = frozenCorpses.erase(it);
+    }
     frozenCorpses.push_back(std::move(corpse));
     ReleaseSRWLockExclusive(&frozenCorpseLock);
 }
@@ -2588,7 +2647,30 @@ static void UpdateFrozenCorpses()
     std::vector<std::pair<uintptr_t, uintptr_t>> releases;
     AcquireSRWLockExclusive(&frozenCorpseLock);
     for (auto it = frozenCorpses.begin(); it != frozenCorpses.end();) {
-        if (freezeCorpsesEnabled && now < it->releaseAt) { ++it; continue; }
+        if (freezeCorpsesEnabled && now < it->releaseAt) {
+            if (it->fadeMaterial && o_Material_set_color) {
+                float alpha = 1.0f;
+                if (freezeCorpsesFadeEnabled) {
+                    const ULONGLONG fadeMs = static_cast<ULONGLONG>(
+                        fmaxf(0.05f, freezeCorpsesFadeDuration) * 1000.0f);
+                    const ULONGLONG remaining = it->releaseAt - now;
+                    if (remaining < fadeMs)
+                        alpha = static_cast<float>(remaining) / static_cast<float>(fadeMs);
+                }
+                __try {
+                    o_Material_set_color(it->fadeMaterial, Color(
+                        freezeCorpsesChamsColor[0], freezeCorpsesChamsColor[1],
+                        freezeCorpsesChamsColor[2], alpha));
+                    if (it->renderer && o_Renderer_get_material && o_Renderer_set_material &&
+                        o_Renderer_get_material(it->renderer) != it->fadeMaterial)
+                        o_Renderer_set_material(it->renderer, it->fadeMaterial);
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER) {}
+            }
+            ++it;
+            continue;
+        }
+        RestoreFrozenCorpseMaterial(*it);
         SetCorpseRigidbodiesFrozen(*it, false);
         if (it->releaseRequested && it->manager && it->ragdoll)
             releases.push_back({ it->manager, it->ragdoll });
@@ -6166,8 +6248,16 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Show Trail", &showTrail);
         if (ImGui::Checkbox("Freeze Corpses", &freezeCorpsesEnabled) && !freezeCorpsesEnabled)
             UpdateFrozenCorpses();
-        if (freezeCorpsesEnabled)
+        if (freezeCorpsesEnabled) {
             ImGui::SliderFloat("Corpse Duration", &freezeCorpsesDuration, 0.5f, 10.0f, "%.1f s");
+            ImGui::Checkbox("Corpse Fade Out", &freezeCorpsesFadeEnabled);
+            if (freezeCorpsesFadeEnabled)
+                ImGui::SliderFloat("Corpse Fade Duration", &freezeCorpsesFadeDuration,
+                    0.1f, 4.0f, "%.1f s");
+            ImGui::Checkbox("Corpse Chams", &freezeCorpsesChamsEnabled);
+            if (freezeCorpsesChamsEnabled || freezeCorpsesFadeEnabled)
+                ImGui::ColorEdit3("Corpse Color", freezeCorpsesChamsColor);
+        }
         if (ImGui::Checkbox("World Color", &worldColorEnabled))
             InterlockedExchange(&pendingWorldColorCommand, worldColorEnabled ? 1 : 2);
         if (worldColorEnabled) {
