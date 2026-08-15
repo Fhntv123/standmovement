@@ -1427,6 +1427,19 @@ static void SetRendererMaterialArray(uintptr_t renderer, const std::vector<uintp
     o_Renderer_set_materials(renderer, array);
 }
 
+static void SetRendererMaterialPair(uintptr_t renderer, uintptr_t first, uintptr_t second)
+{
+    if (!renderer || !first || !second || !o_Renderer_set_materials || !g_il2cpp.array_new) return;
+    Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
+    if (!materialClass) return;
+    Il2CppArray* array = g_il2cpp.array_new(materialClass, 2);
+    const uintptr_t arrayAddress = reinterpret_cast<uintptr_t>(array);
+    if (!arrayAddress) return;
+    *reinterpret_cast<uintptr_t*>(arrayAddress + 0x20) = first;
+    *reinterpret_cast<uintptr_t*>(arrayAddress + 0x20 + sizeof(uintptr_t)) = second;
+    o_Renderer_set_materials(renderer, array);
+}
+
 static uintptr_t GetCurrentLocalWeaponController();
 static uintptr_t GetCurrentLocalCharacterLodGroup();
 
@@ -3652,7 +3665,7 @@ static bool ApplyEnemyChamsRendererMaterial(uintptr_t renderer, uintptr_t replac
             if (wallOverlay && o_Renderer_set_materials && g_il2cpp.array_new) {
                 // First pass preserves the selected Lit/Metallic/etc. appearance. The
                 // translucent depth-ignoring pass only adds visibility through geometry.
-                SetRendererMaterialArray(renderer, { replacement, wallOverlay });
+                SetRendererMaterialPair(renderer, replacement, wallOverlay);
                 return true;
             }
         }
