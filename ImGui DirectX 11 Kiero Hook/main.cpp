@@ -196,6 +196,7 @@ struct Matrix16 {
 #define OFFSET_RENDERER_GET_ENABLED                  0x2ED9330
 #define OFFSET_RENDERER_SET_ENABLED                  0x2ED9560
 #define OFFSET_SKINNEDMESHRENDERER_SET_UPDATE_WHEN_OFFSCREEN 0x2EDA260
+#define OFFSET_OBJECT_OCCLUDEE_SET_VISIBLE_STATE    0x886240
 #define OFFSET_OBJECT_FIND_OBJECTS_OF_TYPE            0x2EF9B30
 #define OFFSET_MATERIAL_GET_COLOR                   0x2ECEBB0
 #define OFFSET_MATERIAL_SET_COLOR                   0x2ECF040
@@ -1264,6 +1265,7 @@ void(__fastcall* o_Renderer_set_materials)(uintptr_t, Il2CppArray*) = nullptr;
 bool(__fastcall* o_Renderer_get_enabled)(uintptr_t) = nullptr;
 void(__fastcall* o_Renderer_set_enabled)(uintptr_t, bool) = nullptr;
 void(__fastcall* o_SkinnedMeshRenderer_set_updateWhenOffscreen)(uintptr_t, bool) = nullptr;
+void(__fastcall* o_ObjectOccludee_SetVisibleState)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
 Il2CppArray*(__fastcall* o_Object_FindObjectsOfType)(Il2CppObject*, bool, const Il2CppMethod*) = nullptr;
 Color(__fastcall* o_Material_get_color)(uintptr_t) = nullptr;
 void(__fastcall* o_Material_set_color)(uintptr_t, Color) = nullptr;
@@ -3558,6 +3560,13 @@ static void CollectEnemyBodyRenderers(std::vector<uintptr_t>& renderers)
         const unsigned char team = GetPCTeam(player);
         if (team == 0 || team == 3 || team == localTeam) continue;
         __try {
+            if (enemyChamsThroughWalls && o_ObjectOccludee_SetVisibleState) {
+                // PlayerController::PlayerOcclusionController +0xF8. ObjectOccludee.rkg(true)
+                // updates the game's visibility listeners, including remote Mecanim, so
+                // distant wall-chams do not keep rendering a frozen pose.
+                const uintptr_t occlusionController = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(player) + 0xF8);
+                if (occlusionController) o_ObjectOccludee_SetVisibleState(occlusionController, true, nullptr);
+            }
             // PlayerController::CharacterLodGroup +0x130 -> CharacterLodGroup::_meshRenderer +0x60.
             const uintptr_t characterLodGroup = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(player) + 0x130);
             const uintptr_t renderer = characterLodGroup ? *reinterpret_cast<uintptr_t*>(characterLodGroup + 0x60) : 0;
@@ -5330,6 +5339,7 @@ DWORD WINAPI HackThread(LPVOID)
     o_Renderer_get_enabled = (bool(__fastcall*)(uintptr_t))(base + OFFSET_RENDERER_GET_ENABLED);
     o_Renderer_set_enabled = (void(__fastcall*)(uintptr_t, bool))(base + OFFSET_RENDERER_SET_ENABLED);
     o_SkinnedMeshRenderer_set_updateWhenOffscreen = (void(__fastcall*)(uintptr_t, bool))(base + OFFSET_SKINNEDMESHRENDERER_SET_UPDATE_WHEN_OFFSCREEN);
+    o_ObjectOccludee_SetVisibleState = (void(__fastcall*)(uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_OBJECT_OCCLUDEE_SET_VISIBLE_STATE);
     o_Object_FindObjectsOfType = (Il2CppArray*(__fastcall*)(Il2CppObject*, bool, const Il2CppMethod*))(base + OFFSET_OBJECT_FIND_OBJECTS_OF_TYPE);
     o_Material_get_color = (Color(__fastcall*)(uintptr_t))(base + OFFSET_MATERIAL_GET_COLOR);
     o_Material_set_color = (void(__fastcall*)(uintptr_t, Color))(base + OFFSET_MATERIAL_SET_COLOR);
