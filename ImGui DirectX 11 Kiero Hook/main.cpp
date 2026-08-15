@@ -562,7 +562,23 @@ std::vector<GloveChamsRenderer> gloveChamsRenderers;
 uintptr_t gloveChamsArmsLodGroup = 0;
 char gloveChamsStatus[128] = "Disabled";
 volatile LONG pendingGloveChamsRefresh = 0;
-ULONGLONG armGloveChamsLastMaintenanceTick = 0;
+
+bool localPlayerChamsEnabled = false;
+int localPlayerChamsMode = 0;
+float localPlayerChamsColor[3] = { 0.45f, 0.20f, 1.0f };
+float localPlayerChamsAlpha = 0.35f;
+float localPlayerChamsMetallic = 0.9f;
+float localPlayerChamsSmoothness = 0.8f;
+float localPlayerChamsAnimationSpeed = 1.0f;
+ULONGLONG localPlayerChamsLastAnimationTick = 0;
+uintptr_t localPlayerChamsMaterials[7] = {};
+uint32_t localPlayerChamsMaterialHandles[7] = {};
+struct LocalPlayerChamsRenderer { uintptr_t renderer; uintptr_t originalMaterial; };
+std::vector<LocalPlayerChamsRenderer> localPlayerChamsRenderers;
+uintptr_t localPlayerChamsLodGroup = 0;
+char localPlayerChamsStatus[128] = "Disabled";
+volatile LONG pendingLocalPlayerChamsRefresh = 0;
+ULONGLONG chamsLastMaintenanceTick = 0;
 
 struct BulletTracerEntry {
     Vector3 start;
@@ -1371,6 +1387,7 @@ static void SetRendererMaterialArray(uintptr_t renderer, const std::vector<uintp
 }
 
 static uintptr_t GetCurrentLocalWeaponController();
+static uintptr_t GetCurrentLocalCharacterLodGroup();
 
 static void RestoreWorldColorUnsafe()
 {
@@ -1511,6 +1528,12 @@ static void CaptureWorldColorMaterialsUnsafe()
     for (const WeaponChamsRenderer& entry : weaponChamsRenderers) if (entry.renderer) excluded[entry.renderer] = true;
     for (const ArmChamsRenderer& entry : armChamsRenderers) if (entry.renderer) excluded[entry.renderer] = true;
     for (const GloveChamsRenderer& entry : gloveChamsRenderers) if (entry.renderer) excluded[entry.renderer] = true;
+    for (const LocalPlayerChamsRenderer& entry : localPlayerChamsRenderers) if (entry.renderer) excluded[entry.renderer] = true;
+    const uintptr_t localCharacterLod = GetCurrentLocalCharacterLodGroup();
+    if (localCharacterLod) {
+        const uintptr_t localBodyRenderer = *reinterpret_cast<uintptr_t*>(localCharacterLod + 0x60);
+        if (localBodyRenderer) excluded[localBodyRenderer] = true;
+    }
     const uintptr_t localWeapon = GetCurrentLocalWeaponController();
     if (localWeapon) {
         const uintptr_t lodGroup = *reinterpret_cast<uintptr_t*>(localWeapon + 0x80);
@@ -2215,6 +2238,7 @@ static uintptr_t GetCurrentLocalWeaponController();
 static void UpdateWeaponChams(uintptr_t knownWeaponController = 0);
 static void UpdateArmChams(uintptr_t knownArmsLodGroup = 0);
 static void UpdateGloveChams(uintptr_t knownArmsLodGroup = 0);
+static void UpdateLocalPlayerChams(uintptr_t knownCharacterLodGroup = 0);
 
 static Vector3 DirectionToCameraEuler(const Vector3& direction)
 {
@@ -3434,6 +3458,139 @@ static void UpdateGloveChams(uintptr_t knownArmsLodGroup)
     strcpy_s(gloveChamsStatus, "Active");
 }
 
+static uintptr_t GetCurrentLocalCharacterLodGroup()
+{
+    __try {
+        const uintptr_t lodGroup = liveHudLocalPlayer ? *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0x130) : 0;
+        if (lodGroup) localPlayerChamsLodGroup = lodGroup;
+        return lodGroup ? lodGroup : localPlayerChamsLodGroup;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return localPlayerChamsLodGroup; }
+}
+
+static uintptr_t EnsureSelectedLocalPlayerChamsMaterial()
+{
+    const int mode = (localPlayerChamsMode >= 0 && localPlayerChamsMode < 7) ? localPlayerChamsMode : 0;
+    if (localPlayerChamsMaterials[mode]) return localPlayerChamsMaterials[mode];
+    static const char* shaderCandidates[7][5] = {
+        { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
+        { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", "UI/Default", nullptr },
+        { "Legacy Shaders/Diffuse", "Standard", "Legacy Shaders/VertexLit", "Diffuse", nullptr },
+        { "Standard", "Legacy Shaders/Specular", "Legacy Shaders/Reflective/Diffuse", "Legacy Shaders/Diffuse", nullptr },
+        { "Legacy Shaders/Transparent/Diffuse", "Legacy Shaders/Transparent/VertexLit", "Legacy Shaders/Transparent/Specular", "Unlit/Transparent", nullptr },
+        { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
+        { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr }
+    };
+    const bool transparent = mode == 1 || mode == 4;
+    for (const char* shaderName : shaderCandidates[mode]) {
+        if (!shaderName) break;
+        localPlayerChamsMaterials[mode] = CreateWeaponChamsMaterial(shaderName, transparent);
+        if (localPlayerChamsMaterials[mode]) break;
+    }
+    const uintptr_t material = localPlayerChamsMaterials[mode];
+    if (!material) { strcpy_s(localPlayerChamsStatus, "Selected player shader not found"); return 0; }
+    if (g_il2cpp.gchandle_new)
+        localPlayerChamsMaterialHandles[mode] = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(material), false);
+    return material;
+}
+
+static Color GetLocalPlayerChamsDisplayColor()
+{
+    if (localPlayerChamsMode == 5) {
+        const float t = static_cast<float>(GetTickCount64() % 60000) * 0.001f * localPlayerChamsAnimationSpeed;
+        return Color(0.5f + 0.5f * sinf(t), 0.5f + 0.5f * sinf(t + 2.0943951f), 0.5f + 0.5f * sinf(t + 4.1887902f), 1.0f);
+    }
+    if (localPlayerChamsMode == 6) {
+        const float t = static_cast<float>(GetTickCount64() % 60000) * 0.001f * localPlayerChamsAnimationSpeed;
+        const float intensity = 0.2f + 0.8f * (0.5f + 0.5f * sinf(t));
+        return Color(localPlayerChamsColor[0] * intensity, localPlayerChamsColor[1] * intensity, localPlayerChamsColor[2] * intensity, 1.0f);
+    }
+    return Color(localPlayerChamsColor[0], localPlayerChamsColor[1], localPlayerChamsColor[2],
+        (localPlayerChamsMode == 1 || localPlayerChamsMode == 4) ? localPlayerChamsAlpha : 1.0f);
+}
+
+static void RestoreLocalPlayerChams()
+{
+    if (o_Renderer_set_material) {
+        for (const LocalPlayerChamsRenderer& entry : localPlayerChamsRenderers) {
+            if (!entry.renderer || !entry.originalMaterial) continue;
+            __try { o_Renderer_set_material(entry.renderer, entry.originalMaterial); }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+    }
+    localPlayerChamsRenderers.clear();
+}
+
+static void CaptureLocalPlayerChamsRenderer(uintptr_t characterLodGroup)
+{
+    RestoreLocalPlayerChams();
+    if (!characterLodGroup || !o_Renderer_get_material) { strcpy_s(localPlayerChamsStatus, "Local player renderer not found"); return; }
+    __try {
+        // PlayerController::CharacterLodGroup +0x130 -> CharacterLodGroup::_meshRenderer +0x60.
+        const uintptr_t renderer = *reinterpret_cast<uintptr_t*>(characterLodGroup + 0x60);
+        if (renderer) {
+            const uintptr_t originalMaterial = o_Renderer_get_material(renderer);
+            if (originalMaterial) localPlayerChamsRenderers.push_back({ renderer, originalMaterial });
+        }
+        localPlayerChamsLodGroup = characterLodGroup;
+        sprintf_s(localPlayerChamsStatus, "Applied to %zu local player renderer(s)", localPlayerChamsRenderers.size());
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        strcpy_s(localPlayerChamsStatus, "Local player renderer capture failed");
+        RestoreLocalPlayerChams();
+    }
+}
+
+static void UpdateLocalPlayerChams(uintptr_t knownCharacterLodGroup)
+{
+    if (!keyValidated || !o_Renderer_set_material || !o_Material_set_color) return;
+    uintptr_t characterLodGroup = knownCharacterLodGroup ? knownCharacterLodGroup : localPlayerChamsLodGroup;
+    if (!characterLodGroup) characterLodGroup = GetCurrentLocalCharacterLodGroup();
+    if (!localPlayerChamsEnabled) {
+        if (!localPlayerChamsRenderers.empty()) RestoreLocalPlayerChams();
+        strcpy_s(localPlayerChamsStatus, "Disabled");
+        return;
+    }
+    if (!characterLodGroup) { strcpy_s(localPlayerChamsStatus, "Waiting for local player model"); return; }
+    const uintptr_t replacement = EnsureSelectedLocalPlayerChamsMaterial();
+    if (!replacement) return;
+    bool rendererChanged = characterLodGroup != localPlayerChamsLodGroup || localPlayerChamsRenderers.empty();
+    __try {
+        const uintptr_t liveRenderer = *reinterpret_cast<uintptr_t*>(characterLodGroup + 0x60);
+        if (!liveRenderer || localPlayerChamsRenderers.empty() || localPlayerChamsRenderers.front().renderer != liveRenderer)
+            rendererChanged = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { rendererChanged = true; }
+    if (rendererChanged) CaptureLocalPlayerChamsRenderer(characterLodGroup);
+    if (localPlayerChamsRenderers.empty()) { strcpy_s(localPlayerChamsStatus, "Waiting for local player renderer"); return; }
+    if (localPlayerChamsMode == 3 && o_Material_SetFloat && g_il2cpp.string_new) {
+        o_Material_SetFloat(replacement, g_il2cpp.string_new("_Metallic"), localPlayerChamsMetallic);
+        o_Material_SetFloat(replacement, g_il2cpp.string_new("_Glossiness"), localPlayerChamsSmoothness);
+    }
+    o_Material_set_color(replacement, GetLocalPlayerChamsDisplayColor());
+    for (const LocalPlayerChamsRenderer& entry : localPlayerChamsRenderers) {
+        if (!entry.renderer) continue;
+        __try {
+            const uintptr_t currentMaterial = o_Renderer_get_material ? o_Renderer_get_material(entry.renderer) : 0;
+            if (currentMaterial != replacement) o_Renderer_set_material(entry.renderer, replacement);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    strcpy_s(localPlayerChamsStatus, "Active");
+}
+
+static void AnimateLocalPlayerChamsColor()
+{
+    if (!localPlayerChamsEnabled || (localPlayerChamsMode != 5 && localPlayerChamsMode != 6) || !o_Material_set_color) return;
+    const ULONGLONG now = GetTickCount64();
+    if (now - localPlayerChamsLastAnimationTick < 33) return;
+    localPlayerChamsLastAnimationTick = now;
+    const uintptr_t material = localPlayerChamsMaterials[localPlayerChamsMode];
+    if (!material) return;
+    __try { o_Material_set_color(material, GetLocalPlayerChamsDisplayColor()); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 static void CaptureWeaponChamsRenderers(uintptr_t weaponController)
 {
     RestoreWeaponChams();
@@ -3533,6 +3690,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         weaponChamsRenderers.clear();
         armChamsRenderers.clear();
         gloveChamsRenderers.clear();
+        localPlayerChamsRenderers.clear();
         weaponChamsController = 0;
         activeLocalWeaponController = 0;
         aimbotAutoFirePendingGun = 0;
@@ -3543,9 +3701,11 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         adminBhopOriginalCaptured = false;
         armChamsArmsLodGroup = 0;
         gloveChamsArmsLodGroup = 0;
+        localPlayerChamsLodGroup = 0;
         if (weaponChamsEnabled) InterlockedExchange(&pendingWeaponChamsRefresh, 1);
         if (armChamsEnabled) InterlockedExchange(&pendingArmChamsRefresh, 1);
         if (gloveChamsEnabled) InterlockedExchange(&pendingGloveChamsRefresh, 1);
+        if (localPlayerChamsEnabled) InterlockedExchange(&pendingLocalPlayerChamsRefresh, 1);
         InterlockedExchange(&pendingThirdPersonCommand, 1);
         worldColorRenderers.clear();
         worldColorTintMaterials.clear();
@@ -3557,20 +3717,24 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     const bool weaponRefreshRequested = InterlockedExchange(&pendingWeaponChamsRefresh, 0) != 0;
     const bool armRefreshRequested = InterlockedExchange(&pendingArmChamsRefresh, 0) != 0;
     const bool gloveRefreshRequested = InterlockedExchange(&pendingGloveChamsRefresh, 0) != 0;
+    const bool localPlayerRefreshRequested = InterlockedExchange(&pendingLocalPlayerChamsRefresh, 0) != 0;
     const ULONGLONG chamsNow = GetTickCount64();
-    const bool maintenanceDue = chamsNow - armGloveChamsLastMaintenanceTick >= 500;
-    if (weaponRefreshRequested || armRefreshRequested || gloveRefreshRequested || maintenanceDue) {
-        if (maintenanceDue) armGloveChamsLastMaintenanceTick = chamsNow;
+    const bool maintenanceDue = chamsNow - chamsLastMaintenanceTick >= 500;
+    if (weaponRefreshRequested || armRefreshRequested || gloveRefreshRequested || localPlayerRefreshRequested || maintenanceDue) {
+        if (maintenanceDue) chamsLastMaintenanceTick = chamsNow;
         if (weaponRefreshRequested || (maintenanceDue && weaponChamsEnabled))
             UpdateWeaponChams(GetCurrentLocalWeaponController());
         const uintptr_t liveArmsLodGroup = GetCurrentLocalArmsLodGroup();
         if (armRefreshRequested || (maintenanceDue && armChamsEnabled)) UpdateArmChams(liveArmsLodGroup);
         if (gloveRefreshRequested || (maintenanceDue && gloveChamsEnabled)) UpdateGloveChams(liveArmsLodGroup);
+        if (localPlayerRefreshRequested || (maintenanceDue && localPlayerChamsEnabled))
+            UpdateLocalPlayerChams(GetCurrentLocalCharacterLodGroup());
     }
 
     AnimateWeaponChamsColor();
     AnimateArmChamsColor();
     AnimateGloveChamsColor();
+    AnimateLocalPlayerChamsColor();
     AnimateWorldColor();
     if (adminBhopEnabled || adminBhopOriginalCaptured) ApplyAdminBhopState();
     UpdateAimbotAutoFire();
@@ -4879,6 +5043,27 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             }
             if (gloveChamsMode == 5 || gloveChamsMode == 6)
                 ImGui::SliderFloat("Glove Animation Speed", &gloveChamsAnimationSpeed, 0.2f, 5.0f, "%.1f");
+        }
+        if (ImGui::Checkbox("Local Player Chams", &localPlayerChamsEnabled)) {
+            InterlockedExchange(&pendingLocalPlayerChamsRefresh, 1);
+        }
+        if (localPlayerChamsEnabled) {
+            const char* localPlayerModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse" };
+            if (ImGui::Combo("Local Player Material", &localPlayerChamsMode, localPlayerModes, IM_ARRAYSIZE(localPlayerModes)))
+                InterlockedExchange(&pendingLocalPlayerChamsRefresh, 1);
+            if (ImGui::ColorEdit3("Local Player Color", localPlayerChamsColor))
+                InterlockedExchange(&pendingLocalPlayerChamsRefresh, 1);
+            if ((localPlayerChamsMode == 1 || localPlayerChamsMode == 4) &&
+                ImGui::SliderFloat("Local Player Transparency", &localPlayerChamsAlpha, 0.05f, 0.95f, "%.2f"))
+                InterlockedExchange(&pendingLocalPlayerChamsRefresh, 1);
+            if (localPlayerChamsMode == 3) {
+                if (ImGui::SliderFloat("Local Player Metallic", &localPlayerChamsMetallic, 0.0f, 1.0f, "%.2f"))
+                    InterlockedExchange(&pendingLocalPlayerChamsRefresh, 1);
+                if (ImGui::SliderFloat("Local Player Smoothness", &localPlayerChamsSmoothness, 0.0f, 1.0f, "%.2f"))
+                    InterlockedExchange(&pendingLocalPlayerChamsRefresh, 1);
+            }
+            if (localPlayerChamsMode == 5 || localPlayerChamsMode == 6)
+                ImGui::SliderFloat("Local Player Animation Speed", &localPlayerChamsAnimationSpeed, 0.2f, 5.0f, "%.1f");
         }
         ImGui::Checkbox("Hit Marker", &hitMarkerEnabled);
         if (hitMarkerEnabled) {
