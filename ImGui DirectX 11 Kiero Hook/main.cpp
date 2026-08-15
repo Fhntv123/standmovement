@@ -511,6 +511,9 @@ std::vector<HitLogEntry> hitLogEntries;
 SRWLOCK hitLogLock = SRWLOCK_INIT;
 uintptr_t hitLogLastResult = 0;
 ULONGLONG hitLogLastResultAt = 0;
+uintptr_t hitLogPendingVictim = 0;
+ULONGLONG hitLogPendingShotAt = 0;
+char hitLogPendingHitbox[16] = "Unknown";
 bool bulletTracerEnabled = false;
 bool noSpreadEnabled = false;
 bool removeScopeBorders = false;
@@ -763,6 +766,35 @@ static int ReadHealthStateNow(uintptr_t state) {
         return hp >= 0 && hp <= 100 ? hp : -1;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
 }
+static void* GetLocalPC();
+static unsigned char GetPCTeam(void* pc);
+static void GetPCName(void* pc, char* output, int outputSize);
+
+static void CommitOutgoingHitLogFromHealth(uintptr_t state, int healthBefore, int healthAfter) {
+    if (!keyValidated || !hitLogEnabled || !state || healthBefore < 0 || healthAfter < 0) return;
+    uintptr_t victim = 0;
+    __try { victim = *reinterpret_cast<uintptr_t*>(state + 0x40); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+    const ULONGLONG now = GetTickCount64();
+    if (!victim || victim != hitLogPendingVictim || !hitLogPendingShotAt ||
+        now < hitLogPendingShotAt || now - hitLogPendingShotAt > 1500) return;
+    const int damage = healthBefore - healthAfter;
+    if (damage <= 0 || damage > 100) return;
+
+    HitLogEntry entry = {};
+    GetPCName(reinterpret_cast<void*>(victim), entry.enemyName, sizeof(entry.enemyName));
+    entry.damage = damage;
+    strcpy_s(entry.hitbox, hitLogPendingHitbox);
+    entry.createdAt = now;
+    AcquireSRWLockExclusive(&hitLogLock);
+    hitLogEntries.push_back(entry);
+    if (hitLogEntries.size() > 6)
+        hitLogEntries.erase(hitLogEntries.begin(), hitLogEntries.begin() + (hitLogEntries.size() - 6));
+    ReleaseSRWLockExclusive(&hitLogLock);
+    hitLogPendingVictim = 0;
+    hitLogPendingShotAt = 0;
+}
+
 static void CacheUpdatedHealth(uintptr_t state) {
     const int hp = ReadHealthStateNow(state);
     if (hp < 0) return;
@@ -779,19 +811,31 @@ static void CacheUpdatedHealth(uintptr_t state) {
     InterlockedIncrement(&boxEspHealthUpdates);
 }
 void __fastcall hk_HealthApplyA(uintptr_t state, int a, int b, bool c, bool d, float e, const Il2CppMethod* method) {
+    const int healthBefore = ReadHealthStateNow(state);
     o_HealthApplyA(state, a, b, c, d, e, method);
+    const int healthAfter = ReadHealthStateNow(state);
+    CommitOutgoingHitLogFromHealth(state, healthBefore, healthAfter);
     InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, b); CacheUpdatedHealth(state);
 }
 void __fastcall hk_HealthApplyB(uintptr_t state, int a, int b, bool c, bool d, float e, void* info, const Il2CppMethod* method) {
+    const int healthBefore = ReadHealthStateNow(state);
     o_HealthApplyB(state, a, b, c, d, e, info, method);
+    const int healthAfter = ReadHealthStateNow(state);
+    CommitOutgoingHitLogFromHealth(state, healthBefore, healthAfter);
     InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, b); CacheUpdatedHealth(state);
 }
 void __fastcall hk_HealthApplyC(uintptr_t state, int a, bool b, const Il2CppMethod* method) {
+    const int healthBefore = ReadHealthStateNow(state);
     o_HealthApplyC(state, a, b, method);
+    const int healthAfter = ReadHealthStateNow(state);
+    CommitOutgoingHitLogFromHealth(state, healthBefore, healthAfter);
     InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, -1); CacheUpdatedHealth(state);
 }
 void __fastcall hk_HealthApplyD(uintptr_t state, int a, bool b, const Il2CppMethod* method) {
+    const int healthBefore = ReadHealthStateNow(state);
     o_HealthApplyD(state, a, b, method);
+    const int healthAfter = ReadHealthStateNow(state);
+    CommitOutgoingHitLogFromHealth(state, healthBefore, healthAfter);
     InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, -1); CacheUpdatedHealth(state);
 }
 
@@ -838,37 +882,6 @@ static void CacheConfirmedDamageResult(uintptr_t hitController, uintptr_t result
     InterlockedExchange(&boxEspConfirmedFieldC, feetHits);
     InterlockedExchange(&boxEspConfirmedHealth, damage);
     InterlockedIncrement(&boxEspConfirmedHits);
-
-    // The same confirmed result can traverse ria and rib. Correlate it with the
-    // authoritative HitCaster call made while the local GunController Fire hook was
-    // active; actor wrappers are not pointer-identical on every network mode.
-    const ULONGLONG now = GetTickCount64();
-    ULONGLONG localCastAt = 0;
-    AcquireSRWLockShared(&hitMarkerLock);
-    localCastAt = latestHitMarkerCastAt;
-    ReleaseSRWLockShared(&hitMarkerLock);
-    const bool followsLocalShot = localCastAt && now >= localCastAt && now - localCastAt <= 1500;
-    void* localPlayer = GetLocalPC();
-    const unsigned char localTeam = GetPCTeam(localPlayer);
-    const unsigned char victimTeam = GetPCTeam(reinterpret_cast<void*>(player));
-    const bool isEnemy = player && player != reinterpret_cast<uintptr_t>(localPlayer) &&
-        victimTeam != 0 && victimTeam != 3 && victimTeam != localTeam;
-    if (keyValidated && hitLogEnabled && followsLocalShot && isEnemy &&
-        damage > 0 && damage <= 500 &&
-        (result != hitLogLastResult || now - hitLogLastResultAt > 250)) {
-        HitLogEntry entry = {};
-        GetPCName(reinterpret_cast<void*>(player), entry.enemyName, sizeof(entry.enemyName));
-        entry.damage = damage;
-        strcpy_s(entry.hitbox, HitboxNameFromDamageCounts(headHits, bodyHits, feetHits));
-        entry.createdAt = now;
-        AcquireSRWLockExclusive(&hitLogLock);
-        hitLogEntries.push_back(entry);
-        if (hitLogEntries.size() > 6)
-            hitLogEntries.erase(hitLogEntries.begin(), hitLogEntries.begin() + (hitLogEntries.size() - 6));
-        hitLogLastResult = result;
-        hitLogLastResultAt = now;
-        ReleaseSRWLockExclusive(&hitLogLock);
-    }
 
     // Keep the existing confirmed-value fallback used by ESP diagnostics.
     if (!player || damage < 0 || damage > 100) return;
@@ -2506,6 +2519,63 @@ static bool ResolveConfirmedPlayerImpact(Vector3& impactPoint, Vector3& castEndF
     return found;
 }
 
+static void CaptureOutgoingHitLogTarget(const Vector3& castStart, const Vector3& castEnd)
+{
+    if (!hitLogEnabled) return;
+    void* localPlayer = GetLocalPC();
+    if (!localPlayer) return;
+    const unsigned char localTeam = GetPCTeam(localPlayer);
+    const Vector3 segment = castEnd - castStart;
+    const float lengthSquared = segment.x * segment.x + segment.y * segment.y + segment.z * segment.z;
+    if (lengthSquared <= 0.0001f) return;
+
+    void* players[64] = {};
+    int playerCount = 0;
+    CollectPlayers(players, 64, playerCount);
+    uintptr_t bestVictim = 0;
+    const char* bestHitbox = "Unknown";
+    float bestDistance = 3.0f;
+    for (int i = 0; i < playerCount; ++i) {
+        void* player = players[i];
+        if (!player || player == localPlayer) continue;
+        const unsigned char team = GetPCTeam(player);
+        if (team == 0 || team == 3 || team == localTeam) continue;
+        __try {
+            const uintptr_t biped = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(player) + 0x118);
+            if (!biped) continue;
+            struct BoneCandidate { uintptr_t offset; const char* hitbox; };
+            static const BoneCandidate bones[] = {
+                { 0x20, "Head" }, { 0x28, "Head" },
+                { 0x30, "Body" }, { 0x38, "Body" }, { 0x40, "Body" }, { 0x88, "Body" },
+                { 0x90, "Legs" }, { 0x98, "Legs" }, { 0xA0, "Legs" },
+                { 0xB0, "Legs" }, { 0xB8, "Legs" }, { 0xC0, "Legs" }
+            };
+            for (const BoneCandidate& candidate : bones) {
+                const uintptr_t bone = *reinterpret_cast<uintptr_t*>(biped + candidate.offset);
+                if (!bone || !o_Transform_get_position) continue;
+                const Vector3 anchorPoint = o_Transform_get_position(bone);
+                const Vector3 toAnchor = anchorPoint - castStart;
+                float t = (toAnchor.x * segment.x + toAnchor.y * segment.y + toAnchor.z * segment.z) / lengthSquared;
+                if (t < 0.0f || t > 1.05f) continue;
+                const Vector3 point(castStart.x + segment.x * t,
+                    castStart.y + segment.y * t, castStart.z + segment.z * t);
+                const float distance = point.Distance(anchorPoint);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    bestVictim = reinterpret_cast<uintptr_t>(player);
+                    bestHitbox = candidate.hitbox;
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    if (bestVictim) {
+        hitLogPendingVictim = bestVictim;
+        hitLogPendingShotAt = GetTickCount64();
+        strcpy_s(hitLogPendingHitbox, bestHitbox);
+    }
+}
+
 void __fastcall hk_HitMarkerView_Show(uintptr_t instance, bool value, bool playSound, const Il2CppMethod* method)
 {
     // HitMarkerView.bbcx is the game's confirmed marker-display path. Restrict the
@@ -2766,6 +2836,7 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
             const Vector3 actualStart = *(Vector3*)(result + 0x24);
             const Vector3 actualEnd = *(Vector3*)(result + 0x30);
             const ULONGLONG now = GetTickCount64();
+            if (hitLogEnabled) CaptureOutgoingHitLogTarget(actualStart, actualEnd);
             if (hitMarkerEnabled || hitLogEnabled) {
                 AcquireSRWLockExclusive(&hitMarkerLock);
                 latestHitMarkerCastStart = actualStart;
@@ -5360,6 +5431,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             hitLogEntries.clear();
             hitLogLastResult = 0;
             hitLogLastResultAt = 0;
+            hitLogPendingVictim = 0;
+            hitLogPendingShotAt = 0;
             ReleaseSRWLockExclusive(&hitLogLock);
         }
         if (hitLogEnabled)
