@@ -5237,73 +5237,110 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     style.Colors[ImGuiCol_SliderGrabActive] = accent;
     style.Colors[ImGuiCol_Separator] = borderCol;
 
-    ImGui::SetNextWindowSize(ImVec2(800.0f, 500.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(840.0f, 530.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("STANDMOVEMENT", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize);
 
-    // Setup ImGui style to match the "gui" folder (classic dark/orange cheat menu style)
-    // ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowRounding = 0.0f;
-    style.ChildRounding = 0.0f;
-    style.FrameRounding = 0.0f;
-    style.GrabRounding = 0.0f;
-    style.PopupRounding = 0.0f;
-    style.ScrollbarRounding = 0.0f;
+    // Polished dark style: keep the existing compact layout, but improve hierarchy,
+    // spacing, rounding and control feedback without changing any feature behavior.
+    style.WindowRounding = 8.0f;
+    style.ChildRounding = 6.0f;
+    style.FrameRounding = 5.0f;
+    style.GrabRounding = 5.0f;
+    style.PopupRounding = 6.0f;
+    style.ScrollbarRounding = 8.0f;
     style.WindowBorderSize = 1.0f;
     style.ChildBorderSize = 1.0f;
-    style.FrameBorderSize = 1.0f;
-    style.ItemSpacing = ImVec2(8.0f, 8.0f);
-    style.WindowPadding = ImVec2(8.0f, 8.0f);
+    style.FrameBorderSize = 0.0f;
+    style.ScrollbarSize = 11.0f;
+    style.GrabMinSize = 8.0f;
+    style.ItemSpacing = ImVec2(9.0f, 9.0f);
+    style.ItemInnerSpacing = ImVec2(7.0f, 5.0f);
+    style.WindowPadding = ImVec2(10.0f, 10.0f);
+    style.FramePadding = ImVec2(9.0f, 5.0f);
 
     ImVec4* colors = style.Colors;
-    colors[ImGuiCol_WindowBg] = ImVec4(0.06f, 0.06f, 0.06f, 1.0f);
-    colors[ImGuiCol_ChildBg] = ImVec4(0.08f, 0.08f, 0.08f, 1.0f);
-    colors[ImGuiCol_Border] = ImVec4(0.15f, 0.15f, 0.15f, 1.0f);
-    colors[ImGuiCol_FrameBg] = ImVec4(0.12f, 0.12f, 0.12f, 1.0f);
-    colors[ImGuiCol_FrameBgHovered] = ImVec4(0.15f, 0.15f, 0.15f, 1.0f);
-    colors[ImGuiCol_FrameBgActive] = ImVec4(0.18f, 0.18f, 0.18f, 1.0f);
-    
-    // Orange accent color from gui.hpp (255, 139, 61)
+    const ImVec4 surface0(0.035f, 0.035f, 0.050f, 0.985f);
+    const ImVec4 surface1(0.055f, 0.055f, 0.075f, 1.0f);
+    const ImVec4 surface2(0.085f, 0.085f, 0.110f, 1.0f);
     accent = ImVec4(1.0f, 0.545f, 0.239f, 1.0f);
+    colors[ImGuiCol_WindowBg] = surface0;
+    colors[ImGuiCol_ChildBg] = surface1;
+    colors[ImGuiCol_PopupBg] = ImVec4(0.045f, 0.045f, 0.062f, 1.0f);
+    colors[ImGuiCol_Border] = ImVec4(1.0f, 1.0f, 1.0f, 0.10f);
+    colors[ImGuiCol_BorderShadow] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    colors[ImGuiCol_FrameBg] = surface2;
+    colors[ImGuiCol_FrameBgHovered] = ImVec4(accent.x, accent.y, accent.z, 0.18f);
+    colors[ImGuiCol_FrameBgActive] = ImVec4(accent.x, accent.y, accent.z, 0.28f);
+    colors[ImGuiCol_Button] = ImVec4(0.075f, 0.075f, 0.098f, 1.0f);
+    colors[ImGuiCol_ButtonHovered] = ImVec4(accent.x, accent.y, accent.z, 0.22f);
+    colors[ImGuiCol_ButtonActive] = ImVec4(accent.x, accent.y, accent.z, 0.38f);
+    colors[ImGuiCol_Header] = ImVec4(accent.x, accent.y, accent.z, 0.16f);
+    colors[ImGuiCol_HeaderHovered] = ImVec4(accent.x, accent.y, accent.z, 0.25f);
+    colors[ImGuiCol_HeaderActive] = ImVec4(accent.x, accent.y, accent.z, 0.34f);
     colors[ImGuiCol_CheckMark] = accent;
     colors[ImGuiCol_SliderGrab] = accent;
-    colors[ImGuiCol_SliderGrabActive] = ImVec4(1.0f, 0.6f, 0.3f, 1.0f);
-    colors[ImGuiCol_Button] = ImVec4(0.12f, 0.12f, 0.12f, 1.0f);
-    colors[ImGuiCol_ButtonHovered] = ImVec4(0.15f, 0.15f, 0.15f, 1.0f);
-    colors[ImGuiCol_ButtonActive] = ImVec4(0.18f, 0.18f, 0.18f, 1.0f);
-    colors[ImGuiCol_Header] = ImVec4(0.15f, 0.15f, 0.15f, 1.0f);
-    colors[ImGuiCol_HeaderHovered] = ImVec4(0.18f, 0.18f, 0.18f, 1.0f);
-    colors[ImGuiCol_HeaderActive] = ImVec4(0.2f, 0.2f, 0.2f, 1.0f);
-    colors[ImGuiCol_Text] = ImVec4(0.9f, 0.9f, 0.9f, 1.0f);
+    colors[ImGuiCol_SliderGrabActive] = ImVec4(1.0f, 0.68f, 0.40f, 1.0f);
+    colors[ImGuiCol_Separator] = ImVec4(1.0f, 1.0f, 1.0f, 0.08f);
+    colors[ImGuiCol_SeparatorHovered] = ImVec4(accent.x, accent.y, accent.z, 0.45f);
+    colors[ImGuiCol_SeparatorActive] = accent;
+    colors[ImGuiCol_ScrollbarBg] = ImVec4(0.025f, 0.025f, 0.035f, 0.65f);
+    colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.22f, 0.22f, 0.27f, 1.0f);
+    colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(accent.x, accent.y, accent.z, 0.55f);
+    colors[ImGuiCol_ScrollbarGrabActive] = accent;
+    colors[ImGuiCol_Text] = ImVec4(0.94f, 0.94f, 0.97f, 1.0f);
+    colors[ImGuiCol_TextDisabled] = ImVec4(0.52f, 0.52f, 0.58f, 1.0f);
+
+    // Small branded header with a subtle accent line.
+    ImGui::TextColored(accent, "STANDMOVEMENT");
+    ImGui::SameLine();
+    ImGui::TextDisabled("  internal");
+    const ImVec2 headerMin = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        headerMin, ImVec2(headerMin.x + ImGui::GetContentRegionAvail().x, headerMin.y + 2.0f),
+        ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.75f)), 1.0f);
+    ImGui::Dummy(ImVec2(0.0f, 7.0f));
 
     // Top Tabs
     static int currentTab = 0;
-    ImGui::BeginChild("TabsPanel", ImVec2(0, 30), true);
+    ImGui::BeginChild("TabsPanel", ImVec2(0, 38), true);
     
     // Custom tab buttons
     float tabWidth = (ImGui::GetContentRegionAvail().x - 24.0f) / 4.0f;
     
     bool pushed0 = (currentTab == 0);
-    if (pushed0) ImGui::PushStyleColor(ImGuiCol_Button, accent);
+    if (pushed0) {
+        ImGui::PushStyleColor(ImGuiCol_Button, accent);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.08f, 0.05f, 0.03f, 1.0f));
+    }
     if (ImGui::Button("RAGEBOT", ImVec2(tabWidth, 0))) currentTab = 0;
-    if (pushed0) ImGui::PopStyleColor();
+    if (pushed0) ImGui::PopStyleColor(2);
     
     ImGui::SameLine();
     bool pushed1 = (currentTab == 1);
-    if (pushed1) ImGui::PushStyleColor(ImGuiCol_Button, accent);
+    if (pushed1) {
+        ImGui::PushStyleColor(ImGuiCol_Button, accent);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.08f, 0.05f, 0.03f, 1.0f));
+    }
     if (ImGui::Button("ANTI-AIM", ImVec2(tabWidth, 0))) currentTab = 1;
-    if (pushed1) ImGui::PopStyleColor();
+    if (pushed1) ImGui::PopStyleColor(2);
     
     ImGui::SameLine();
     bool pushed2 = (currentTab == 2);
-    if (pushed2) ImGui::PushStyleColor(ImGuiCol_Button, accent);
+    if (pushed2) {
+        ImGui::PushStyleColor(ImGuiCol_Button, accent);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.08f, 0.05f, 0.03f, 1.0f));
+    }
     if (ImGui::Button("VISUALS", ImVec2(tabWidth, 0))) currentTab = 2;
-    if (pushed2) ImGui::PopStyleColor();
+    if (pushed2) ImGui::PopStyleColor(2);
     
     ImGui::SameLine();
     bool pushed3 = (currentTab == 3);
-    if (pushed3) ImGui::PushStyleColor(ImGuiCol_Button, accent);
+    if (pushed3) {
+        ImGui::PushStyleColor(ImGuiCol_Button, accent);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.08f, 0.05f, 0.03f, 1.0f));
+    }
     if (ImGui::Button("WEAPONS", ImVec2(tabWidth, 0))) currentTab = 3;
-    if (pushed3) ImGui::PopStyleColor();
+    if (pushed3) ImGui::PopStyleColor(2);
     
     ImGui::EndChild();
 
