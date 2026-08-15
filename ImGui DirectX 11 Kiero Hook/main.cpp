@@ -19,12 +19,14 @@
 #include <wincodec.h>
 
 #include <comdef.h>
+#include <shlobj.h>
 
 #pragma comment(lib, "urlmon.lib")
 
 #pragma comment(lib, "wininet.lib")
 
 #pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "shell32.lib")
 
 
 
@@ -1246,12 +1248,24 @@ char backgroundPath[256] = "maxresdefault.jpg"; // Default path
 
 static std::string GetConfigDirectory()
 {
-    char modulePath[MAX_PATH] = {};
-    GetModuleFileNameA(reinterpret_cast<HMODULE>(&__ImageBase), modulePath, MAX_PATH);
-    char* slash = strrchr(modulePath, '\');
-    if (slash) *slash = '\0';
-    std::string directory = std::string(modulePath) + "\\ze0nware\\configs";
-    CreateDirectoryA((std::string(modulePath) + "\\ze0nware").c_str(), nullptr);
+    PWSTR documentsWide = nullptr;
+    std::string documents;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_CREATE,
+        nullptr, &documentsWide)) && documentsWide) {
+        char utf8[MAX_PATH * 4] = {};
+        WideCharToMultiByte(CP_UTF8, 0, documentsWide, -1,
+            utf8, static_cast<int>(sizeof(utf8)), nullptr, nullptr);
+        documents = utf8;
+    }
+    if (documentsWide) CoTaskMemFree(documentsWide);
+    if (documents.empty()) {
+        char fallback[MAX_PATH] = {};
+        if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_PERSONAL | CSIDL_FLAG_CREATE,
+            nullptr, SHGFP_TYPE_CURRENT, fallback)))
+            documents = fallback;
+    }
+    if (documents.empty()) documents = ".";
+    const std::string directory = documents + "\\ze0nware";
     CreateDirectoryA(directory.c_str(), nullptr);
     return directory;
 }
