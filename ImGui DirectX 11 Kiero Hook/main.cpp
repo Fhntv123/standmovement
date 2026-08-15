@@ -4962,6 +4962,16 @@ static bool ApplyEnemyChamsRendererMaterial(uintptr_t renderer, uintptr_t replac
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+static void RestoreEnemyOutlineOriginalMaterialUnsafe(uintptr_t renderer, uintptr_t originalMaterial)
+{
+    __try {
+        if (renderer && originalMaterial && o_Renderer_get_material &&
+            o_Renderer_get_material(renderer) != originalMaterial)
+            o_Renderer_set_material(renderer, originalMaterial);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 static void UpdateEnemyChams()
 {
     if (!keyValidated || !o_Renderer_set_material || !o_Material_set_color) return;
@@ -5004,11 +5014,7 @@ static void UpdateEnemyChams()
     size_t applied = 0;
     for (EnemyChamsRenderer& entry : enemyChamsRenderers) {
         if (enemyChamsMode == 7) {
-            __try {
-                if (o_Renderer_get_material && o_Renderer_get_material(entry.renderer) != entry.originalMaterial)
-                    o_Renderer_set_material(entry.renderer, entry.originalMaterial);
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) {}
+            RestoreEnemyOutlineOriginalMaterialUnsafe(entry.renderer, entry.originalMaterial);
             if (!entry.outlineObject)
                 CreateOutlineCloneUnsafe(entry.renderer, replacement, &entry.outlineObject, &entry.outlineRenderer);
             if (entry.outlineObject) ++applied;
