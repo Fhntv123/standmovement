@@ -593,7 +593,7 @@ float localPlayerChamsAnimationSpeed = 1.0f;
 ULONGLONG localPlayerChamsLastAnimationTick = 0;
 uintptr_t localPlayerChamsMaterials[7] = {};
 uint32_t localPlayerChamsMaterialHandles[7] = {};
-struct LocalPlayerChamsRenderer { uintptr_t renderer; uintptr_t originalMaterial; bool originalEnabled; };
+struct LocalPlayerChamsRenderer { uintptr_t renderer; uintptr_t originalMaterial; };
 std::vector<LocalPlayerChamsRenderer> localPlayerChamsRenderers;
 uintptr_t localPlayerChamsLodGroup = 0;
 char localPlayerChamsStatus[128] = "Disabled";
@@ -3824,7 +3824,6 @@ static void RestoreLocalPlayerChams()
             if (!entry.renderer || !entry.originalMaterial) continue;
             __try {
                 o_Renderer_set_material(entry.renderer, entry.originalMaterial);
-                if (o_Renderer_set_enabled) o_Renderer_set_enabled(entry.renderer, entry.originalEnabled);
             }
             __except (EXCEPTION_EXECUTE_HANDLER) {}
         }
@@ -3843,8 +3842,7 @@ static void CaptureLocalPlayerChamsRenderer(uintptr_t characterLodGroup)
         const uintptr_t renderer = *reinterpret_cast<uintptr_t*>(characterLodGroup + 0x60);
         if (renderer) {
             const uintptr_t originalMaterial = o_Renderer_get_material(renderer);
-            const bool originalEnabled = o_Renderer_get_enabled ? o_Renderer_get_enabled(renderer) : true;
-            if (originalMaterial) localPlayerChamsRenderers.push_back({ renderer, originalMaterial, originalEnabled });
+            if (originalMaterial) localPlayerChamsRenderers.push_back({ renderer, originalMaterial });
         }
         localPlayerChamsLodGroup = characterLodGroup;
         sprintf_s(localPlayerChamsStatus, "Captured %zu local renderer(s)", localPlayerChamsRenderers.size());
@@ -3888,7 +3886,6 @@ static void UpdateLocalPlayerChams(uintptr_t knownCharacterLodGroup)
     for (const LocalPlayerChamsRenderer& entry : localPlayerChamsRenderers) {
         if (!entry.renderer) continue;
         __try {
-            if (o_Renderer_set_enabled) o_Renderer_set_enabled(entry.renderer, true);
             const uintptr_t currentMaterial = o_Renderer_get_material ? o_Renderer_get_material(entry.renderer) : 0;
             if (currentMaterial != replacement) o_Renderer_set_material(entry.renderer, replacement);
             ++applied;
