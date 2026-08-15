@@ -2834,16 +2834,12 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
 
-    struct LocalHitCastScope {
-        bool active;
-        explicit LocalHitCastScope(bool enable) : active(enable) {
-            if (active) ++activeLocalHitCastDepth;
-        }
-        ~LocalHitCastScope() {
-            if (active) --activeLocalHitCastDepth;
-        }
-    } localHitCastScope(keyValidated && hitLogEnabled && insideLocalGunFire);
+    // Keep this as scalar/manual scope: hk_HitCaster_Cast contains SEH blocks, so a
+    // C++ object with a destructor here triggers MSVC C2712.
+    const bool markLocalHitCast = keyValidated && hitLogEnabled && insideLocalGunFire;
+    if (markLocalHitCast) ++activeLocalHitCastDepth;
     const uintptr_t result = o_HitCaster_Cast(origin, direction, maxDistance, hitParameters, method);
+    if (markLocalHitCast) --activeLocalHitCastDepth;
     if (insideAutoFireRequest && result)
         InterlockedIncrement(&aimbotAutoFired);
     // Never mutate the live aim state before/during Fire. Only animate the camera
