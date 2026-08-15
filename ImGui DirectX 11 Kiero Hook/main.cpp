@@ -2153,10 +2153,7 @@ static bool ApplyAdminBhopState()
             // killed backward momentum after releasing S.
             const float scaledMultiplier = adminBhopSpeedMultiplier *
                 (adminBhopMaxSpeed / 6.50f);
-            // Keep BHop enabled so its state is never reset/reversed, but suspend
-            // only its camera-relative acceleration for the whole Pixel Surf.
-            // Pixel Surf supplies its own fixed world-space displacement below.
-            *reinterpret_cast<float*>(jump + 0x14) = jbActive ? 0.0f : scaledMultiplier;
+            *reinterpret_cast<float*>(jump + 0x14) = scaledMultiplier;
             *reinterpret_cast<float*>(jump + 0x1C) = adminBhopMaxSpeed;
             strcpy_s(adminBhopStatus, adminBhopCsStrafeMode ?
                 "Native admin BHop active; CS air strafe" :
@@ -2603,6 +2600,17 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     InterlockedIncrement(&silentAntiAimInputBuildCalls);
     if (silentAntiAimEnabled && player && command)
         CaptureSilentAntiAimInput(player, command);
+
+    if (keyValidated && jbActive && command) {
+        __try {
+            // Pixel Surf owns horizontal displacement. Clear only movement axes;
+            // mouse/camera remains free, while neither Admin BHop nor game input
+            // can rotate the surf route after activation.
+            *reinterpret_cast<float*>(command + 0x10) = 0.0f;
+            *reinterpret_cast<float*>(command + 0x14) = 0.0f;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
 
     if (keyValidated && adminBhopEnabled && adminBhopCsStrafeMode && !jbActive &&
         player && command && player == liveHudLocalPlayer && lastCharacterController &&
