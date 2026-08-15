@@ -547,6 +547,9 @@ SRWLOCK hitLogLock = SRWLOCK_INIT;
 uintptr_t hitLogLastResult = 0;
 ULONGLONG hitLogLastResultAt = 0;
 bool bulletTracerEnabled = false;
+bool bulletImpactsEnabled = false;
+float bulletImpactsDuration = 4.0f;
+float bulletImpactsSize = 7.0f;
 bool noSpreadEnabled = false;
 bool removeScopeBorders = false;
 bool customScopeReticleVisible = false;
@@ -659,6 +662,13 @@ struct BulletTracerEntry {
 };
 std::vector<BulletTracerEntry> bulletTracers;
 SRWLOCK bulletTracerLock = SRWLOCK_INIT;
+struct BulletImpactEntry {
+    Vector3 position;
+    ULONGLONG createdAt;
+    bool serverConfirmed;
+};
+std::vector<BulletImpactEntry> bulletImpacts;
+SRWLOCK bulletImpactLock = SRWLOCK_INIT;
 
 
 
@@ -1364,6 +1374,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(hitMarkerEnabled); SAVE_FLOAT(hitMarkerDuration); SAVE_FLOAT(hitMarkerSize); SAVE_FLOAT(hitMarkerGap); SAVE_FLOAT(hitMarkerThickness);
     SAVE_BOOL(hitLogEnabled); SAVE_FLOAT(hitLogDuration);
     SAVE_BOOL(bulletTracerEnabled); SAVE_FLOAT(bulletTracerDuration); SAVE_FLOAT(bulletTracerThickness);
+    SAVE_BOOL(bulletImpactsEnabled); SAVE_FLOAT(bulletImpactsDuration); SAVE_FLOAT(bulletImpactsSize);
     SAVE_BOOL(showVelocity); SAVE_BOOL(showTrail); SAVE_INT(maxTrailPoints); SAVE_FLOAT(trailMinDistance);
     SAVE_BOOL(cameraFovEnabled); SAVE_FLOAT(cameraFov); SAVE_FLOAT(aimbotFov); SAVE_FLOAT(visibleAimbotHoldMs);
     SAVE_BOOL(espHealthGradient);
@@ -1428,6 +1439,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(hitMarkerEnabled); LOAD_FLOAT(hitMarkerDuration); LOAD_FLOAT(hitMarkerSize); LOAD_FLOAT(hitMarkerGap); LOAD_FLOAT(hitMarkerThickness);
     LOAD_BOOL(hitLogEnabled); LOAD_FLOAT(hitLogDuration);
     LOAD_BOOL(bulletTracerEnabled); LOAD_FLOAT(bulletTracerDuration); LOAD_FLOAT(bulletTracerThickness);
+    LOAD_BOOL(bulletImpactsEnabled); LOAD_FLOAT(bulletImpactsDuration); LOAD_FLOAT(bulletImpactsSize);
     LOAD_BOOL(showVelocity); LOAD_BOOL(showTrail); LOAD_INT(maxTrailPoints); LOAD_FLOAT(trailMinDistance);
     LOAD_BOOL(cameraFovEnabled); LOAD_FLOAT(cameraFov); LOAD_FLOAT(aimbotFov); LOAD_FLOAT(visibleAimbotHoldMs);
     LOAD_BOOL(espHealthGradient);
@@ -2911,11 +2923,39 @@ static void ReadLocalHitPayload(uintptr_t shotData, int& damage, char* hitbox, s
     }
 }
 
+static void AddBulletImpact(const Vector3& position, bool serverConfirmed)
+{
+    if (!isfinite(position.x) || !isfinite(position.y) || !isfinite(position.z)) return;
+    const ULONGLONG now = GetTickCount64();
+    AcquireSRWLockExclusive(&bulletImpactLock);
+    // A server-confirmed marker supersedes an almost identical recent blue one,
+    // avoiding duplicates when the hit callback is repeated for one shot.
+    bool duplicate = false;
+    if (serverConfirmed) {
+        for (auto it = bulletImpacts.rbegin(); it != bulletImpacts.rend(); ++it) {
+            if (now - it->createdAt > 250) break;
+            if (it->serverConfirmed && it->position.Distance(position) < 0.05f) {
+                duplicate = true;
+                break;
+            }
+        }
+    }
+    if (!duplicate) bulletImpacts.push_back({ position, now, serverConfirmed });
+    if (bulletImpacts.size() > 128)
+        bulletImpacts.erase(bulletImpacts.begin(), bulletImpacts.begin() + (bulletImpacts.size() - 128));
+    ReleaseSRWLockExclusive(&bulletImpactLock);
+}
+
 void __fastcall hk_HitMarkerView_LocalHit(uintptr_t instance, void* victim,
     uintptr_t shotData, const Il2CppMethod* method)
 {
     // bbcz supplies the victim PlayerController directly. Accept it only when it is on
     // the active local HUD and follows an actual local GunController -> HitCaster cast.
+    if (keyValidated && bulletImpactsEnabled && instance && instance == liveHitMarkerView && victim && shotData && activeLocalHitCastDepth > 0) {
+        Vector3 confirmedImpact, castEndFallback;
+        if (ResolveConfirmedPlayerImpact(confirmedImpact, castEndFallback))
+            AddBulletImpact(confirmedImpact, true);
+    }
     if (keyValidated && hitLogEnabled && instance && instance == liveHitMarkerView && victim && shotData) {
         const ULONGLONG now = GetTickCount64();
         void* localPlayer = GetLocalPC();
@@ -3205,12 +3245,13 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
         strcpy_s(aimbotStatus, "Auto Fire reached HitCaster, but native cast returned null");
     }
     if (keyValidated && insideLocalGunFire && result &&
-        (hitMarkerEnabled || hitLogEnabled || bulletTracerEnabled)) {
+        (hitMarkerEnabled || hitLogEnabled || bulletTracerEnabled || bulletImpactsEnabled)) {
         __try {
             // cjr stores the authoritative cast start/end at 0x24/0x30.
             const Vector3 actualStart = *(Vector3*)(result + 0x24);
             const Vector3 actualEnd = *(Vector3*)(result + 0x30);
             const ULONGLONG now = GetTickCount64();
+            if (bulletImpactsEnabled) AddBulletImpact(actualEnd, false);
             if (hitMarkerEnabled || hitLogEnabled) {
                 AcquireSRWLockExclusive(&hitMarkerLock);
                 latestHitMarkerCastStart = actualStart;
@@ -4936,6 +4977,40 @@ static bool ProjectTracerEnd(const Vector3& pos, ImVec2& screen) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+void DrawBulletImpacts()
+{
+    if (!keyValidated || !bulletImpactsEnabled || !o_WorldToScreenPoint) return;
+    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG durationMs = static_cast<ULONGLONG>(bulletImpactsDuration * 1000.0f);
+    std::vector<BulletImpactEntry> snapshot;
+    AcquireSRWLockExclusive(&bulletImpactLock);
+    bulletImpacts.erase(std::remove_if(bulletImpacts.begin(), bulletImpacts.end(),
+        [now, durationMs](const BulletImpactEntry& impact) {
+            return now - impact.createdAt > durationMs;
+        }), bulletImpacts.end());
+    snapshot = bulletImpacts;
+    ReleaseSRWLockExclusive(&bulletImpactLock);
+
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    for (const BulletImpactEntry& impact : snapshot) {
+        ImVec2 screen;
+        if (!ProjectTracerEnd(impact.position, screen)) continue;
+        const float age = static_cast<float>(now - impact.createdAt) /
+            (bulletImpactsDuration * 1000.0f);
+        const float alpha = 1.0f - (age < 0.0f ? 0.0f : (age > 1.0f ? 1.0f : age));
+        const float half = bulletImpactsSize * 0.5f;
+        const ImU32 shadow = IM_COL32(0, 0, 0, static_cast<int>(210.0f * alpha));
+        // CS2 convention: client prediction is red, server-confirmed is blue.
+        const ImU32 color = impact.serverConfirmed ?
+            IM_COL32(45, 125, 255, static_cast<int>(255.0f * alpha)) :
+            IM_COL32(255, 55, 55, static_cast<int>(255.0f * alpha));
+        draw->AddRect(ImVec2(screen.x - half - 1.0f, screen.y - half - 1.0f),
+            ImVec2(screen.x + half + 1.0f, screen.y + half + 1.0f), shadow, 0.0f, 0, 2.0f);
+        draw->AddRectFilled(ImVec2(screen.x - half, screen.y - half),
+            ImVec2(screen.x + half, screen.y + half), color);
+    }
+}
+
 void DrawBulletTracers() {
     if (!keyValidated || !bulletTracerEnabled || !o_WorldToScreenPoint) return;
 
@@ -6048,6 +6123,16 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Hit Marker Gap", &hitMarkerGap, 0.0f, 16.0f, "%.0f px");
             ImGui::SliderFloat("Hit Marker Thickness", &hitMarkerThickness, 1.0f, 6.0f, "%.1f px");
         }
+        if (ImGui::Checkbox("Bullet Impacts", &bulletImpactsEnabled) && !bulletImpactsEnabled) {
+            AcquireSRWLockExclusive(&bulletImpactLock);
+            bulletImpacts.clear();
+            ReleaseSRWLockExclusive(&bulletImpactLock);
+        }
+        if (bulletImpactsEnabled) {
+            ImGui::TextDisabled("Red: client cast  Blue: confirmed player hit");
+            ImGui::SliderFloat("Impact Duration", &bulletImpactsDuration, 0.25f, 10.0f, "%.1f s");
+            ImGui::SliderFloat("Impact Size", &bulletImpactsSize, 3.0f, 16.0f, "%.0f px");
+        }
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
         if (bulletTracerEnabled) {
             ImGui::ColorEdit3("Tracer Start Color", bulletTracerStartColor);
@@ -6128,6 +6213,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     DrawHitMarker();
     DrawHitLog();
+    DrawBulletImpacts();
     DrawBulletTracers();
     DrawBorderlessScopeReticle();
 
