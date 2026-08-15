@@ -2641,6 +2641,20 @@ void __fastcall hk_RagdollManagerRelease(uintptr_t manager, uintptr_t ragdoll,
     o_RagdollManagerRelease(manager, ragdoll, method);
 }
 
+static void ApplyFrozenCorpseFadeUnsafe(uintptr_t material, uintptr_t renderer, float alpha)
+{
+    // Keep SEH in this scalar-only function: no STL objects or destructors here.
+    __try {
+        o_Material_set_color(material, Color(
+            freezeCorpsesChamsColor[0], freezeCorpsesChamsColor[1],
+            freezeCorpsesChamsColor[2], alpha));
+        if (renderer && o_Renderer_get_material && o_Renderer_set_material &&
+            o_Renderer_get_material(renderer) != material)
+            o_Renderer_set_material(renderer, material);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 static void UpdateFrozenCorpses()
 {
     const ULONGLONG now = GetTickCount64();
@@ -2657,15 +2671,7 @@ static void UpdateFrozenCorpses()
                     if (remaining < fadeMs)
                         alpha = static_cast<float>(remaining) / static_cast<float>(fadeMs);
                 }
-                __try {
-                    o_Material_set_color(it->fadeMaterial, Color(
-                        freezeCorpsesChamsColor[0], freezeCorpsesChamsColor[1],
-                        freezeCorpsesChamsColor[2], alpha));
-                    if (it->renderer && o_Renderer_get_material && o_Renderer_set_material &&
-                        o_Renderer_get_material(it->renderer) != it->fadeMaterial)
-                        o_Renderer_set_material(it->renderer, it->fadeMaterial);
-                }
-                __except (EXCEPTION_EXECUTE_HANDLER) {}
+                ApplyFrozenCorpseFadeUnsafe(it->fadeMaterial, it->renderer, alpha);
             }
             ++it;
             continue;
