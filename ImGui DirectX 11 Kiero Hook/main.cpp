@@ -223,6 +223,12 @@ struct Matrix16 {
 #define OFFSET_GUNCONTROLLER_FIRE                  0x996BE0
 #define OFFSET_GUNCONTROLLER_COMMAND               0x998290
 #define OFFSET_HITCASTER_CAST                      0x99FBB0
+#define OFFSET_RAGDOLL_ACTIVATE                    0x85E690  // RagdollController.qvf
+#define OFFSET_RAGDOLL_MANAGER_RELEASE             0x860530  // RagdollManager.qvw
+#define OFFSET_RIGIDBODY_GET_IS_KINEMATIC          0x2F58060
+#define OFFSET_RIGIDBODY_SET_IS_KINEMATIC          0x2F58530
+#define OFFSET_RIGIDBODY_SET_VELOCITY              0x2F587A0
+#define OFFSET_RIGIDBODY_SET_ANGULAR_VELOCITY      0x2F58360
 #define OFFSET_AIMVIEW_AWAKE                       0xA60AA0
 #define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
 #define OFFSET_HUDVIEW_UPDATE                       0xA68C60
@@ -514,6 +520,18 @@ volatile LONG aimbotTargetsScanned = 0;
 volatile LONG aimbotVisibleTargets = 0;
 volatile LONG aimbotApplied = 0;
 char aimbotStatus[96] = "Disabled";
+
+bool freezeCorpsesEnabled = false;
+float freezeCorpsesDuration = 4.0f;
+struct FrozenCorpseEntry {
+    uintptr_t ragdoll;
+    uintptr_t manager;
+    ULONGLONG releaseAt;
+    bool releaseRequested;
+    std::vector<std::pair<uintptr_t, bool>> rigidbodies;
+};
+std::vector<FrozenCorpseEntry> frozenCorpses;
+SRWLOCK frozenCorpseLock = SRWLOCK_INIT;
 
 bool hitMarkerEnabled = false;
 float hitMarkerColor[3] = { 1.0f, 1.0f, 1.0f };
@@ -1366,7 +1384,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(airJump); SAVE_BOOL(edgeBugEnabled); SAVE_FLOAT(edgeBugPullForce);
     SAVE_BOOL(velocityLimiterEnabled); SAVE_FLOAT(velocityLimit);
     SAVE_BOOL(aimbotEnabled); SAVE_BOOL(visibleAimbotEnabled); SAVE_BOOL(aimbotVisibleCheck); SAVE_BOOL(aimbotAutoWall); SAVE_FLOAT(aimbotAutoWallMinDamage); SAVE_BOOL(aimbotAutoFire);
-    SAVE_BOOL(silentAntiAimEnabled); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
+    SAVE_BOOL(silentAntiAimEnabled); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
     SAVE_BOOL(espShowName); SAVE_BOOL(espShowHealth); SAVE_BOOL(espShowWeapon); SAVE_BOOL(espGradient);
     SAVE_BOOL(worldColorEnabled); SAVE_INT(worldColorMode); SAVE_FLOAT(worldColorStrength); SAVE_FLOAT(worldColorAlpha);
     SAVE_BOOL(fogEnabled); SAVE_FLOAT(fogStartDistance); SAVE_FLOAT(fogEndDistance); SAVE_FLOAT(fogDensity);
@@ -1432,7 +1450,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(airJump); LOAD_BOOL(edgeBugEnabled); LOAD_FLOAT(edgeBugPullForce);
     LOAD_BOOL(velocityLimiterEnabled); LOAD_FLOAT(velocityLimit);
     LOAD_BOOL(aimbotEnabled); LOAD_BOOL(visibleAimbotEnabled); LOAD_BOOL(aimbotVisibleCheck); LOAD_BOOL(aimbotAutoWall); LOAD_FLOAT(aimbotAutoWallMinDamage); LOAD_BOOL(aimbotAutoFire);
-    LOAD_BOOL(silentAntiAimEnabled); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
+    LOAD_BOOL(silentAntiAimEnabled); LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
     LOAD_BOOL(espShowName); LOAD_BOOL(espShowHealth); LOAD_BOOL(espShowWeapon); LOAD_BOOL(espGradient);
     LOAD_BOOL(worldColorEnabled); LOAD_INT(worldColorMode); LOAD_FLOAT(worldColorStrength); LOAD_FLOAT(worldColorAlpha);
     LOAD_BOOL(fogEnabled); LOAD_FLOAT(fogStartDistance); LOAD_FLOAT(fogEndDistance); LOAD_FLOAT(fogDensity);
@@ -2483,6 +2501,106 @@ uintptr_t GetPlayerController() {
 
 // Hook на GunController::gcloafhgkcb() - возвращает текущие патроны
 
+using t_RagdollActivate = void(__fastcall*)(uintptr_t, uintptr_t, Vector3, bool,
+    void*, uintptr_t, bool, bool, const Il2CppMethod*);
+using t_RagdollManagerRelease = void(__fastcall*)(uintptr_t, uintptr_t, const Il2CppMethod*);
+t_RagdollActivate o_RagdollActivate = nullptr;
+t_RagdollManagerRelease o_RagdollManagerRelease = nullptr;
+
+static void SetCorpseRigidbodiesFrozen(FrozenCorpseEntry& corpse, bool frozen)
+{
+    if (!base) return;
+    using GetKinematicFn = bool(__fastcall*)(uintptr_t, const Il2CppMethod*);
+    using SetKinematicFn = void(__fastcall*)(uintptr_t, bool, const Il2CppMethod*);
+    using SetVectorFn = void(__fastcall*)(uintptr_t, Vector3, const Il2CppMethod*);
+    const auto getKinematic = reinterpret_cast<GetKinematicFn>(base + OFFSET_RIGIDBODY_GET_IS_KINEMATIC);
+    const auto setKinematic = reinterpret_cast<SetKinematicFn>(base + OFFSET_RIGIDBODY_SET_IS_KINEMATIC);
+    const auto setVelocity = reinterpret_cast<SetVectorFn>(base + OFFSET_RIGIDBODY_SET_VELOCITY);
+    const auto setAngularVelocity = reinterpret_cast<SetVectorFn>(base + OFFSET_RIGIDBODY_SET_ANGULAR_VELOCITY);
+    __try {
+        if (frozen && corpse.rigidbodies.empty()) {
+            const uintptr_t bodies = *reinterpret_cast<uintptr_t*>(corpse.ragdoll + 0x40);
+            const int count = bodies ? *reinterpret_cast<int*>(bodies + 0x18) : 0;
+            const uintptr_t items = bodies ? *reinterpret_cast<uintptr_t*>(bodies + 0x10) : 0;
+            if (!items || count <= 0 || count > 128) return;
+            corpse.rigidbodies.reserve(count);
+            for (int i = 0; i < count; ++i) {
+                const uintptr_t body = *reinterpret_cast<uintptr_t*>(items + 0x20 +
+                    static_cast<uintptr_t>(i) * sizeof(uintptr_t));
+                if (!body) continue;
+                const bool wasKinematic = getKinematic(body, nullptr);
+                const Vector3 zero(0.0f, 0.0f, 0.0f);
+                setVelocity(body, zero, nullptr);
+                setAngularVelocity(body, zero, nullptr);
+                setKinematic(body, true, nullptr);
+                corpse.rigidbodies.push_back({ body, wasKinematic });
+            }
+        }
+        else if (!frozen) {
+            for (const auto& body : corpse.rigidbodies)
+                if (body.first) setKinematic(body.first, body.second, nullptr);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+void __fastcall hk_RagdollActivate(uintptr_t ragdoll, uintptr_t biped, Vector3 velocity,
+    bool c, void* skinName, uintptr_t shotData, bool f, bool g, const Il2CppMethod* method)
+{
+    o_RagdollActivate(ragdoll, biped, velocity, c, skinName, shotData, f, g, method);
+    if (!keyValidated || !freezeCorpsesEnabled || !ragdoll) return;
+    FrozenCorpseEntry corpse{};
+    corpse.ragdoll = ragdoll;
+    corpse.manager = 0;
+    corpse.releaseAt = GetTickCount64() +
+        static_cast<ULONGLONG>(freezeCorpsesDuration * 1000.0f);
+    corpse.releaseRequested = false;
+    SetCorpseRigidbodiesFrozen(corpse, true);
+    AcquireSRWLockExclusive(&frozenCorpseLock);
+    frozenCorpses.erase(std::remove_if(frozenCorpses.begin(), frozenCorpses.end(),
+        [ragdoll](const FrozenCorpseEntry& entry) { return entry.ragdoll == ragdoll; }),
+        frozenCorpses.end());
+    frozenCorpses.push_back(std::move(corpse));
+    ReleaseSRWLockExclusive(&frozenCorpseLock);
+}
+
+void __fastcall hk_RagdollManagerRelease(uintptr_t manager, uintptr_t ragdoll,
+    const Il2CppMethod* method)
+{
+    if (keyValidated && freezeCorpsesEnabled && ragdoll) {
+        const ULONGLONG now = GetTickCount64();
+        AcquireSRWLockExclusive(&frozenCorpseLock);
+        for (FrozenCorpseEntry& corpse : frozenCorpses) {
+            if (corpse.ragdoll != ragdoll || now >= corpse.releaseAt) continue;
+            corpse.manager = manager;
+            corpse.releaseRequested = true;
+            ReleaseSRWLockExclusive(&frozenCorpseLock);
+            return;
+        }
+        ReleaseSRWLockExclusive(&frozenCorpseLock);
+    }
+    o_RagdollManagerRelease(manager, ragdoll, method);
+}
+
+static void UpdateFrozenCorpses()
+{
+    const ULONGLONG now = GetTickCount64();
+    std::vector<std::pair<uintptr_t, uintptr_t>> releases;
+    AcquireSRWLockExclusive(&frozenCorpseLock);
+    for (auto it = frozenCorpses.begin(); it != frozenCorpses.end();) {
+        if (freezeCorpsesEnabled && now < it->releaseAt) { ++it; continue; }
+        SetCorpseRigidbodiesFrozen(*it, false);
+        if (it->releaseRequested && it->manager && it->ragdoll)
+            releases.push_back({ it->manager, it->ragdoll });
+        it = frozenCorpses.erase(it);
+    }
+    ReleaseSRWLockExclusive(&frozenCorpseLock);
+    // Release outside the lock: the native pool callback can synchronously reuse
+    // the ragdoll and enter hk_RagdollActivate again.
+    for (const auto& release : releases)
+        o_RagdollManagerRelease(release.first, release.second, nullptr);
+}
+
 void __fastcall hk_GameObject_SetActive(uintptr_t instance, bool active)
 {
     if (instance && instance == sniperSightObject) customScopeReticleVisible = removeScopeBorders && active;
@@ -2815,6 +2933,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
+    UpdateFrozenCorpses();
     UpdateVisibleAimbotCamera();
     if (thirdPersonEnabled && !InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0))
         ApplyCustomizedThirdPersonOffsets();
@@ -6045,6 +6164,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
         ImGui::Checkbox("Show Velocity", &showVelocity);
         ImGui::Checkbox("Show Trail", &showTrail);
+        if (ImGui::Checkbox("Freeze Corpses", &freezeCorpsesEnabled) && !freezeCorpsesEnabled)
+            UpdateFrozenCorpses();
+        if (freezeCorpsesEnabled)
+            ImGui::SliderFloat("Corpse Duration", &freezeCorpsesDuration, 0.5f, 10.0f, "%.1f s");
         if (ImGui::Checkbox("World Color", &worldColorEnabled))
             InterlockedExchange(&pendingWorldColorCommand, worldColorEnabled ? 1 : 2);
         if (worldColorEnabled) {
@@ -6633,6 +6756,11 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE));
     MH_CreateHook((LPVOID)(base + OFFSET_HITCASTER_CAST), hk_HitCaster_Cast, (LPVOID*)&o_HitCaster_Cast);
     MH_EnableHook((LPVOID)(base + OFFSET_HITCASTER_CAST));
+
+    MH_CreateHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE), hk_RagdollActivate, (LPVOID*)&o_RagdollActivate);
+    MH_EnableHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE));
+    MH_CreateHook((LPVOID)(base + OFFSET_RAGDOLL_MANAGER_RELEASE), hk_RagdollManagerRelease, (LPVOID*)&o_RagdollManagerRelease);
+    MH_EnableHook((LPVOID)(base + OFFSET_RAGDOLL_MANAGER_RELEASE));
 
     // Getter remains as a secondary HUD/state refresh path.
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_GETCURRENTAMMO), hk_GunController_GetCurrentAmmo, (LPVOID*)&o_GunController_GetCurrentAmmo);
