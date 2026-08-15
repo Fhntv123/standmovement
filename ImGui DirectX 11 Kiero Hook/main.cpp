@@ -2860,7 +2860,24 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
         fireNow <= aimbotAutoFirePendingUntil;
     insideAutoFireRequest = persistentAutoRequest;
     insideLocalGunFire = isLocalGun;
+    uintptr_t doubleTapRecoilController = 0;
+    unsigned char doubleTapRecoilState[0x28] = {};
+    float doubleTapRecoilProgress = 0.0f;
+    bool capturedDoubleTapRecoil = false;
     if (fireSecondShot) {
+        __try {
+            // GunController.cehb (ckf) owns the accumulated recoil/camera-deviation
+            // state. Save it before the pair so the extra Fire cannot stack recoil.
+            doubleTapRecoilController = *reinterpret_cast<uintptr_t*>(instance + 0xF8);
+            if (doubleTapRecoilController) {
+                memcpy(doubleTapRecoilState,
+                    reinterpret_cast<void*>(doubleTapRecoilController + 0x10),
+                    sizeof(doubleTapRecoilState));
+                doubleTapRecoilProgress = *reinterpret_cast<float*>(doubleTapRecoilController + 0x50);
+                capturedDoubleTapRecoil = true;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { capturedDoubleTapRecoil = false; }
         __try {
             const uintptr_t aimController = liveHudLocalPlayer ?
                 *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8) : 0;
@@ -2878,6 +2895,14 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
         // Keep the real second cast/damage/ammo path, then suppress recoil applied both
         // immediately and by the weapon's following HUD/update frames.
         o_GunController_Fire(instance, playSound, method);
+        if (capturedDoubleTapRecoil) {
+            __try {
+                memcpy(reinterpret_cast<void*>(doubleTapRecoilController + 0x10),
+                    doubleTapRecoilState, sizeof(doubleTapRecoilState));
+                *reinterpret_cast<float*>(doubleTapRecoilController + 0x50) = doubleTapRecoilProgress;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
         if (doubleTapCameraAimingData) {
             __try {
                 *reinterpret_cast<Vector3*>(doubleTapCameraAimingData + 0x18) = doubleTapCameraAimAngle;
