@@ -227,6 +227,7 @@ struct Matrix16 {
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xA5D6C0
 #define OFFSET_CHEAT_RUNTIME_SET_BHOP              0xA5DD90
 #define OFFSET_PLAYERCONTROLLER_COMMAND             0x83D210
+#define OFFSET_PLAYERCONTROLLER_GET_ACTOR           0x83ABA0  // PlayerController.qgk() -> eva
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_A          0x840BF0  // PlayerManager.qkb(PlayerController)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_B          0x840DE0  // PlayerManager.qkc(PlayerController)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_C          0x840E10  // PlayerManager.qkd(PlayerController)
@@ -825,13 +826,30 @@ static uintptr_t SafeGetPlayerHitActor(void* player) {
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
+static uintptr_t SafeGetPlayerActor(void* player) {
+    if (!player || !base) return 0;
+    __try {
+        using GetActorFn = uintptr_t(__fastcall*)(void*, const Il2CppMethod*);
+        static GetActorFn getActor = nullptr;
+        if (!getActor)
+            getActor = reinterpret_cast<GetActorFn>(base + OFFSET_PLAYERCONTROLLER_GET_ACTOR);
+        return getActor(player, nullptr);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+static bool ActorBelongsToPlayer(uintptr_t actor, void* player) {
+    if (!actor || !player) return false;
+    return actor == SafeGetPlayerHitActor(player) || actor == SafeGetPlayerActor(player);
+}
+
 static void* FindPlayerByActor(uintptr_t actor) {
     if (!actor) return nullptr;
     void* players[64] = {};
     int playerCount = 0;
     CollectPlayers(players, 64, playerCount);
     for (int i = 0; i < playerCount; ++i) {
-        if (players[i] && SafeGetPlayerHitActor(players[i]) == actor)
+        if (players[i] && ActorBelongsToPlayer(actor, players[i]))
             return players[i];
     }
     return nullptr;
@@ -2523,20 +2541,21 @@ void __fastcall hk_HitMarkerView_Result(uintptr_t instance, uintptr_t result, co
 
         void* localPlayer = GetLocalPC();
         const unsigned char localTeam = GetPCTeam(localPlayer);
-        void* playerA = FindPlayerByActor(actorA);
-        void* playerB = FindPlayerByActor(actorB);
+        // irq(boo) may receive replicated results for the whole match. A result is ours
+        // only when exactly one actor field is one of the local player's eva identities;
+        // the opposite field is then the victim. Enemy-vs-enemy results are rejected.
+        const bool actorAIsLocal = ActorBelongsToPlayer(actorA, localPlayer);
+        const bool actorBIsLocal = ActorBelongsToPlayer(actorB, localPlayer);
         void* victim = nullptr;
-        const unsigned char teamA = GetPCTeam(playerA);
-        const unsigned char teamB = GetPCTeam(playerB);
-        if (playerA && playerA != localPlayer && localTeam && localTeam != 3 &&
-            teamA && teamA != 3 && teamA != localTeam)
-            victim = playerA;
-        else if (playerB && playerB != localPlayer && localTeam && localTeam != 3 &&
-            teamB && teamB != 3 && teamB != localTeam)
-            victim = playerB;
+        if (actorAIsLocal != actorBIsLocal)
+            victim = FindPlayerByActor(actorAIsLocal ? actorB : actorA);
+        const unsigned char victimTeam = GetPCTeam(victim);
+        const bool localDealtThisDamage = localPlayer && localTeam && localTeam != 3 &&
+            (actorAIsLocal != actorBIsLocal) && victim && victim != localPlayer &&
+            victimTeam && victimTeam != 3 && victimTeam != localTeam;
 
         const ULONGLONG now = GetTickCount64();
-        if (victim && damage > 0 && damage <= 500 &&
+        if (localDealtThisDamage && damage > 0 && damage <= 500 &&
             (result != hitLogLastResult || now - hitLogLastResultAt > 250)) {
             HitLogEntry entry = {};
             GetPCName(victim, entry.enemyName, sizeof(entry.enemyName));
