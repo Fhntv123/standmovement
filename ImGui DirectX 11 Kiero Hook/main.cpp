@@ -354,8 +354,6 @@ bool pixelSurfReleaseHop = false;
 volatile LONG64 pixelSurfReleasedAt = 0;
 volatile LONG64 pixelSurfReleaseGraceUntil = 0;
 uintptr_t pixelSurfCharacterController = 0;
-Vector3 pixelSurfLockedDirection;
-bool pixelSurfLockedDirectionValid = false;
 
 static void SetPixelSurfActive(bool active)
 {
@@ -363,12 +361,10 @@ static void SetPixelSurfActive(bool active)
     jbActive = active;
     pixelSurf = active;
     if (active) {
-        if (!wasActive) pixelSurfLockedDirectionValid = false;
         InterlockedExchange64(&pixelSurfReleasedAt, 0);
         InterlockedExchange64(&pixelSurfReleaseGraceUntil, 0);
     }
     else if (wasActive) {
-        pixelSurfLockedDirectionValid = false;
         const LONG64 now = static_cast<LONG64>(GetTickCount64());
         InterlockedExchange64(&pixelSurfReleasedAt, now);
         // Optional legacy mode keeps the small release hop the user liked.
@@ -1414,7 +1410,7 @@ static bool LoadConfig(const char* requestedName)
 #define LOAD_BOOL(v) v = ReadConfigBool(path, #v, v)
 #define LOAD_INT(v) v = ReadConfigInt(path, #v, v)
 #define LOAD_FLOAT(v) v = ReadConfigFloat(path, #v, v)
-    LOAD_BOOL(jbActive); pixelSurf = jbActive; pixelSurfLockedDirectionValid = false; LOAD_BOOL(pixelSurfReleaseHop); LOAD_FLOAT(surfSpeed);
+    LOAD_BOOL(jbActive); pixelSurf = jbActive; LOAD_BOOL(pixelSurfReleaseHop); LOAD_FLOAT(surfSpeed);
     LOAD_BOOL(adminBhopEnabled); LOAD_BOOL(adminBhopCsStrafeMode); LOAD_FLOAT(adminBhopMaxSpeed);
     if (adminBhopMaxSpeed < 1.0f) adminBhopMaxSpeed = 1.0f; if (adminBhopMaxSpeed > 30.0f) adminBhopMaxSpeed = 30.0f;
     LOAD_BOOL(airJump); LOAD_BOOL(edgeBugEnabled); LOAD_FLOAT(edgeBugPullForce);
@@ -3712,7 +3708,6 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
     if (grounded && instance && instance == pixelSurfCharacterController) {
         InterlockedExchange64(&pixelSurfReleasedAt, 0);
         pixelSurfCharacterController = 0;
-        pixelSurfLockedDirectionValid = false;
     }
     return grounded;
 
@@ -4666,23 +4661,13 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 
     if (keyValidated && jbActive) {
         pixelSurfCharacterController = instance;
-        const float inputLength = sqrtf(motion.x * motion.x + motion.z * motion.z);
-        if (!pixelSurfLockedDirectionValid && inputLength > 0.0001f) {
-            pixelSurfLockedDirection.x = motion.x / inputLength;
-            pixelSurfLockedDirection.y = 0.0f;
-            pixelSurfLockedDirection.z = motion.z / inputLength;
-            pixelSurfLockedDirectionValid = true;
+        float speed = sqrt(motion.x * motion.x + motion.z * motion.z);
+        if (speed > 0.1f) {
+            motion.x = (motion.x / speed) * surfSpeed * 10.0f;
+            motion.z = (motion.z / speed) * surfSpeed * 10.0f;
         }
-        if (pixelSurfLockedDirectionValid) {
-            const float lockedMotionSpeed = surfSpeed * 10.0f;
-            motion.x = pixelSurfLockedDirection.x * lockedMotionSpeed;
-            motion.z = pixelSurfLockedDirection.z * lockedMotionSpeed;
-        }
-        else {
-            motion.x = 0.0f;
-            motion.z = 0.0f;
-        }
-        motion.y = 0.0f;
+
+        motion.y = 0;
     }
     else if (keyValidated) {
         const LONG64 now = static_cast<LONG64>(GetTickCount64());
