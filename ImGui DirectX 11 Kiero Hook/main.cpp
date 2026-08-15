@@ -403,12 +403,17 @@ float fogColor[3] = { 0.55f, 0.62f, 0.72f };
 float fogStartDistance = 0.0f;
 float fogEndDistance = 120.0f;
 float fogDensity = 0.01f;
-volatile LONG fogEnabledGetterCalls = 0;
-volatile LONG fogStartGetterCalls = 0;
-volatile LONG fogEndGetterCalls = 0;
-volatile LONG fogColorGetterCalls = 0;
-volatile LONG fogDensityGetterCalls = 0;
-char fogStatus[128] = "Hooks not installed";
+volatile LONG pendingFogCommand = 0;
+volatile LONG fogApplyCalls = 0;
+volatile LONG fogRestoreCalls = 0;
+ULONGLONG fogLastApplyTick = 0;
+bool fogOriginalCaptured = false;
+bool fogOriginalEnabled = false;
+float fogOriginalStartDistance = 0.0f;
+float fogOriginalEndDistance = 0.0f;
+float fogOriginalDensity = 0.0f;
+Color fogOriginalColor;
+char fogStatus[128] = "Setter API not resolved";
 
 bool customSkyboxEnabled = false;
 float customSkyboxColor[3] = { 0.15f, 0.25f, 0.55f };
@@ -1250,36 +1255,76 @@ float(__fastcall* o_RenderSettings_get_fogStartDistance)(const Il2CppMethod*) = 
 float(__fastcall* o_RenderSettings_get_fogEndDistance)(const Il2CppMethod*) = nullptr;
 void(__fastcall* o_RenderSettings_get_fogColor_Injected)(Color*, const Il2CppMethod*) = nullptr;
 float(__fastcall* o_RenderSettings_get_fogDensity)(const Il2CppMethod*) = nullptr;
+void(__fastcall* o_RenderSettings_set_fog)(bool) = nullptr;
+void(__fastcall* o_RenderSettings_set_fogStartDistance)(float) = nullptr;
+void(__fastcall* o_RenderSettings_set_fogEndDistance)(float) = nullptr;
+void(__fastcall* o_RenderSettings_set_fogColor_Injected)(Color*) = nullptr;
+void(__fastcall* o_RenderSettings_set_fogDensity)(float) = nullptr;
 uintptr_t(__fastcall* o_RenderSettings_get_skybox)(const Il2CppMethod*) = nullptr;
 void(__fastcall* o_RenderSettings_set_skybox)(uintptr_t, const Il2CppMethod*) = nullptr;
 
-bool __fastcall hk_RenderSettings_get_fog(const Il2CppMethod* method) {
-    InterlockedIncrement(&fogEnabledGetterCalls);
-    return (keyValidated && fogEnabled) ? true : o_RenderSettings_get_fog(method);
+static bool FogSetterApiReady() {
+    return o_RenderSettings_set_fog && o_RenderSettings_set_fogStartDistance &&
+        o_RenderSettings_set_fogEndDistance && o_RenderSettings_set_fogColor_Injected &&
+        o_RenderSettings_set_fogDensity;
 }
 
-float __fastcall hk_RenderSettings_get_fogStartDistance(const Il2CppMethod* method) {
-    InterlockedIncrement(&fogStartGetterCalls);
-    return (keyValidated && fogEnabled) ? fogStartDistance : o_RenderSettings_get_fogStartDistance(method);
+static void CaptureOriginalFog() {
+    if (fogOriginalCaptured || !o_RenderSettings_get_fog || !o_RenderSettings_get_fogStartDistance ||
+        !o_RenderSettings_get_fogEndDistance || !o_RenderSettings_get_fogColor_Injected ||
+        !o_RenderSettings_get_fogDensity) return;
+    __try {
+        fogOriginalEnabled = o_RenderSettings_get_fog(nullptr);
+        fogOriginalStartDistance = o_RenderSettings_get_fogStartDistance(nullptr);
+        fogOriginalEndDistance = o_RenderSettings_get_fogEndDistance(nullptr);
+        o_RenderSettings_get_fogColor_Injected(&fogOriginalColor, nullptr);
+        fogOriginalDensity = o_RenderSettings_get_fogDensity(nullptr);
+        fogOriginalCaptured = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        fogOriginalCaptured = false;
+    }
 }
 
-float __fastcall hk_RenderSettings_get_fogEndDistance(const Il2CppMethod* method) {
-    InterlockedIncrement(&fogEndGetterCalls);
-    return (keyValidated && fogEnabled) ? fogEndDistance : o_RenderSettings_get_fogEndDistance(method);
-}
-
-void __fastcall hk_RenderSettings_get_fogColor_Injected(Color* result, const Il2CppMethod* method) {
-    InterlockedIncrement(&fogColorGetterCalls);
-    if (keyValidated && fogEnabled && result) {
-        *result = Color(fogColor[0], fogColor[1], fogColor[2], 1.0f);
+static void ApplyFogSettings() {
+    if (!fogEnabled || !FogSetterApiReady()) {
+        if (fogEnabled) strcpy_s(fogStatus, "Unity fog setter API unavailable");
         return;
     }
-    o_RenderSettings_get_fogColor_Injected(result, method);
+    CaptureOriginalFog();
+    Color color(fogColor[0], fogColor[1], fogColor[2], 1.0f);
+    __try {
+        o_RenderSettings_set_fog(true);
+        o_RenderSettings_set_fogStartDistance(fogStartDistance);
+        o_RenderSettings_set_fogEndDistance(fogEndDistance);
+        o_RenderSettings_set_fogColor_Injected(&color);
+        o_RenderSettings_set_fogDensity(fogDensity);
+        InterlockedIncrement(&fogApplyCalls);
+        strcpy_s(fogStatus, "Applied through Unity setters");
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        strcpy_s(fogStatus, "Unity fog setter call failed");
+    }
 }
 
-float __fastcall hk_RenderSettings_get_fogDensity(const Il2CppMethod* method) {
-    InterlockedIncrement(&fogDensityGetterCalls);
-    return (keyValidated && fogEnabled) ? fogDensity : o_RenderSettings_get_fogDensity(method);
+static void RestoreOriginalFog() {
+    if (!fogOriginalCaptured || !FogSetterApiReady()) {
+        strcpy_s(fogStatus, fogOriginalCaptured ? "Unity fog setter API unavailable" : "Disabled; no captured state");
+        return;
+    }
+    __try {
+        o_RenderSettings_set_fogStartDistance(fogOriginalStartDistance);
+        o_RenderSettings_set_fogEndDistance(fogOriginalEndDistance);
+        o_RenderSettings_set_fogColor_Injected(&fogOriginalColor);
+        o_RenderSettings_set_fogDensity(fogOriginalDensity);
+        o_RenderSettings_set_fog(fogOriginalEnabled);
+        InterlockedIncrement(&fogRestoreCalls);
+        fogOriginalCaptured = false;
+        strcpy_s(fogStatus, "Original fog restored");
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        strcpy_s(fogStatus, "Fog restore failed");
+    }
 }
 
 Vector3(__fastcall* o_WorldToScreenPoint)(uintptr_t, Vector3) = nullptr;
@@ -3562,6 +3607,14 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     else if (keyValidated && skyboxCommand == 2) LoadInternetSkybox();
     else if (keyValidated && skyboxCommand == 3) RestoreDefaultSkybox();
 
+    const LONG fogCommand = InterlockedExchange(&pendingFogCommand, 0);
+    const ULONGLONG fogNow = GetTickCount64();
+    if (fogCommand == 2) RestoreOriginalFog();
+    else if (keyValidated && fogEnabled && (fogCommand == 1 || fogNow - fogLastApplyTick >= 250)) {
+        fogLastApplyTick = fogNow;
+        ApplyFogSettings();
+    }
+
     if (keyValidated && jbActive) {
         float speed = sqrt(motion.x * motion.x + motion.z * motion.z);
         if (speed > 0.1f) {
@@ -4759,21 +4812,24 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 if (cameraFov > 150.0f) cameraFov = 150.0f;
             }
         }
-        ImGui::Checkbox("Fog", &fogEnabled);
+        if (ImGui::Checkbox("Fog", &fogEnabled))
+            InterlockedExchange(&pendingFogCommand, fogEnabled ? 1 : 2);
         if (fogEnabled) {
-            ImGui::ColorEdit3("Fog Color", fogColor);
-            if (ImGui::SliderFloat("Fog Start Distance", &fogStartDistance, 0.0f, 500.0f, "%.1f m") && fogStartDistance > fogEndDistance)
-                fogEndDistance = fogStartDistance;
-            if (ImGui::SliderFloat("Fog End Distance", &fogEndDistance, 1.0f, 1000.0f, "%.1f m") && fogEndDistance < fogStartDistance)
-                fogStartDistance = fogEndDistance;
-            ImGui::SliderFloat("Fog Density", &fogDensity, 0.0f, 0.20f, "%.4f");
+            bool fogChanged = ImGui::ColorEdit3("Fog Color", fogColor);
+            if (ImGui::SliderFloat("Fog Start Distance", &fogStartDistance, 0.0f, 500.0f, "%.1f m")) {
+                if (fogStartDistance > fogEndDistance) fogEndDistance = fogStartDistance;
+                fogChanged = true;
+            }
+            if (ImGui::SliderFloat("Fog End Distance", &fogEndDistance, 1.0f, 1000.0f, "%.1f m")) {
+                if (fogEndDistance < fogStartDistance) fogStartDistance = fogEndDistance;
+                fogChanged = true;
+            }
+            if (ImGui::SliderFloat("Fog Density", &fogDensity, 0.0f, 0.20f, "%.4f")) fogChanged = true;
+            if (fogChanged) InterlockedExchange(&pendingFogCommand, 1);
             ImGui::TextWrapped("Fog status: %s", fogStatus);
-            ImGui::Text("Fog calls - on: %ld | start: %ld | end: %ld | color: %ld | density: %ld",
-                InterlockedCompareExchange(&fogEnabledGetterCalls, 0, 0),
-                InterlockedCompareExchange(&fogStartGetterCalls, 0, 0),
-                InterlockedCompareExchange(&fogEndGetterCalls, 0, 0),
-                InterlockedCompareExchange(&fogColorGetterCalls, 0, 0),
-                InterlockedCompareExchange(&fogDensityGetterCalls, 0, 0));
+            ImGui::Text("Fog setter calls - apply: %ld | restore: %ld",
+                InterlockedCompareExchange(&fogApplyCalls, 0, 0),
+                InterlockedCompareExchange(&fogRestoreCalls, 0, 0));
         }
         ImGui::Checkbox("Custom Skybox", &customSkyboxEnabled);
         if (customSkyboxEnabled) {
@@ -5107,32 +5163,19 @@ DWORD WINAPI HackThread(LPVOID)
     o_Material_GetColorId = (Color(__fastcall*)(uintptr_t, int))(base + OFFSET_MATERIAL_GET_COLOR_ID);
     o_Material_SetColorId = (void(__fastcall*)(uintptr_t, int, Color))(base + OFFSET_MATERIAL_SET_COLOR_ID);
     o_Shader_PropertyToID = (int(__fastcall*)(Il2CppString*, const Il2CppMethod*))(base + OFFSET_SHADER_PROPERTY_TO_ID);
-    const MH_STATUS fogEnabledCreate = MH_CreateHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG), hk_RenderSettings_get_fog, (LPVOID*)&o_RenderSettings_get_fog);
-    const MH_STATUS fogStartCreate = MH_CreateHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_START), hk_RenderSettings_get_fogStartDistance, (LPVOID*)&o_RenderSettings_get_fogStartDistance);
-    const MH_STATUS fogEndCreate = MH_CreateHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_END), hk_RenderSettings_get_fogEndDistance, (LPVOID*)&o_RenderSettings_get_fogEndDistance);
-    const MH_STATUS fogColorCreate = MH_CreateHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_COLOR), hk_RenderSettings_get_fogColor_Injected, (LPVOID*)&o_RenderSettings_get_fogColor_Injected);
-    const MH_STATUS fogDensityCreate = MH_CreateHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_DENSITY), hk_RenderSettings_get_fogDensity, (LPVOID*)&o_RenderSettings_get_fogDensity);
-    const bool fogHooksCreated =
-        (fogEnabledCreate == MH_OK || fogEnabledCreate == MH_ERROR_ALREADY_CREATED) &&
-        (fogStartCreate == MH_OK || fogStartCreate == MH_ERROR_ALREADY_CREATED) &&
-        (fogEndCreate == MH_OK || fogEndCreate == MH_ERROR_ALREADY_CREATED) &&
-        (fogColorCreate == MH_OK || fogColorCreate == MH_ERROR_ALREADY_CREATED) &&
-        (fogDensityCreate == MH_OK || fogDensityCreate == MH_ERROR_ALREADY_CREATED);
-    bool fogHooksEnabled = false;
-    if (fogHooksCreated) {
-        const MH_STATUS fogEnabledResult = MH_EnableHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG));
-        const MH_STATUS fogStartResult = MH_EnableHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_START));
-        const MH_STATUS fogEndResult = MH_EnableHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_END));
-        const MH_STATUS fogColorResult = MH_EnableHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_COLOR));
-        const MH_STATUS fogDensityResult = MH_EnableHook((LPVOID)(base + OFFSET_RENDERSETTINGS_GET_FOG_DENSITY));
-        fogHooksEnabled =
-            (fogEnabledResult == MH_OK || fogEnabledResult == MH_ERROR_ENABLED) &&
-            (fogStartResult == MH_OK || fogStartResult == MH_ERROR_ENABLED) &&
-            (fogEndResult == MH_OK || fogEndResult == MH_ERROR_ENABLED) &&
-            (fogColorResult == MH_OK || fogColorResult == MH_ERROR_ENABLED) &&
-            (fogDensityResult == MH_OK || fogDensityResult == MH_ERROR_ENABLED);
+    o_RenderSettings_get_fog = (bool(__fastcall*)(const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_GET_FOG);
+    o_RenderSettings_get_fogStartDistance = (float(__fastcall*)(const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_GET_FOG_START);
+    o_RenderSettings_get_fogEndDistance = (float(__fastcall*)(const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_GET_FOG_END);
+    o_RenderSettings_get_fogColor_Injected = (void(__fastcall*)(Color*, const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_GET_FOG_COLOR);
+    o_RenderSettings_get_fogDensity = (float(__fastcall*)(const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_GET_FOG_DENSITY);
+    if (g_il2cpp.resolve_icall) {
+        o_RenderSettings_set_fog = (void(__fastcall*)(bool))g_il2cpp.resolve_icall("UnityEngine.RenderSettings::set_fog(System.Boolean)");
+        o_RenderSettings_set_fogStartDistance = (void(__fastcall*)(float))g_il2cpp.resolve_icall("UnityEngine.RenderSettings::set_fogStartDistance(System.Single)");
+        o_RenderSettings_set_fogEndDistance = (void(__fastcall*)(float))g_il2cpp.resolve_icall("UnityEngine.RenderSettings::set_fogEndDistance(System.Single)");
+        o_RenderSettings_set_fogColor_Injected = (void(__fastcall*)(Color*))g_il2cpp.resolve_icall("UnityEngine.RenderSettings::set_fogColor_Injected(UnityEngine.Color&)");
+        o_RenderSettings_set_fogDensity = (void(__fastcall*)(float))g_il2cpp.resolve_icall("UnityEngine.RenderSettings::set_fogDensity(System.Single)");
     }
-    strcpy_s(fogStatus, fogHooksEnabled ? "Hooks installed; enable and verify runtime calls" : "Fog hook installation failed");
+    strcpy_s(fogStatus, FogSetterApiReady() ? "Setter API ready" : "Unity fog setter API unavailable");
 
     o_RenderSettings_get_skybox = (uintptr_t(__fastcall*)(const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_GET_SKYBOX);
     o_RenderSettings_set_skybox = (void(__fastcall*)(uintptr_t, const Il2CppMethod*))(base + OFFSET_RENDERSETTINGS_SET_SKYBOX);

@@ -35,6 +35,7 @@ typedef void*(*t_il2cpp_object_unbox)(Il2CppObject* obj);
 typedef void*(*t_il2cpp_thread_attach)(Il2CppDomain domain);
 typedef uint32_t(*t_il2cpp_gchandle_new)(Il2CppObject* obj, bool pinned);
 typedef void(*t_il2cpp_gchandle_free)(uint32_t handle);
+typedef void*(*t_il2cpp_resolve_icall)(const char* name);
 
 struct IL2CPP_API {
     HMODULE ga = nullptr;
@@ -58,6 +59,7 @@ struct IL2CPP_API {
     t_il2cpp_thread_attach                 thread_attach = nullptr;
     t_il2cpp_gchandle_new                  gchandle_new = nullptr;
     t_il2cpp_gchandle_free                 gchandle_free = nullptr;
+    t_il2cpp_resolve_icall                 resolve_icall = nullptr;
 
     bool init() {
         ga = GetModuleHandleA("GameAssembly.dll");
@@ -82,6 +84,7 @@ struct IL2CPP_API {
         thread_attach                 = (t_il2cpp_thread_attach)             GetProcAddress(ga, "il2cpp_thread_attach");
         gchandle_new                  = (t_il2cpp_gchandle_new)              GetProcAddress(ga, "il2cpp_gchandle_new");
         gchandle_free                 = (t_il2cpp_gchandle_free)             GetProcAddress(ga, "il2cpp_gchandle_free");
+        resolve_icall                 = (t_il2cpp_resolve_icall)             GetProcAddress(ga, "il2cpp_resolve_icall");
         return domain_get && domain_get_assemblies && assembly_get_image && class_from_name
             && class_get_field_from_name && field_static_get_value;
     }
