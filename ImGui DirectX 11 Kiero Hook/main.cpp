@@ -2141,12 +2141,12 @@ static bool ApplyAdminBhopState()
             o_CheatRuntime_SetBhop(runtime, movement, adminBhopEnabled);
         *reinterpret_cast<bool*>(jump + 0x10) = adminBhopEnabled;
         if (adminBhopEnabled) {
-            const LONG64 graceUntil = InterlockedCompareExchange64(
-                &adminBhopManualStrafeGraceUntil, 0, 0);
-            const bool manualPropulsionReady = !adminBhopCsStrafeMode ||
-                graceUntil >= static_cast<LONG64>(GetTickCount64());
-            *reinterpret_cast<float*>(jump + 0x14) = manualPropulsionReady ?
-                adminBhopSpeedMultiplier : 0.0f;
+            // Keep native propulsion continuous. Toggling this multiplier to
+            // zero on brief A/D gaps caused the visible stop-then-resume jerk and
+            // killed backward momentum after releasing S.
+            const float scaledMultiplier = adminBhopSpeedMultiplier *
+                (adminBhopMaxSpeed / 6.50f);
+            *reinterpret_cast<float*>(jump + 0x14) = scaledMultiplier;
             *reinterpret_cast<float*>(jump + 0x1C) = adminBhopMaxSpeed;
             strcpy_s(adminBhopStatus, adminBhopCsStrafeMode ?
                 "Native admin BHop active; CS air strafe" :
@@ -2603,6 +2603,7 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
                 float& strafeInput = *reinterpret_cast<float*>(command + 0x10);
                 float& forwardInput = *reinterpret_cast<float*>(command + 0x14);
                 const float manualStrafe = strafeInput;
+                const float originalForwardInput = forwardInput;
                 float currentYaw = adminBhopPreviousCameraYaw;
                 bool currentYawValid = false;
                 const uintptr_t aimController = *reinterpret_cast<uintptr_t*>(player + 0xC8);
@@ -2637,9 +2638,9 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
                     strafeInput = 0.0f;
                 }
                 else {
-                    // Wrong turn direction, camera-only movement, or A/D without
-                    // a matching turn receives no steering acceleration.
-                    forwardInput = 0.0f;
+                    // Wrong/no A/D does not create a sideways route. Preserve only
+                    // backward S input; forward W remains ignored in manual mode.
+                    forwardInput = originalForwardInput < -0.01f ? originalForwardInput : 0.0f;
                     strafeInput = 0.0f;
                 }
             }
@@ -5715,7 +5716,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (ImGui::Checkbox("CS Manual Air Strafe", &adminBhopCsStrafeMode))
                 ApplyAdminBhopState();
             if (adminBhopCsStrafeMode)
-                ImGui::TextWrapped("In air: hold A + turn left or D + turn right. W is ignored.");
+                ImGui::TextWrapped("A + left / D + right. W is ignored; S works for backward BHop. Speed controls acceleration and max speed.");
         }
         
         ImGui::Checkbox("Velocity Limiter", &velocityLimiterEnabled);
