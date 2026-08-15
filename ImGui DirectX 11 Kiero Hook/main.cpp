@@ -549,7 +549,7 @@ ULONGLONG hitLogLastResultAt = 0;
 bool bulletTracerEnabled = false;
 bool bulletImpactsEnabled = false;
 float bulletImpactsDuration = 4.0f;
-float bulletImpactsSize = 7.0f;
+float bulletImpactsSize = 0.08f;
 bool noSpreadEnabled = false;
 bool removeScopeBorders = false;
 bool customScopeReticleVisible = false;
@@ -2931,13 +2931,12 @@ static void AddBulletImpact(const Vector3& position, bool serverConfirmed)
     // A server-confirmed marker supersedes an almost identical recent blue one,
     // avoiding duplicates when the hit callback is repeated for one shot.
     bool duplicate = false;
-    if (serverConfirmed) {
-        for (auto it = bulletImpacts.rbegin(); it != bulletImpacts.rend(); ++it) {
-            if (now - it->createdAt > 250) break;
-            if (it->serverConfirmed && it->position.Distance(position) < 0.05f) {
-                duplicate = true;
-                break;
-            }
+    for (auto it = bulletImpacts.rbegin(); it != bulletImpacts.rend(); ++it) {
+        if (now - it->createdAt > 250) break;
+        if (it->serverConfirmed == serverConfirmed &&
+            it->position.Distance(position) < 0.025f) {
+            duplicate = true;
+            break;
         }
     }
     if (!duplicate) bulletImpacts.push_back({ position, now, serverConfirmed });
@@ -3251,7 +3250,25 @@ uintptr_t __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction, float 
             const Vector3 actualStart = *(Vector3*)(result + 0x24);
             const Vector3 actualEnd = *(Vector3*)(result + 0x30);
             const ULONGLONG now = GetTickCount64();
-            if (bulletImpactsEnabled) AddBulletImpact(actualEnd, false);
+            if (bulletImpactsEnabled) {
+                // cjr.cega (+0x18) is List<cjv>. Every cjv stores the penetration
+                // entry and exit world positions at +0x10/+0x1C.
+                const uintptr_t penetrationList = *reinterpret_cast<uintptr_t*>(result + 0x18);
+                const int penetrationCount = penetrationList ?
+                    *reinterpret_cast<int*>(penetrationList + 0x18) : 0;
+                const uintptr_t penetrationItems = penetrationList ?
+                    *reinterpret_cast<uintptr_t*>(penetrationList + 0x10) : 0;
+                if (penetrationItems && penetrationCount > 0 && penetrationCount <= 64) {
+                    for (int i = 0; i < penetrationCount; ++i) {
+                        const uintptr_t penetration = *reinterpret_cast<uintptr_t*>(
+                            penetrationItems + 0x20 + static_cast<uintptr_t>(i) * sizeof(uintptr_t));
+                        if (!penetration) continue;
+                        AddBulletImpact(*reinterpret_cast<Vector3*>(penetration + 0x10), false);
+                        AddBulletImpact(*reinterpret_cast<Vector3*>(penetration + 0x1C), false);
+                    }
+                }
+                AddBulletImpact(actualEnd, false);
+            }
             if (hitMarkerEnabled || hitLogEnabled) {
                 AcquireSRWLockExclusive(&hitMarkerLock);
                 latestHitMarkerCastStart = actualStart;
@@ -5004,10 +5021,25 @@ void DrawBulletImpacts()
         const ImU32 color = impact.serverConfirmed ?
             IM_COL32(45, 125, 255, static_cast<int>(255.0f * alpha)) :
             IM_COL32(255, 55, 55, static_cast<int>(255.0f * alpha));
-        draw->AddRect(ImVec2(screen.x - half - 1.0f, screen.y - half - 1.0f),
-            ImVec2(screen.x + half + 1.0f, screen.y + half + 1.0f), shadow, 0.0f, 0, 2.0f);
-        draw->AddRectFilled(ImVec2(screen.x - half, screen.y - half),
-            ImVec2(screen.x + half, screen.y + half), color);
+        Vector3 corners[8];
+        ImVec2 projected[8];
+        bool allProjected = true;
+        for (int corner = 0; corner < 8; ++corner) {
+            corners[corner] = Vector3(
+                impact.position.x + ((corner & 1) ? half : -half),
+                impact.position.y + ((corner & 2) ? half : -half),
+                impact.position.z + ((corner & 4) ? half : -half));
+            if (!ProjectTracerEnd(corners[corner], projected[corner])) allProjected = false;
+        }
+        if (!allProjected) continue;
+        static const int edges[12][2] = {
+            {0,1},{2,3},{4,5},{6,7}, {0,2},{1,3},{4,6},{5,7},
+            {0,4},{1,5},{2,6},{3,7}
+        };
+        for (int edge = 0; edge < 12; ++edge) {
+            draw->AddLine(projected[edges[edge][0]], projected[edges[edge][1]], shadow, 3.0f);
+            draw->AddLine(projected[edges[edge][0]], projected[edges[edge][1]], color, 1.5f);
+        }
     }
 }
 
@@ -6129,9 +6161,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ReleaseSRWLockExclusive(&bulletImpactLock);
         }
         if (bulletImpactsEnabled) {
-            ImGui::TextDisabled("Red: client cast  Blue: confirmed player hit");
+            ImGui::TextDisabled("Red: client/penetration  Blue: confirmed player hit");
             ImGui::SliderFloat("Impact Duration", &bulletImpactsDuration, 0.25f, 10.0f, "%.1f s");
-            ImGui::SliderFloat("Impact Size", &bulletImpactsSize, 3.0f, 16.0f, "%.0f px");
+            ImGui::SliderFloat("Impact 3D Size", &bulletImpactsSize, 0.02f, 0.30f, "%.2f u");
         }
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
         if (bulletTracerEnabled) {
