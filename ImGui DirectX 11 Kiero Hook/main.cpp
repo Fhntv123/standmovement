@@ -3543,14 +3543,14 @@ static uintptr_t EnsureEnemyChamsMaterial(int requestedMode)
         if (enemyChamsMaterials[mode]) break;
     }
     if (mode == 7 && enemyChamsMaterials[mode] && o_Material_SetFloat && g_il2cpp.string_new) {
-        // Hidden/Internal-Colored exposes these render-state properties. Always depth-test
-        // and no depth writes make the enemy pass visible behind map geometry without
-        // changing colliders, hit detection, transforms, or any gameplay state.
-        o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_ZTest"), 8.0f);
+        // Render the x-ray pass only where geometry occludes the enemy (Greater), not
+        // over its visible pixels. One/Zero blending keeps the hidden silhouette opaque;
+        // the selected Lit/Metallic/etc. pass remains unchanged when directly visible.
+        o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_ZTest"), 5.0f);
         o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_ZWrite"), 0.0f);
         o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_Cull"), 0.0f);
-        o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_SrcBlend"), 5.0f);
-        o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_DstBlend"), 10.0f);
+        o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_SrcBlend"), 1.0f);
+        o_Material_SetFloat(enemyChamsMaterials[mode], g_il2cpp.string_new("_DstBlend"), 0.0f);
         if (o_Material_set_renderQueue) o_Material_set_renderQueue(enemyChamsMaterials[mode], 4000);
     }
     const uintptr_t material = enemyChamsMaterials[mode];
@@ -3664,7 +3664,7 @@ static bool ApplyEnemyChamsRendererMaterial(uintptr_t renderer, uintptr_t replac
                 o_SkinnedMeshRenderer_set_updateWhenOffscreen(renderer, true);
             if (wallOverlay && o_Renderer_set_materials && g_il2cpp.array_new) {
                 // First pass preserves the selected Lit/Metallic/etc. appearance. The
-                // translucent depth-ignoring pass only adds visibility through geometry.
+                // second pass draws an opaque silhouette only on occluded pixels.
                 SetRendererMaterialPair(renderer, replacement, wallOverlay);
                 return true;
             }
@@ -3711,7 +3711,7 @@ static void UpdateEnemyChams()
     const Color displayColor = GetEnemyChamsDisplayColor();
     o_Material_set_color(replacement, displayColor);
     if (wallOverlay)
-        o_Material_set_color(wallOverlay, Color(displayColor.r, displayColor.g, displayColor.b, 0.28f));
+        o_Material_set_color(wallOverlay, Color(displayColor.r, displayColor.g, displayColor.b, 1.0f));
     size_t applied = 0;
     for (const EnemyChamsRenderer& entry : enemyChamsRenderers)
         if (ApplyEnemyChamsRendererMaterial(entry.renderer, replacement, wallOverlay, enemyChamsThroughWalls)) ++applied;
