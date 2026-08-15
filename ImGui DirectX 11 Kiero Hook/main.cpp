@@ -4614,7 +4614,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (ImGui::SliderFloat("Admin BHop Multiplier", &adminBhopSpeedMultiplier, 0.25f, 5.0f, "%.2f")) ApplyAdminBhopState();
             if (ImGui::SliderFloat("Admin BHop Max Speed", &adminBhopMaxSpeed, 1.0f, 100.0f, "%.2f")) ApplyAdminBhopState();
         }
-        ImGui::TextWrapped("Admin BHop: %s", adminBhopStatus);
         
         ImGui::Checkbox("Velocity Limiter", &velocityLimiterEnabled);
         if (velocityLimiterEnabled) {
@@ -4625,8 +4624,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 if (velocityLimit < 0.001f) velocityLimit = 0.001f;
                 if (velocityLimit > 10000.0f) velocityLimit = 10000.0f;
             }
-            ImGui::Text("Current: %.3f units/s", velocityLimiterCurrentHorizontalSpeed);
-            ImGui::Text("Limiter: %s", velocityLimiterLastAppliedScale < 0.999f ? "CLAMPING" : "within limit");
         }
         
         ImGui::Checkbox("Air Jump", &airJump);
@@ -4665,18 +4662,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Visible Check", &aimbotVisibleCheck);
         ImGui::Checkbox("Auto Fire", &aimbotAutoFire);
         ImGui::Text("FOV: %.0f degrees", aimbotFov);
-        ImGui::TextWrapped("Status: %s", aimbotStatus);
-        if (aimbotEnabled || visibleAimbotEnabled)
-            ImGui::Text("Shots: %ld | scanned: %ld | visible: %ld | applied: %ld",
-                InterlockedCompareExchange(&aimbotShots, 0, 0),
-                InterlockedCompareExchange(&aimbotTargetsScanned, 0, 0),
-                InterlockedCompareExchange(&aimbotVisibleTargets, 0, 0),
-                InterlockedCompareExchange(&aimbotApplied, 0, 0));
-        if (aimbotAutoFire)
-            ImGui::Text("Auto Fire: %ld native commands | %ld confirmed casts | %ld no target",
-                InterlockedCompareExchange(&aimbotAutoFireNativeCommands, 0, 0),
-                InterlockedCompareExchange(&aimbotAutoFired, 0, 0),
-                InterlockedCompareExchange(&aimbotAutoFireRejected, 0, 0));
         ImGui::Spacing();
         ImGui::TextColored(accent, "Keybinds");
         ImGui::Separator();
@@ -4713,13 +4698,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             strcpy_s(silentAntiAimStatus, !silentAntiAimEnabled ? "Disabled" :
                 (silentAntiAimHookReady ? "Input + detached snapshot hooks installed" : "Anti-aim hooks failed to install"));
         }
-        ImGui::TextWrapped("Status: %s", silentAntiAimStatus);
-        if (silentAntiAimEnabled)
-            ImGui::Text("Input: %ld | Snapshots: %ld | Applied: %ld | qhq: %ld",
-                InterlockedCompareExchange(&silentAntiAimInputBuildCalls, 0, 0),
-                InterlockedCompareExchange(&silentAntiAimSnapshotCalls, 0, 0),
-                InterlockedCompareExchange(&silentAntiAimAppliedCalls, 0, 0),
-                InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0));
         ImGui::Spacing();
         ImGui::TextWrapped("Live aim, camera, local model and movement stay untouched. Fake angles exist only in the detached AimSnapshot used by snapshot consumers.");
         ImGui::EndChild();
@@ -4744,26 +4722,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::ColorEdit3("ESP Health Color", espHealthColor);
             ImGui::Checkbox("ESP Health Gradient", &espHealthGradient);
             if (espHealthGradient) ImGui::ColorEdit3("ESP Health Gradient Color", espHealthBottomColor);
-            ImGui::Text("ESP players: %ld | projected: %ld | drawn: %ld | HP updates: %ld",
-                InterlockedCompareExchange(&boxEspEnumerated, 0, 0),
-                InterlockedCompareExchange(&boxEspProjected, 0, 0),
-                InterlockedCompareExchange(&boxEspDrawn, 0, 0),
-                InterlockedCompareExchange(&boxEspHealthUpdates, 0, 0));
-            ImGui::Text("HP matched: %ld | last args: %ld/%ld | getter: %ld",
-                InterlockedCompareExchange(&boxEspHealthPlayerMatches, 0, 0),
-                InterlockedCompareExchange(&boxEspHealthLastA, 0, 0),
-                InterlockedCompareExchange(&boxEspHealthLastB, 0, 0),
-                InterlockedCompareExchange(&boxEspHealthLastRead, 0, 0));
-            ImGui::Text("Confirmed hits: %ld | HP: %ld | result: %ld/%ld/%ld",
-                InterlockedCompareExchange(&boxEspConfirmedHits, 0, 0),
-                InterlockedCompareExchange(&boxEspConfirmedHealth, 0, 0),
-                InterlockedCompareExchange(&boxEspConfirmedFieldA, 0, 0),
-                InterlockedCompareExchange(&boxEspConfirmedFieldB, 0, 0),
-                InterlockedCompareExchange(&boxEspConfirmedFieldC, 0, 0));
-            ImGui::Text("Sources - dict: %ld | unity: %ld | hooks: %ld",
-                InterlockedCompareExchange(&boxEspDictionaryCount, 0, 0),
-                InterlockedCompareExchange(&boxEspUnityCount, 0, 0),
-                InterlockedCompareExchange(&boxEspHookCount, 0, 0));
         }
         ImGui::Checkbox("Show Velocity", &showVelocity);
         ImGui::Checkbox("Show Trail", &showTrail);
@@ -4786,14 +4744,12 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if ((worldColorMode == 5 || worldColorMode == 6) &&
                 ImGui::SliderFloat("World Animation Speed", &worldColorAnimationSpeed, 0.1f, 5.0f, "%.2f"))
                 InterlockedExchange(&pendingWorldColorCommand, 1);
-            ImGui::TextWrapped("World status: %s", worldColorStatus);
         }
         if (ImGui::Checkbox("Third Person", &thirdPersonEnabled)) {
             strcpy_s(thirdPersonStatus, thirdPersonEnabled ? "TPS transition queued" : "FPS transition queued");
             InterlockedExchange(&pendingThirdPersonCommand, 1);
         }
         if (thirdPersonEnabled) {
-            ImGui::TextWrapped("Third person status: %s", thirdPersonStatus);
             ImGui::SliderFloat("TPS Horizontal", &thirdPersonHorizontalOffset, -3.0f, 3.0f, "%.2f");
             ImGui::SliderFloat("TPS Height", &thirdPersonHeightAdjustment, -3.0f, 3.0f, "%.2f");
             ImGui::SliderFloat("TPS Distance", &thirdPersonDistanceAdjustment, -6.0f, 6.0f, "%.2f");
@@ -4826,10 +4782,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             }
             if (ImGui::SliderFloat("Fog Density", &fogDensity, 0.0f, 0.20f, "%.4f")) fogChanged = true;
             if (fogChanged) InterlockedExchange(&pendingFogCommand, 1);
-            ImGui::TextWrapped("Fog status: %s", fogStatus);
-            ImGui::Text("Fog setter calls - apply: %ld | restore: %ld",
-                InterlockedCompareExchange(&fogApplyCalls, 0, 0),
-                InterlockedCompareExchange(&fogRestoreCalls, 0, 0));
         }
         ImGui::Checkbox("Custom Skybox", &customSkyboxEnabled);
         if (customSkyboxEnabled) {
@@ -4846,7 +4798,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
         ImGui::SameLine();
         if (ImGui::Button("Restore Skybox")) InterlockedExchange(&pendingSkyboxCommand, 3);
-        ImGui::TextWrapped("%s", imageSkyboxStatus);
         
         ImGui::EndChild();
     }
@@ -4863,14 +4814,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&infinityAmmoGetterCalls, 0);
             InterlockedExchange(&infinityAmmoRestores, 0);
         }
-        if (infinityAmmo)
-            ImGui::Text("Magazine freeze: %d | cegy/wyy: %ld/%ld | fire/get/restore: %ld/%ld/%ld",
-                static_cast<int>(frozenAmmoValue),
-                InterlockedCompareExchange(&infinityAmmoLastField, 0, 0),
-                InterlockedCompareExchange(&infinityAmmoLastGetter, 0, 0),
-                InterlockedCompareExchange(&infinityAmmoFireCalls, 0, 0),
-                InterlockedCompareExchange(&infinityAmmoGetterCalls, 0, 0),
-                InterlockedCompareExchange(&infinityAmmoRestores, 0, 0));
         ImGui::Checkbox("No Spread", &noSpreadEnabled);
         if (ImGui::Checkbox("Remove Scope Borders", &removeScopeBorders)) InterlockedExchange(&pendingScopeOverlayRefresh, 1);
         if (ImGui::Checkbox("Weapon Chams", &weaponChamsEnabled)) {
@@ -4894,7 +4837,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             }
             if (weaponChamsMode == 5 || weaponChamsMode == 6)
                 ImGui::SliderFloat("Animation Speed", &weaponChamsAnimationSpeed, 0.2f, 5.0f, "%.1f");
-            ImGui::TextWrapped("Weapon status: %s", weaponChamsStatus);
         }
         if (ImGui::Checkbox("Arm Chams", &armChamsEnabled)) {
             strcpy_s(armChamsStatus, armChamsEnabled ? "Applying to arms" : "Restoring original arm material");
@@ -4917,7 +4859,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             }
             if (armChamsMode == 5 || armChamsMode == 6)
                 ImGui::SliderFloat("Arm Animation Speed", &armChamsAnimationSpeed, 0.2f, 5.0f, "%.1f");
-            ImGui::TextWrapped("Arm status: %s", armChamsStatus);
         }
         if (ImGui::Checkbox("Glove Chams", &gloveChamsEnabled)) {
             strcpy_s(gloveChamsStatus, gloveChamsEnabled ? "Applying to gloves" : "Restoring original glove material");
@@ -4938,7 +4879,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             }
             if (gloveChamsMode == 5 || gloveChamsMode == 6)
                 ImGui::SliderFloat("Glove Animation Speed", &gloveChamsAnimationSpeed, 0.2f, 5.0f, "%.1f");
-            ImGui::TextWrapped("Glove status: %s", gloveChamsStatus);
         }
         ImGui::Checkbox("Hit Marker", &hitMarkerEnabled);
         if (hitMarkerEnabled) {
@@ -4947,14 +4887,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Hit Marker Size", &hitMarkerSize, 3.0f, 24.0f, "%.0f px");
             ImGui::SliderFloat("Hit Marker Gap", &hitMarkerGap, 0.0f, 16.0f, "%.0f px");
             ImGui::SliderFloat("Hit Marker Thickness", &hitMarkerThickness, 1.0f, 6.0f, "%.1f px");
-            int activeMarkerCount = 0;
-            AcquireSRWLockShared(&hitMarkerLock);
-            activeMarkerCount = static_cast<int>(hitMarkers.size());
-            ReleaseSRWLockShared(&hitMarkerLock);
-            ImGui::Text("Confirmed: %ld | Active: %d | Resolved: %ld | Fallback: %ld",
-                InterlockedCompareExchange(&hitMarkerCalls, 0, 0), activeMarkerCount,
-                InterlockedCompareExchange(&hitMarkerResolvedCalls, 0, 0),
-                InterlockedCompareExchange(&hitMarkerFallbackCalls, 0, 0));
         }
         ImGui::Checkbox("Bullet Tracer", &bulletTracerEnabled);
         if (bulletTracerEnabled) {
