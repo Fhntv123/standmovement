@@ -584,6 +584,7 @@ uintptr_t currentLocalCharacterLodGroupCache = 0;
 char enemyChamsStatus[128] = "Disabled";
 volatile LONG pendingEnemyChamsRefresh = 0;
 ULONGLONG chamsLastMaintenanceTick = 0;
+ULONGLONG enemyWallChamsLastTick = 0;
 
 struct BulletTracerEntry {
     Vector3 start;
@@ -3783,14 +3784,20 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     const bool enemyRefreshRequested = InterlockedExchange(&pendingEnemyChamsRefresh, 0) != 0;
     const ULONGLONG chamsNow = GetTickCount64();
     const bool maintenanceDue = chamsNow - chamsLastMaintenanceTick >= 500;
-    if (weaponRefreshRequested || armRefreshRequested || gloveRefreshRequested || enemyRefreshRequested || maintenanceDue) {
+    // The game's occlusion manager can mark a hidden player invisible again on the next
+    // frame. Reassert wall-chams visibility at frame cadence instead of every 500 ms;
+    // the old maintenance gap caused the distant model to blink on and off.
+    const bool enemyWallRefreshDue = enemyChamsEnabled && enemyChamsThroughWalls &&
+        chamsNow - enemyWallChamsLastTick >= 16;
+    if (enemyWallRefreshDue) enemyWallChamsLastTick = chamsNow;
+    if (weaponRefreshRequested || armRefreshRequested || gloveRefreshRequested || enemyRefreshRequested || enemyWallRefreshDue || maintenanceDue) {
         if (maintenanceDue) chamsLastMaintenanceTick = chamsNow;
         if (weaponRefreshRequested || (maintenanceDue && weaponChamsEnabled))
             UpdateWeaponChams(GetCurrentLocalWeaponController());
         const uintptr_t liveArmsLodGroup = GetCurrentLocalArmsLodGroup();
         if (armRefreshRequested || (maintenanceDue && armChamsEnabled)) UpdateArmChams(liveArmsLodGroup);
         if (gloveRefreshRequested || (maintenanceDue && gloveChamsEnabled)) UpdateGloveChams(liveArmsLodGroup);
-        if (enemyRefreshRequested || (maintenanceDue && enemyChamsEnabled))
+        if (enemyRefreshRequested || enemyWallRefreshDue || (maintenanceDue && enemyChamsEnabled))
             UpdateEnemyChams();
     }
 
