@@ -2137,14 +2137,13 @@ static bool ApplyAdminBhopState()
             adminBhopOriginalCaptured = true;
         }
         const uintptr_t runtime = GetNativeCheatRuntime();
-        // Pixel Surf already owns horizontal movement. Native Admin BHop rotates
-        // that movement with the live camera, so suspend the native BHop only for
-        // the duration of Pixel Surf and restore it automatically on release.
-        const bool effectiveAdminBhopEnabled = adminBhopEnabled && !jbActive;
+        // Never toggle the native BHop state during Pixel Surf: doing that in
+        // mid-air mutates native movement state and can reverse the trajectory.
+        // Pixel Surf isolation happens only at the command-input layer below.
         if (runtime && o_CheatRuntime_SetBhop)
-            o_CheatRuntime_SetBhop(runtime, movement, effectiveAdminBhopEnabled);
-        *reinterpret_cast<bool*>(jump + 0x10) = effectiveAdminBhopEnabled;
-        if (effectiveAdminBhopEnabled) {
+            o_CheatRuntime_SetBhop(runtime, movement, adminBhopEnabled);
+        *reinterpret_cast<bool*>(jump + 0x10) = adminBhopEnabled;
+        if (adminBhopEnabled) {
             // Keep native propulsion continuous. Toggling this multiplier to
             // zero on brief A/D gaps caused the visible stop-then-resume jerk and
             // killed backward momentum after releasing S.
@@ -2156,10 +2155,6 @@ static bool ApplyAdminBhopState()
                 "Native admin BHop active; CS air strafe" :
                 (runtime ? "Native admin BHop active" :
                     "Native jump BHop active; runtime pending"));
-        } else if (adminBhopEnabled && jbActive) {
-            // Do not restore the game's old 17.49 values here; just pause the
-            // enable flag. The configured values are reapplied after surf release.
-            strcpy_s(adminBhopStatus, "Paused while Pixel Surf is active");
         } else if (adminBhopOriginalCaptured) {
             *reinterpret_cast<bool*>(jump + 0x10) = adminBhopOriginalEnabled;
             *reinterpret_cast<float*>(jump + 0x14) = adminBhopOriginalSpeedMultiplier;
