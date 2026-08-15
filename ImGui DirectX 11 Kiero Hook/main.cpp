@@ -5214,55 +5214,57 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // accent, compact controls and a persistent left navigation rail.
     const float easedOpen = menuOpenAnimation * menuOpenAnimation * (3.0f - 2.0f * menuOpenAnimation);
     style.Alpha = easedOpen;
-    style.WindowRounding = 8.0f;
-    style.ChildRounding = 5.0f;
-    style.FrameRounding = 4.0f;
-    style.GrabRounding = 4.0f;
-    style.PopupRounding = 5.0f;
+    style.WindowRounding = 0.0f;
+    style.ChildRounding = 0.0f;
+    style.FrameRounding = 0.0f;
+    style.GrabRounding = 0.0f;
+    style.PopupRounding = 0.0f;
     style.ScrollbarRounding = 4.0f;
     style.WindowBorderSize = 1.0f;
     style.ChildBorderSize = 1.0f;
     style.FrameBorderSize = 0.0f;
     style.ScrollbarSize = 7.0f;
     style.GrabMinSize = 8.0f;
-    style.ItemSpacing = ImVec2(8.0f, 8.0f);
-    style.ItemInnerSpacing = ImVec2(6.0f, 5.0f);
+    style.ItemSpacing = ImVec2(8.0f, 6.0f);
+    style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
     style.WindowPadding = ImVec2(0.0f, 0.0f);
-    style.FramePadding = ImVec2(9.0f, 5.0f);
+    style.FramePadding = ImVec2(7.0f, 4.0f);
 
-    const ImVec4 accent(0.12f, 0.70f, 1.0f, 1.0f);
-    const ImVec4 accentDim(0.06f, 0.37f, 0.56f, 1.0f);
+    // Exact Figma scheme: #0e0e0e shell, #111111 panels, #161616 selected tab,
+    // #ca7384 accent, #eaeaea text and black one-pixel borders.
+    const ImVec4 accent(202.0f / 255.0f, 115.0f / 255.0f, 132.0f / 255.0f, 1.0f);
+    const ImVec4 accentDim(157.0f / 255.0f, 103.0f / 255.0f, 113.0f / 255.0f, 1.0f);
     ImVec4* colors = style.Colors;
-    colors[ImGuiCol_Text] = ImVec4(0.86f, 0.91f, 0.96f, 1.0f);
-    colors[ImGuiCol_TextDisabled] = ImVec4(0.43f, 0.50f, 0.57f, 1.0f);
-    colors[ImGuiCol_WindowBg] = ImVec4(0.031f, 0.031f, 0.051f, 1.0f);
-    colors[ImGuiCol_ChildBg] = ImVec4(0.035f, 0.067f, 0.102f, 1.0f);
-    colors[ImGuiCol_PopupBg] = ImVec4(0.028f, 0.045f, 0.070f, 0.99f);
-    colors[ImGuiCol_Border] = ImVec4(0.09f, 0.16f, 0.22f, 1.0f);
+    colors[ImGuiCol_Text] = ImVec4(234.0f / 255.0f, 234.0f / 255.0f, 234.0f / 255.0f, 1.0f);
+    colors[ImGuiCol_TextDisabled] = ImVec4(234.0f / 255.0f, 234.0f / 255.0f, 234.0f / 255.0f, 0.40f);
+    colors[ImGuiCol_WindowBg] = ImVec4(14.0f / 255.0f, 14.0f / 255.0f, 14.0f / 255.0f, 1.0f);
+    colors[ImGuiCol_ChildBg] = ImVec4(17.0f / 255.0f, 17.0f / 255.0f, 17.0f / 255.0f, 1.0f);
+    colors[ImGuiCol_PopupBg] = ImVec4(17.0f / 255.0f, 17.0f / 255.0f, 17.0f / 255.0f, 1.0f);
+    colors[ImGuiCol_Border] = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
     colors[ImGuiCol_BorderShadow] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
-    colors[ImGuiCol_FrameBg] = ImVec4(0.055f, 0.10f, 0.14f, 1.0f);
-    colors[ImGuiCol_FrameBgHovered] = ImVec4(0.075f, 0.15f, 0.21f, 1.0f);
-    colors[ImGuiCol_FrameBgActive] = ImVec4(0.09f, 0.20f, 0.28f, 1.0f);
-    colors[ImGuiCol_Button] = ImVec4(0.035f, 0.067f, 0.102f, 1.0f);
-    colors[ImGuiCol_ButtonHovered] = ImVec4(0.055f, 0.13f, 0.19f, 1.0f);
-    colors[ImGuiCol_ButtonActive] = ImVec4(accent.x, accent.y, accent.z, 0.32f);
-    colors[ImGuiCol_Header] = ImVec4(0.055f, 0.12f, 0.17f, 1.0f);
-    colors[ImGuiCol_HeaderHovered] = ImVec4(0.07f, 0.16f, 0.22f, 1.0f);
-    colors[ImGuiCol_HeaderActive] = ImVec4(accent.x, accent.y, accent.z, 0.28f);
+    colors[ImGuiCol_FrameBg] = ImVec4(17.0f / 255.0f, 17.0f / 255.0f, 17.0f / 255.0f, 1.0f);
+    colors[ImGuiCol_FrameBgHovered] = ImVec4(27.0f / 255.0f, 27.0f / 255.0f, 27.0f / 255.0f, 1.0f);
+    colors[ImGuiCol_FrameBgActive] = ImVec4(27.0f / 255.0f, 27.0f / 255.0f, 27.0f / 255.0f, 1.0f);
+    colors[ImGuiCol_Button] = ImVec4(17.0f / 255.0f, 17.0f / 255.0f, 17.0f / 255.0f, 1.0f);
+    colors[ImGuiCol_ButtonHovered] = ImVec4(22.0f / 255.0f, 22.0f / 255.0f, 22.0f / 255.0f, 0.50f);
+    colors[ImGuiCol_ButtonActive] = ImVec4(22.0f / 255.0f, 22.0f / 255.0f, 22.0f / 255.0f, 1.0f);
+    colors[ImGuiCol_Header] = ImVec4(22.0f / 255.0f, 22.0f / 255.0f, 22.0f / 255.0f, 1.0f);
+    colors[ImGuiCol_HeaderHovered] = ImVec4(22.0f / 255.0f, 22.0f / 255.0f, 22.0f / 255.0f, 0.50f);
+    colors[ImGuiCol_HeaderActive] = ImVec4(22.0f / 255.0f, 22.0f / 255.0f, 22.0f / 255.0f, 1.0f);
     colors[ImGuiCol_CheckMark] = accent;
     colors[ImGuiCol_SliderGrab] = accent;
-    colors[ImGuiCol_SliderGrabActive] = ImVec4(0.36f, 0.82f, 1.0f, 1.0f);
-    colors[ImGuiCol_Separator] = ImVec4(0.09f, 0.17f, 0.23f, 1.0f);
-    colors[ImGuiCol_ScrollbarBg] = ImVec4(0.02f, 0.035f, 0.055f, 1.0f);
-    colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.10f, 0.22f, 0.29f, 1.0f);
+    colors[ImGuiCol_SliderGrabActive] = accentDim;
+    colors[ImGuiCol_Separator] = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
+    colors[ImGuiCol_ScrollbarBg] = ImVec4(14.0f / 255.0f, 14.0f / 255.0f, 14.0f / 255.0f, 1.0f);
+    colors[ImGuiCol_ScrollbarGrab] = ImVec4(27.0f / 255.0f, 27.0f / 255.0f, 27.0f / 255.0f, 1.0f);
     colors[ImGuiCol_ScrollbarGrabHovered] = accentDim;
     colors[ImGuiCol_ScrollbarGrabActive] = accent;
 
     // Fit smaller resolutions instead of letting the bottom/right controls leave the screen.
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const ImVec2 fullSize(
-        (display.x - 24.0f < 900.0f) ? display.x - 24.0f : 900.0f,
-        (display.y - 24.0f < 560.0f) ? display.y - 24.0f : 560.0f);
+        (display.x - 24.0f < 740.0f) ? display.x - 24.0f : 740.0f,
+        (display.y - 24.0f < 532.0f) ? display.y - 24.0f : 532.0f);
     const float scale = 0.975f + 0.025f * easedOpen;
     const ImVec2 animatedSize(fullSize.x * scale, fullSize.y * scale);
     static ImVec2 menuPosition(0.0f, 0.0f);
@@ -5291,29 +5293,13 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     const ImVec2 wp = ImGui::GetWindowPos();
     const ImVec2 ws = ImGui::GetWindowSize();
     const ImVec2 wmax(wp.x + ws.x, wp.y + ws.y);
-    // Restrained cyan glow: several faint outlines behind the window, then a crisp rim.
-    ImDrawList* background = ImGui::GetBackgroundDrawList();
-    for (int glow = 5; glow >= 1; --glow) {
-        const float spread = static_cast<float>(glow) * 2.5f;
-        const float alpha = (0.010f + (6 - glow) * 0.009f) * easedOpen;
-        background->AddRect(ImVec2(wp.x - spread, wp.y - spread),
-            ImVec2(wmax.x + spread, wmax.y + spread),
-            ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, alpha)),
-            style.WindowRounding + spread, 0, 2.0f);
-    }
-    shellDraw->AddRectFilled(ImVec2(wp.x, wp.y), ImVec2(wmax.x, wp.y + 2.0f),
-        ImGui::GetColorU32(accent));
-    shellDraw->AddRect(wp, wmax, ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.42f)),
-        style.WindowRounding, 0, 1.0f);
+    // Exact outer shell from the Figma file: flat #0e0e0e with a black border.
+    shellDraw->AddRect(wp, wmax, ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 1.0f)),
+        0.0f, 0, 1.0f);
 
-    // Persistent left navigation rail, as used by the Neverlose layout.
-    static int currentTab = 0;
-    ImGui::BeginChild("Sidebar", ImVec2(176.0f, 0.0f), false,
-        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    // Dedicated drag zone above navigation. Child panels otherwise consume the whole
-    // window, so relying on ImGui's background dragging cannot move this menu.
+    // Full-width 31px title/drag bar, matching the Figma main frame offset.
     ImGui::SetCursorPos(ImVec2(0.0f, 0.0f));
-    ImGui::InvisibleButton("##MenuDragZone", ImVec2(176.0f, 68.0f));
+    ImGui::InvisibleButton("##MenuTitleDrag", ImVec2(animatedSize.x, 31.0f));
     if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
         menuPosition.x += ImGui::GetIO().MouseDelta.x;
         menuPosition.y += ImGui::GetIO().MouseDelta.y;
@@ -5325,27 +5311,35 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             menuPosition.y = display.y - animatedSize.y - 8.0f;
         ImGui::SetWindowPos("ze0nware##main", menuPosition, ImGuiCond_Always);
     }
-    ImGui::SetCursorPos(ImVec2(18.0f, 20.0f));
+    shellDraw->AddText(ImVec2(wp.x + 10.0f, wp.y + 9.0f),
+        ImGui::GetColorU32(ImVec4(234.0f / 255.0f, 234.0f / 255.0f, 234.0f / 255.0f, 0.70f)),
+        "ze0nware");
+    ImGui::SetCursorPos(ImVec2(10.0f, 31.0f));
+    ImGui::BeginChild("FigmaMain", ImVec2(animatedSize.x - 20.0f, animatedSize.y - 41.0f), true);
+
+    // Persistent left navigation rail, as used by the Neverlose layout.
+    static int currentTab = 0;
+    ImGui::BeginChild("Sidebar", ImVec2(140.0f, 0.0f), false,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::SetCursorPos(ImVec2(18.0f, 18.0f));
     ImGui::TextColored(accent, "ze0nware");
-    ImGui::SetCursorPosX(18.0f);
-    ImGui::TextDisabled("private build");
-    ImGui::SetCursorPosY(76.0f);
+    ImGui::SetCursorPosY(93.0f);
 
     const char* navLabels[] = { "AIMBOT", "ANTI-AIM", "VISUALS", "WEAPONS" };
     for (int tab = 0; tab < 4; ++tab) {
         const bool selected = currentTab == tab;
-        ImGui::SetCursorPosX(10.0f);
+        ImGui::SetCursorPosX(3.0f);
         ImGui::PushID(tab);
         if (selected) {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(accent.x, accent.y, accent.z, 0.16f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(accent.x, accent.y, accent.z, 0.20f));
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(22.0f / 255.0f, 22.0f / 255.0f, 22.0f / 255.0f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(22.0f / 255.0f, 22.0f / 255.0f, 22.0f / 255.0f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.88f, 0.96f, 1.0f, 1.0f));
         }
         const ImVec2 buttonPos = ImGui::GetCursorScreenPos();
-        if (ImGui::Button(navLabels[tab], ImVec2(156.0f, 38.0f))) currentTab = tab;
+        if (ImGui::Button(navLabels[tab], ImVec2(134.0f, 32.0f))) currentTab = tab;
         if (selected) {
             ImGui::GetWindowDrawList()->AddRectFilled(
-                ImVec2(buttonPos.x, buttonPos.y + 7.0f), ImVec2(buttonPos.x + 3.0f, buttonPos.y + 31.0f),
+                ImVec2(buttonPos.x, buttonPos.y), ImVec2(buttonPos.x + 3.0f, buttonPos.y + 32.0f),
                 ImGui::GetColorU32(accent), 2.0f);
             ImGui::PopStyleColor(3);
         }
@@ -5353,8 +5347,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Dummy(ImVec2(0.0f, 3.0f));
     }
 
-    ImGui::SetCursorPos(ImVec2(18.0f, ImGui::GetWindowHeight() - 48.0f));
-    ImGui::TextDisabled("INSERT  /  close");
     ImGui::EndChild();
     ImGui::SameLine(0.0f, 0.0f);
 
@@ -5722,6 +5714,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     }
     
     ImGui::EndChild(); // ContentPanel
+    ImGui::EndChild(); // FigmaMain
     ImGui::End();
     style.Alpha = 1.0f;
     } // animated menu
