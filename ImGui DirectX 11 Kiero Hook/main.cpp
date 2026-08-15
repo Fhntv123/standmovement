@@ -542,6 +542,7 @@ struct CorpseDotParticle {
     float driftZ;
     float worldRadius;
     float gradientT;
+    float delay;
 };
 struct FrozenCorpseEntry {
     uintptr_t ragdoll;
@@ -2680,6 +2681,7 @@ static void AddCorpseVolumeDot(FrozenCorpseEntry& corpse, const Vector3& center,
     dot.driftZ = dz;
     dot.worldRadius = worldRadius;
     dot.gradientT = gradientT;
+    dot.delay = 0.10f * (0.5f + 0.5f * sinf(phase * 0.6180339887f));
     corpse.dots.push_back(dot);
 }
 
@@ -2712,7 +2714,7 @@ static void CaptureCorpsePoseDots(FrozenCorpseEntry& corpse, uintptr_t biped)
     if (floorY > 1.0e8f || validCount <= 0) return;
     bodyCenter.x /= validCount; bodyCenter.y /= validCount; bodyCenter.z /= validCount;
     corpse.dots.clear();
-    corpse.dots.reserve(320);
+    corpse.dots.reserve(160);
     for (int segmentIndex = 0; segmentIndex < IM_ARRAYSIZE(segments); ++segmentIndex) {
         const int a = segments[segmentIndex][0], b = segments[segmentIndex][1];
         if (!valid[a] || !valid[b]) continue;
@@ -2745,7 +2747,7 @@ static void CaptureCorpsePoseDots(FrozenCorpseEntry& corpse, uintptr_t biped)
                 bones[a].x + delta.x * t,
                 bones[a].y + delta.y * t,
                 bones[a].z + delta.z * t);
-            const int rings = 4;
+            const int rings = 3;
             for (int ring = 0; ring < rings; ++ring) {
                 const float angle = 6.28318530718f * static_cast<float>(ring) / static_cast<float>(rings);
                 const float radial = bodyRadius * (0.72f + 0.28f * sinf((step + 1) * 1.91f + ring));
@@ -2753,13 +2755,13 @@ static void CaptureCorpsePoseDots(FrozenCorpseEntry& corpse, uintptr_t biped)
                 const float oy = (side.y * cosf(angle) + up.y * sinf(angle)) * radial;
                 const float oz = (side.z * cosf(angle) + up.z * sinf(angle)) * radial;
                 const float phase = static_cast<float>(segmentIndex * 71 + step * 13 + ring * 7);
-                if (corpse.dots.size() < 320)
+                if (corpse.dots.size() < 160)
                     AddCorpseVolumeDot(corpse, center, ox, oy, oz, bodyCenter, 0.032f,
                         phase, fminf(1.0f, fmaxf(0.0f, (center.y - floorY) / 1.8f)));
             }
             // A center particle closes holes so limbs read as solid volume, not a wire skeleton.
             const float phase = static_cast<float>(segmentIndex * 83 + step * 19);
-            if (corpse.dots.size() < 320)
+            if (corpse.dots.size() < 160)
                 AddCorpseVolumeDot(corpse, center, 0.0f, 0.0f, 0.0f, bodyCenter, 0.035f,
                     phase, fminf(1.0f, fmaxf(0.0f, (center.y - floorY) / 1.8f)));
         }
@@ -5511,6 +5513,7 @@ struct CorpseDotDrawItem {
     float driftZ;
     float worldRadius;
     float gradientT;
+    float delay;
 };
 
 static void DrawFrozenCorpseDots()
@@ -5523,7 +5526,7 @@ static void DrawFrozenCorpseDots()
     for (const FrozenCorpseEntry& corpse : frozenCorpses) {
         for (const CorpseDotParticle& dot : corpse.dots)
             snapshot.push_back({ dot.position, corpse.createdAt, corpse.releaseAt,
-                dot.driftX, dot.driftY, dot.driftZ, dot.worldRadius, dot.gradientT });
+                dot.driftX, dot.driftY, dot.driftZ, dot.worldRadius, dot.gradientT, dot.delay });
     }
     ReleaseSRWLockShared(&frozenCorpseLock);
     ImDrawList* draw = ImGui::GetForegroundDrawList();
@@ -5534,9 +5537,12 @@ static void DrawFrozenCorpseDots()
         const float progress = fminf(1.0f, fmaxf(0.0f, age / life));
         // Hold the complete frozen body for most of its lifetime. During the final
         // phase, disperse every orb radially in real XYZ world space and fade it.
-        const float spreadProgress = progress <= 0.58f ? 0.0f :
-            fminf(1.0f, (progress - 0.58f) / 0.42f);
-        const float smoothSpread = spreadProgress * spreadProgress * (3.0f - 2.0f * spreadProgress);
+        const float spreadStart = 0.52f + dot.delay;
+        const float spreadProgress = progress <= spreadStart ? 0.0f :
+            fminf(1.0f, (progress - spreadStart) / (1.0f - spreadStart));
+        // Quintic smootherstep has zero velocity and acceleration at both ends.
+        const float smoothSpread = spreadProgress * spreadProgress * spreadProgress *
+            (spreadProgress * (spreadProgress * 6.0f - 15.0f) + 10.0f);
         const float spreadDistance = freezeCorpsesDotFallSpeed * 0.85f * smoothSpread;
         Vector3 world(
             dot.position.x + dot.driftX * spreadDistance,
@@ -5557,29 +5563,37 @@ static void DrawFrozenCorpseDots()
         const float b = freezeCorpsesChamsColor[2] +
             (freezeCorpsesDotGradientColor[2] - freezeCorpsesChamsColor[2]) * gradient;
 
-        // Actual world-space 3D octahedron: six XYZ vertices and eight independently
-        // projected/shaded triangular faces. Camera movement changes its silhouette,
-        // unlike the previous screen-space circles.
+        // Rounded world-space icosphere: 12 normalized spherical vertices and
+        // 20 triangular faces. This reads as a ball from every camera angle.
         const float radius = dot.worldRadius * freezeCorpsesDotSize;
-        const Vector3 vertices[6] = {
-            Vector3(world.x + radius, world.y, world.z), Vector3(world.x - radius, world.y, world.z),
-            Vector3(world.x, world.y + radius, world.z), Vector3(world.x, world.y - radius, world.z),
-            Vector3(world.x, world.y, world.z + radius), Vector3(world.x, world.y, world.z - radius)
+        const float phi = 1.61803398875f;
+        const float invLength = 0.52573111212f;
+        static const float unitVertices[12][3] = {
+            {-1, phi, 0},{1, phi, 0},{-1,-phi,0},{1,-phi,0},
+            {0,-1,phi},{0,1,phi},{0,-1,-phi},{0,1,-phi},
+            {phi,0,-1},{phi,0,1},{-phi,0,-1},{-phi,0,1}
         };
-        ImVec2 projected[6];
+        Vector3 vertices[12];
+        ImVec2 projected[12];
         bool visible = true;
-        for (int vertex = 0; vertex < 6; ++vertex) {
+        for (int vertex = 0; vertex < 12; ++vertex) {
+            vertices[vertex] = Vector3(
+                world.x + unitVertices[vertex][0] * invLength * radius,
+                world.y + unitVertices[vertex][1] * invLength * radius,
+                world.z + unitVertices[vertex][2] * invLength * radius);
             if (!ProjectTracerEnd(vertices[vertex], projected[vertex])) { visible = false; break; }
         }
         if (!visible) continue;
-        static const int faces[8][3] = {
-            {2,0,4},{2,4,1},{2,1,5},{2,5,0},
-            {3,4,0},{3,1,4},{3,5,1},{3,0,5}
+        static const int faces[20][3] = {
+            {0,11,5},{0,5,1},{0,1,7},{0,7,10},{0,10,11},
+            {1,5,9},{5,11,4},{11,10,2},{10,7,6},{7,1,8},
+            {3,9,4},{3,4,2},{3,2,6},{3,6,8},{3,8,9},
+            {4,9,5},{2,4,11},{6,2,10},{8,6,7},{9,8,1}
         };
         ImVec2 centerScreen;
         if (!ProjectTracerEnd(world, centerScreen)) continue;
         float screenRadius = 0.0f;
-        for (int vertex = 0; vertex < 6; ++vertex) {
+        for (int vertex = 0; vertex < 12; ++vertex) {
             const float dx = projected[vertex].x - centerScreen.x;
             const float dy = projected[vertex].y - centerScreen.y;
             screenRadius = fmaxf(screenRadius, sqrtf(dx * dx + dy * dy));
@@ -5588,11 +5602,20 @@ static void DrawFrozenCorpseDots()
         draw->AddCircleFilled(centerScreen, screenRadius * 1.55f,
             IM_COL32(static_cast<int>(r * 255.0f), static_cast<int>(g * 255.0f),
                 static_cast<int>(b * 255.0f), static_cast<int>(alpha * 28.0f)), 12);
-        for (int face = 0; face < 8; ++face) {
+        for (int face = 0; face < 20; ++face) {
             ImVec2 triangle[3] = {
                 projected[faces[face][0]], projected[faces[face][1]], projected[faces[face][2]]
             };
-            const float shade = 0.42f + 0.075f * static_cast<float>(face);
+            const Vector3& va = vertices[faces[face][0]];
+            const Vector3& vb = vertices[faces[face][1]];
+            const Vector3& vc = vertices[faces[face][2]];
+            const float ux = vb.x - va.x, uy = vb.y - va.y, uz = vb.z - va.z;
+            const float vx = vc.x - va.x, vy = vc.y - va.y, vz = vc.z - va.z;
+            float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+            const float normalLength = sqrtf(nx * nx + ny * ny + nz * nz);
+            if (normalLength > 0.001f) { nx /= normalLength; ny /= normalLength; nz /= normalLength; }
+            const float light = fmaxf(0.0f, nx * -0.35f + ny * 0.75f + nz * -0.55f);
+            const float shade = 0.30f + light * 0.70f;
             draw->AddConvexPolyFilled(triangle, 3,
                 IM_COL32(static_cast<int>(fminf(1.0f, r * shade) * 255.0f),
                     static_cast<int>(fminf(1.0f, g * shade) * 255.0f),
