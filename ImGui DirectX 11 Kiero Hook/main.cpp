@@ -226,7 +226,6 @@ struct Matrix16 {
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xA5D6C0
 #define OFFSET_CHEAT_RUNTIME_SET_BHOP              0xA5DD90
 #define OFFSET_PLAYERCONTROLLER_COMMAND             0x83D210
-#define OFFSET_PLAYERCONTROLLER_GET_ACTOR           0x83ABA0  // PlayerController.qgk() -> eva
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_A          0x840BF0  // PlayerManager.qkb(PlayerController)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_B          0x840DE0  // PlayerManager.qkc(PlayerController)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_C          0x840E10  // PlayerManager.qkd(PlayerController)
@@ -816,25 +815,22 @@ static const char* HitboxNameFromDamageCounts(int headHits, int bodyHits, int fe
     return "Unknown";
 }
 
-static uintptr_t SafeGetPlayerActor(void* player) {
-    if (!player || !base) return 0;
+static uintptr_t SafeGetPlayerHitActor(void* player) {
+    if (!player) return 0;
     __try {
-        using GetActorFn = uintptr_t(__fastcall*)(void*, const Il2CppMethod*);
-        static GetActorFn getActor = nullptr;
-        if (!getActor)
-            getActor = reinterpret_cast<GetActorFn>(base + OFFSET_PLAYERCONTROLLER_GET_ACTOR);
-        return getActor(player, nullptr);
+        const uintptr_t hitController = *reinterpret_cast<uintptr_t*>(
+            reinterpret_cast<uintptr_t>(player) + 0xF0);
+        return hitController ? *reinterpret_cast<uintptr_t*>(hitController + 0xB0) : 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
-
 static void* FindPlayerByActor(uintptr_t actor) {
     if (!actor) return nullptr;
     void* players[64] = {};
     int playerCount = 0;
     CollectPlayers(players, 64, playerCount);
     for (int i = 0; i < playerCount; ++i) {
-        if (players[i] && SafeGetPlayerActor(players[i]) == actor)
+        if (players[i] && SafeGetPlayerHitActor(players[i]) == actor)
             return players[i];
     }
     return nullptr;
@@ -848,8 +844,8 @@ static void CacheConfirmedDamageResult(uintptr_t hitController, uintptr_t result
     uintptr_t shooterActor = 0;
     __try {
         controllerPlayer = *reinterpret_cast<uintptr_t*>(hitController + 0x90);
-        shooterActor = *reinterpret_cast<uintptr_t*>(result + 0x10); // boq.carm: attacker actor
-        victimActor = *reinterpret_cast<uintptr_t*>(result + 0x40);  // boo.card: damaged actor
+        victimActor = *reinterpret_cast<uintptr_t*>(result + 0x10);  // boq.carm: damaged hit actor
+        shooterActor = *reinterpret_cast<uintptr_t*>(result + 0x40); // boo.card: attacker hit actor
         headHits = *reinterpret_cast<int*>(result + 0x18);
         bodyHits = *reinterpret_cast<int*>(result + 0x1C);
         feetHits = *reinterpret_cast<int*>(result + 0x20);
@@ -868,14 +864,15 @@ static void CacheConfirmedDamageResult(uintptr_t hitController, uintptr_t result
     InterlockedIncrement(&boxEspConfirmedHits);
 
     void* localPlayer = GetLocalPC();
-    const uintptr_t localActor = SafeGetPlayerActor(localPlayer);
+    const uintptr_t localActor = SafeGetPlayerHitActor(localPlayer);
     void* victimPlayer = FindPlayerByActor(victimActor);
     const unsigned char localTeam = GetPCTeam(localPlayer);
     const unsigned char victimTeam = GetPCTeam(victimPlayer);
     const ULONGLONG now = GetTickCount64();
 
-    // Runtime direction is definitive: on an incoming hit boo.card (+0x40) resolves
-    // to the local player, so card is the victim and inherited carm (+0x10) is attacker.
+    // Runtime proved +0x10 matches PlayerHitController.cary for the damaged local player.
+    // Compare both result actors against that same cary representation; qgk()/dcva is
+    // a different eva wrapper and caused both incoming and outgoing checks to miss.
     if (keyValidated && hitLogEnabled && localActor && shooterActor == localActor &&
         victimPlayer && victimPlayer != localPlayer && localTeam && localTeam != 3 &&
         victimTeam && victimTeam != 3 && victimTeam != localTeam &&
