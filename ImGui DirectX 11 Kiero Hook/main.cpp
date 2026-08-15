@@ -2137,10 +2137,14 @@ static bool ApplyAdminBhopState()
             adminBhopOriginalCaptured = true;
         }
         const uintptr_t runtime = GetNativeCheatRuntime();
+        // Pixel Surf already owns horizontal movement. Native Admin BHop rotates
+        // that movement with the live camera, so suspend the native BHop only for
+        // the duration of Pixel Surf and restore it automatically on release.
+        const bool effectiveAdminBhopEnabled = adminBhopEnabled && !jbActive;
         if (runtime && o_CheatRuntime_SetBhop)
-            o_CheatRuntime_SetBhop(runtime, movement, adminBhopEnabled);
-        *reinterpret_cast<bool*>(jump + 0x10) = adminBhopEnabled;
-        if (adminBhopEnabled) {
+            o_CheatRuntime_SetBhop(runtime, movement, effectiveAdminBhopEnabled);
+        *reinterpret_cast<bool*>(jump + 0x10) = effectiveAdminBhopEnabled;
+        if (effectiveAdminBhopEnabled) {
             // Keep native propulsion continuous. Toggling this multiplier to
             // zero on brief A/D gaps caused the visible stop-then-resume jerk and
             // killed backward momentum after releasing S.
@@ -2152,6 +2156,10 @@ static bool ApplyAdminBhopState()
                 "Native admin BHop active; CS air strafe" :
                 (runtime ? "Native admin BHop active" :
                     "Native jump BHop active; runtime pending"));
+        } else if (adminBhopEnabled && jbActive) {
+            // Do not restore the game's old 17.49 values here; just pause the
+            // enable flag. The configured values are reapplied after surf release.
+            strcpy_s(adminBhopStatus, "Paused while Pixel Surf is active");
         } else if (adminBhopOriginalCaptured) {
             *reinterpret_cast<bool*>(jump + 0x10) = adminBhopOriginalEnabled;
             *reinterpret_cast<float*>(jump + 0x14) = adminBhopOriginalSpeedMultiplier;
@@ -2594,7 +2602,7 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     if (silentAntiAimEnabled && player && command)
         CaptureSilentAntiAimInput(player, command);
 
-    if (keyValidated && adminBhopEnabled && adminBhopCsStrafeMode &&
+    if (keyValidated && adminBhopEnabled && adminBhopCsStrafeMode && !jbActive &&
         player && command && player == liveHudLocalPlayer && lastCharacterController &&
         o_CC_get_isGrounded) {
         __try {
