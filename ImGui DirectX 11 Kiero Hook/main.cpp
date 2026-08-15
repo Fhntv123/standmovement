@@ -354,6 +354,8 @@ bool pixelSurfReleaseHop = false;
 volatile LONG64 pixelSurfReleasedAt = 0;
 volatile LONG64 pixelSurfReleaseGraceUntil = 0;
 uintptr_t pixelSurfCharacterController = 0;
+Vector3 pixelSurfFacingDirection;
+bool pixelSurfFacingDirectionValid = false;
 
 static void SetPixelSurfActive(bool active)
 {
@@ -361,10 +363,12 @@ static void SetPixelSurfActive(bool active)
     jbActive = active;
     pixelSurf = active;
     if (active) {
+        if (!wasActive) pixelSurfFacingDirectionValid = false;
         InterlockedExchange64(&pixelSurfReleasedAt, 0);
         InterlockedExchange64(&pixelSurfReleaseGraceUntil, 0);
     }
     else if (wasActive) {
+        pixelSurfFacingDirectionValid = false;
         const LONG64 now = static_cast<LONG64>(GetTickCount64());
         InterlockedExchange64(&pixelSurfReleasedAt, now);
         // Optional legacy mode keeps the small release hop the user liked.
@@ -1410,7 +1414,7 @@ static bool LoadConfig(const char* requestedName)
 #define LOAD_BOOL(v) v = ReadConfigBool(path, #v, v)
 #define LOAD_INT(v) v = ReadConfigInt(path, #v, v)
 #define LOAD_FLOAT(v) v = ReadConfigFloat(path, #v, v)
-    LOAD_BOOL(jbActive); pixelSurf = jbActive; LOAD_BOOL(pixelSurfReleaseHop); LOAD_FLOAT(surfSpeed);
+    LOAD_BOOL(jbActive); pixelSurf = jbActive; pixelSurfFacingDirectionValid = false; LOAD_BOOL(pixelSurfReleaseHop); LOAD_FLOAT(surfSpeed);
     LOAD_BOOL(adminBhopEnabled); LOAD_BOOL(adminBhopCsStrafeMode); LOAD_FLOAT(adminBhopMaxSpeed);
     if (adminBhopMaxSpeed < 1.0f) adminBhopMaxSpeed = 1.0f; if (adminBhopMaxSpeed > 30.0f) adminBhopMaxSpeed = 30.0f;
     LOAD_BOOL(airJump); LOAD_BOOL(edgeBugEnabled); LOAD_FLOAT(edgeBugPullForce);
@@ -3711,6 +3715,7 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
     if (grounded && instance && instance == pixelSurfCharacterController) {
         InterlockedExchange64(&pixelSurfReleasedAt, 0);
         pixelSurfCharacterController = 0;
+        pixelSurfFacingDirectionValid = false;
     }
     return grounded;
 
@@ -4664,13 +4669,42 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 
     if (keyValidated && jbActive) {
         pixelSurfCharacterController = instance;
-        float speed = sqrt(motion.x * motion.x + motion.z * motion.z);
-        if (speed > 0.1f) {
-            motion.x = (motion.x / speed) * surfSpeed * 10.0f;
-            motion.z = (motion.z / speed) * surfSpeed * 10.0f;
+        if (!pixelSurfFacingDirectionValid && o_Camera_get_main &&
+            o_Component_get_transform && o_Transform_get_forward) {
+            __try {
+                const uintptr_t camera = o_Camera_get_main();
+                const uintptr_t cameraTransform = camera ? o_Component_get_transform(camera) : 0;
+                if (cameraTransform) {
+                    Vector3 forward = o_Transform_get_forward(cameraTransform);
+                    forward.y = 0.0f;
+                    const float horizontalLength = sqrtf(forward.x * forward.x + forward.z * forward.z);
+                    if (isfinite(horizontalLength) && horizontalLength > 0.0001f) {
+                        pixelSurfFacingDirection.x = forward.x / horizontalLength;
+                        pixelSurfFacingDirection.y = 0.0f;
+                        pixelSurfFacingDirection.z = forward.z / horizontalLength;
+                        pixelSurfFacingDirectionValid = true;
+                    }
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
         }
-
-        motion.y = 0;
+        if (pixelSurfFacingDirectionValid) {
+            // Same proven Pixel Surf displacement magnitude as before; only its
+            // normalized world direction is frozen to camera-forward at activation.
+            const float surfMotion = surfSpeed * 10.0f;
+            motion.x = pixelSurfFacingDirection.x * surfMotion;
+            motion.z = pixelSurfFacingDirection.z * surfMotion;
+        }
+        else {
+            // Safe fallback until camera transform is available: preserve the old
+            // behavior rather than inventing a zero or stale direction.
+            const float speed = sqrtf(motion.x * motion.x + motion.z * motion.z);
+            if (speed > 0.1f) {
+                motion.x = (motion.x / speed) * surfSpeed * 10.0f;
+                motion.z = (motion.z / speed) * surfSpeed * 10.0f;
+            }
+        }
+        motion.y = 0.0f;
     }
     else if (keyValidated) {
         const LONG64 now = static_cast<LONG64>(GetTickCount64());
