@@ -272,6 +272,7 @@ struct Matrix16 {
 #define OFFSET_DAMAGE_RESULT_GET_HEALTH                0x880990  // boo.rfu() / dcxl
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xA6E220
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0x86C0E0
+#define OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE      0x86C9A0  // AimController.riz(Vector3)
 #define OFFSET_AIMINGDATA_CLONE                      0x86F9C0
 #define OFFSET_TRANSFORM_GET_EULERANGLES            0x2F066B0
 #define OFFSET_TRANSFORM_SET_EULERANGLES            0x2F07020
@@ -1899,6 +1900,7 @@ void(__fastcall* o_HitMarkerView_LocalHit)(uintptr_t, void*, uintptr_t, const Il
 void(__fastcall* o_PlayerController_Command)(uintptr_t, uintptr_t, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_KeyboardControl_BuildCommand)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_AimController_GetSnapshot)(uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_AimingData_Clone)(uintptr_t, const Il2CppMethod*) = nullptr;
 
 
@@ -3065,6 +3067,28 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     return command;
 }
 
+void __fastcall hk_AimController_SetHeadDirective(
+    uintptr_t aimController, Vector3 angles, const Il2CppMethod* method)
+{
+    if (silentAntiAimEnabled && aimController && silentAntiAimLatestInputValid &&
+        !silentAntiAimLatestFiring) {
+        bool isLocalAimController = false;
+        __try {
+            const uintptr_t ownerPlayer =
+                *reinterpret_cast<uintptr_t*>(aimController + 0xD0);
+            isLocalAimController = ownerPlayer &&
+                ownerPlayer == silentAntiAimLatestPlayer;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            isLocalAimController = false;
+        }
+        if (isLocalAimController)
+            angles = GetSilentDirectionJitterAngles(
+                silentAntiAimLatestRealAimAngle);
+    }
+    o_AimController_SetHeadDirective(aimController, angles, method);
+}
+
 uintptr_t __fastcall hk_AimController_GetSnapshot(
     uintptr_t aimController, const Il2CppMethod* method)
 {
@@ -3211,23 +3235,6 @@ static bool SendPendingPixelSurfChatMessageUnsafe()
     }
 }
 
-static void UpdateSilentDirectionJitterModelUnsafe()
-{
-    if (!silentAntiAimEnabled || silentAntiAimLatestFiring || !liveHudLocalPlayer ||
-        !silentAntiAimLatestInputValid)
-        return;
-    __try {
-        const uintptr_t aimController =
-            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
-        if (!aimController) return;
-        // AimController._headDirectiveAngles (+0xC0) drives the rendered head/body
-        // directive. AimingData (+0x88) is deliberately left untouched for camera aim.
-        *reinterpret_cast<Vector3*>(aimController + 0xC0) =
-            GetSilentDirectionJitterAngles(silentAntiAimLatestRealAimAngle);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-}
-
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
     __try {
@@ -3238,7 +3245,6 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
-    UpdateSilentDirectionJitterModelUnsafe();
     if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
         SendPendingPixelSurfChatMessageUnsafe();
     UpdateFrozenCorpses();
@@ -6858,7 +6864,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 (silentAntiAimHookReady ? "Input + detached snapshot hooks installed" : "Anti-aim hooks failed to install"));
         }
         ImGui::Spacing();
-        ImGui::TextWrapped("Local third-person model and detached snapshot cycle right, back, left and forward while live aim, camera and movement stay untouched.");
+        ImGui::TextWrapped("The native head-directive setter and detached snapshot cycle right, back, left and forward while live AimingData, camera and movement stay untouched.");
         ImGui::EndChild();
     }
     else if (currentTab == 2) { // VISUALS
@@ -7462,6 +7468,14 @@ DWORD WINAPI HackThread(LPVOID)
         hitLogEnabled = false;
     o_AimingData_Clone = (uintptr_t(__fastcall*)(uintptr_t, const Il2CppMethod*))
         (base + OFFSET_AIMINGDATA_CLONE);
+    const MH_STATUS antiAimDirectiveCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE),
+        hk_AimController_SetHeadDirective,
+        (LPVOID*)&o_AimController_SetHeadDirective);
+    const MH_STATUS antiAimDirectiveEnableStatus =
+        antiAimDirectiveCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE)) :
+        antiAimDirectiveCreateStatus;
     const MH_STATUS antiAimSnapshotCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_AIMCONTROLLER_GET_SNAPSHOT),
         hk_AimController_GetSnapshot,
@@ -7478,7 +7492,9 @@ DWORD WINAPI HackThread(LPVOID)
     const MH_STATUS antiAimInputEnableStatus = antiAimInputCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND)) :
         antiAimInputCreateStatus;
-    silentAntiAimHookReady = antiAimSnapshotCreateStatus == MH_OK &&
+    silentAntiAimHookReady = antiAimDirectiveCreateStatus == MH_OK &&
+        antiAimDirectiveEnableStatus == MH_OK &&
+        antiAimSnapshotCreateStatus == MH_OK &&
         antiAimSnapshotEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
         antiAimInputEnableStatus == MH_OK;
@@ -7491,7 +7507,8 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimFallbackCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_PLAYERCONTROLLER_COMMAND)) :
         antiAimFallbackCreateStatus;
-    LINDY_LOG("[anti-aim] AimController.qdr create=%d enable=%d; KeyboardControl.bbft create=%d enable=%d ready=%d; qhq diagnostic create=%d enable=%d",
+    LINDY_LOG("[anti-aim] AimController.riz create=%d enable=%d; qdr create=%d enable=%d; KeyboardControl.bbft create=%d enable=%d ready=%d; qhq diagnostic create=%d enable=%d",
+        (int)antiAimDirectiveCreateStatus, (int)antiAimDirectiveEnableStatus,
         (int)antiAimSnapshotCreateStatus, (int)antiAimSnapshotEnableStatus,
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
         silentAntiAimHookReady ? 1 : 0,
