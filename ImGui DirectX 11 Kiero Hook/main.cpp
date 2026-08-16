@@ -2943,8 +2943,8 @@ static float NormalizeAngle180(float angle)
 
 static float GetSilentAntiAimPitch()
 {
-    if (silentAntiAimPitch == 1) return 70.0f;  // Down
-    if (silentAntiAimPitch == 2) return -70.0f; // Up
+    if (silentAntiAimPitch == 1) return 89.0f;  // Down
+    if (silentAntiAimPitch == 2) return -89.0f; // Up
     return 0.0f;                                // Neutral
 }
 
@@ -3134,14 +3134,18 @@ static void ApplySilentStaticBackwardsBonesUnsafe(uintptr_t aimController)
             *reinterpret_cast<uintptr_t*>(aimController + 0x28);
         if (!bipedMap) return;
 
-        // Hip is the common parent of the rendered body and both leg chains.
-        // Static uses 180 degrees; Spin uses the same time-based yaw as snapshots.
-        const uintptr_t hip = *reinterpret_cast<uintptr_t*>(bipedMap + 0x88);
+        // The generated game il2cpp.h proves Controller.bzvg is the character
+        // visual root at +0x30. Rotate that root instead of the animated Hip bone:
+        // this keeps the whole rig coherent, makes locomotion visibly play backwards,
+        // and avoids Mecanim/IK fighting the spin every frame.
+        const uintptr_t visualRoot =
+            *reinterpret_cast<uintptr_t*>(aimController + 0x30);
         bool wrote = false;
-        if (hip) {
-            Vector3 local = o_Transform_get_localEulerAngles(hip);
-            local.y = NormalizeAngle360(local.y + GetSilentStaticYawOffset());
-            o_Transform_set_localEulerAngles(hip, local);
+        if (visualRoot) {
+            Vector3 local = o_Transform_get_localEulerAngles(visualRoot);
+            local.y = NormalizeAngle360(
+                local.y + GetSilentStaticYawOffset());
+            o_Transform_set_localEulerAngles(visualRoot, local);
             wrote = true;
         }
 
@@ -3161,7 +3165,7 @@ static void ApplySilentStaticBackwardsBonesUnsafe(uintptr_t aimController)
         const float absolutePitchDelta =
             GetSilentAntiAimPitch() - realPitch;
         const uintptr_t upperOffsets[] = { 0x30, 0x38, 0x40, 0x28, 0x20 };
-        const float upperWeights[] = { 0.08f, 0.12f, 0.18f, 0.25f, 0.37f };
+        const float upperWeights[] = { 0.04f, 0.08f, 0.14f, 0.28f, 0.46f };
         for (int i = 0; i < 5; ++i) {
             const uintptr_t bone =
                 *reinterpret_cast<uintptr_t*>(bipedMap + upperOffsets[i]);
@@ -7136,8 +7140,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     1.0f, 1080.0f, "%.0f deg/s");
             }
             ImGui::TextWrapped(silentAntiAimSpin ?
-                "Spin rotates the complete third-person model continuously at the selected speed. Look remains absolute and camera-independent." :
-                "Static Backwards turns the complete third-person model 180 degrees. Look is absolute and camera-independent.");
+                "Spin rotates the character visual root continuously at the selected speed. Look remains absolute and camera-independent." :
+                "Static Backwards rotates the character visual root 180 degrees, so locomotion visibly plays backwards. Look is absolute and camera-independent.");
         } else {
             ImGui::TextWrapped("Direction Jitter keeps the existing post-Mecanim full-body jitter mode.");
         }
