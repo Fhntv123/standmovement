@@ -2918,6 +2918,17 @@ static float NormalizeAngle180(float angle)
     return angle;
 }
 
+static Vector3 GetSilentDirectionJitterAngles(const Vector3& realAim)
+{
+    static const float yawOffsets[] = { 90.0f, 180.0f, 270.0f, 0.0f };
+    const unsigned int directionIndex = static_cast<unsigned int>(
+        (GetTickCount64() / 180ULL) % 4ULL);
+    return Vector3(
+        (directionIndex & 1U) ? 70.0f : -70.0f,
+        NormalizeAngle360(realAim.y + yawOffsets[directionIndex]),
+        realAim.z);
+}
+
 static void FixAntiAimMovement(uintptr_t command, float realYaw, float fakeYaw)
 {
     if (!command) return;
@@ -3089,19 +3100,17 @@ uintptr_t __fastcall hk_AimController_GetSnapshot(
         Vector3 outputAimAngle = silentAntiAimLatestRealAimAngle;
         Vector3 outputAimEuler = silentAntiAimLatestRealAimEuler;
         if (!silentAntiAimLatestFiring) {
-            const float fakeYaw = NormalizeAngle360(
-                silentAntiAimLatestRealAimAngle.y + 180.0f);
-            outputAimAngle.x = 70.0f;
-            outputAimAngle.y = fakeYaw;
-            outputAimEuler.x = 70.0f;
-            outputAimEuler.y = fakeYaw;
+            // Only the detached outgoing snapshot is changed; live AimingData and
+            // the camera retain the real angles.
+            outputAimAngle = GetSilentDirectionJitterAngles(silentAntiAimLatestRealAimAngle);
+            outputAimEuler = GetSilentDirectionJitterAngles(silentAntiAimLatestRealAimEuler);
         }
         *reinterpret_cast<Vector3*>(detachedAimingData + 0x18) = outputAimAngle;
         *reinterpret_cast<Vector3*>(detachedAimingData + 0x24) = outputAimEuler;
         InterlockedIncrement(&silentAntiAimAppliedCalls);
         strcpy_s(silentAntiAimStatus, silentAntiAimLatestFiring ?
             "Detached snapshot: real aim while firing" :
-            "Detached snapshot: backward + down");
+            "Detached snapshot: four-way direction jitter");
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         strcpy_s(silentAntiAimStatus, "Snapshot called; detached mutation failed");
@@ -3202,6 +3211,23 @@ static bool SendPendingPixelSurfChatMessageUnsafe()
     }
 }
 
+static void UpdateSilentDirectionJitterModelUnsafe()
+{
+    if (!silentAntiAimEnabled || silentAntiAimLatestFiring || !liveHudLocalPlayer ||
+        !silentAntiAimLatestInputValid)
+        return;
+    __try {
+        const uintptr_t aimController =
+            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
+        if (!aimController) return;
+        // AimController._headDirectiveAngles (+0xC0) drives the rendered head/body
+        // directive. AimingData (+0x88) is deliberately left untouched for camera aim.
+        *reinterpret_cast<Vector3*>(aimController + 0xC0) =
+            GetSilentDirectionJitterAngles(silentAntiAimLatestRealAimAngle);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
     __try {
@@ -3212,6 +3238,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
+    UpdateSilentDirectionJitterModelUnsafe();
     if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
         SendPendingPixelSurfChatMessageUnsafe();
     UpdateFrozenCorpses();
@@ -6819,7 +6846,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::TextColored(accent, "Anti-Aim");
         ImGui::Separator();
         ImGui::Spacing();
-        if (ImGui::Checkbox("Silent Backward + Down", &silentAntiAimEnabled)) {
+        if (ImGui::Checkbox("Silent Direction Jitter", &silentAntiAimEnabled)) {
             InterlockedExchange(&silentAntiAimInputBuildCalls, 0);
             InterlockedExchange(&silentAntiAimCommandCalls, 0);
             InterlockedExchange(&silentAntiAimAppliedCalls, 0);
@@ -6831,7 +6858,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 (silentAntiAimHookReady ? "Input + detached snapshot hooks installed" : "Anti-aim hooks failed to install"));
         }
         ImGui::Spacing();
-        ImGui::TextWrapped("Live aim, camera, local model and movement stay untouched. Fake angles exist only in the detached AimSnapshot used by snapshot consumers.");
+        ImGui::TextWrapped("Local third-person model and detached snapshot cycle right, back, left and forward while live aim, camera and movement stay untouched.");
         ImGui::EndChild();
     }
     else if (currentTab == 2) { // VISUALS
