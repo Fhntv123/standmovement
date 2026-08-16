@@ -3113,19 +3113,43 @@ static void ApplySilentDirectionJitterBonesUnsafe(uintptr_t aimController)
         const int phase = static_cast<int>((GetTickCount64() / 180ULL) & 3ULL);
         const float yaw = yawOffsets[phase];
         const float pitch = (phase & 1) ? 55.0f : -55.0f;
-        // Apply after the game's own qod aim pass. Spine chain gets distributed yaw;
-        // neck/head get the comic pitch. FPSCamera/AimingData are separate fields.
-        const uintptr_t boneOffsets[5] = { 0x30, 0x38, 0x40, 0x28, 0x20 };
-        const float yawWeights[5] = { 0.22f, 0.28f, 0.30f, 0.12f, 0.08f };
-        const float pitchWeights[5] = { 0.05f, 0.10f, 0.15f, 0.30f, 0.40f };
+        // Apply after the game's own qod aim pass. The generated game header proves
+        // these BipedMap offsets, including Hip and both complete leg chains.
+        // FPSCamera/AimingData remain separate and are never modified.
+        const uintptr_t boneOffsets[] = {
+            0x88,                         // Hip
+            0x90, 0x98, 0xA0, 0xA8,     // LeftUpLeg, LeftLeg, LeftFoot, LeftToeBase
+            0xB0, 0xB8, 0xC0, 0xC8,     // RightUpLeg, RightLeg, RightFoot, RightToeBase
+            0x30, 0x38, 0x40, 0x28, 0x20 // Spine, Spine1, Spine2, Neck, Head
+        };
+        const float yawWeights[] = {
+            0.40f,
+            0.18f, 0.12f, 0.08f, 0.04f,
+           -0.18f,-0.12f,-0.08f,-0.04f,
+            0.22f, 0.28f, 0.30f, 0.12f, 0.08f
+        };
+        const float pitchWeights[] = {
+            0.10f,
+            0.28f,-0.22f, 0.16f,-0.08f,
+           -0.28f, 0.22f,-0.16f, 0.08f,
+            0.05f, 0.10f, 0.15f, 0.30f, 0.40f
+        };
+        const float rollWeights[] = {
+            0.18f,
+            0.20f,-0.16f, 0.12f,-0.08f,
+           -0.20f, 0.16f,-0.12f, 0.08f,
+            0.04f,-0.04f, 0.06f,-0.08f, 0.10f
+        };
+        const float roll = (phase & 1) ? 42.0f : -42.0f;
         bool wrote = false;
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < static_cast<int>(sizeof(boneOffsets) / sizeof(boneOffsets[0])); ++i) {
             const uintptr_t bone =
                 *reinterpret_cast<uintptr_t*>(bipedMap + boneOffsets[i]);
             if (!bone) continue;
             Vector3 local = o_Transform_get_localEulerAngles(bone);
             local.y += yaw * yawWeights[i];
             local.x += pitch * pitchWeights[i];
+            local.z += roll * rollWeights[i];
             o_Transform_set_localEulerAngles(bone, local);
             wrote = true;
         }
@@ -7002,7 +7026,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 (silentAntiAimHookReady ? "Input + detached snapshot hooks installed" : "Anti-aim hooks failed to install"));
         }
         ImGui::Spacing();
-        ImGui::TextWrapped("Native head-directive set/get and detached snapshots cycle right, back, left and forward. Camera AimingData is never modified.");
+        ImGui::TextWrapped("Post-Mecanim full-body jitter rotates hips, both leg chains, spine, neck and head. Camera AimingData is never modified.");
         ImGui::TextDisabled("late:%ld bones:%ld set:%ld get:%ld in:%ld out:%ld",
             InterlockedCompareExchange(&silentAntiAimLateAimCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimBonePasses, 0, 0),
