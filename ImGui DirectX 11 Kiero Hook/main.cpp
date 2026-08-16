@@ -3120,25 +3120,37 @@ static void ApplySilentDirectionJitterBonesUnsafe(uintptr_t aimController)
             0x88,                         // Hip
             0x90, 0x98, 0xA0, 0xA8,     // LeftUpLeg, LeftLeg, LeftFoot, LeftToeBase
             0xB0, 0xB8, 0xC0, 0xC8,     // RightUpLeg, RightLeg, RightFoot, RightToeBase
-            0x30, 0x38, 0x40, 0x28, 0x20 // Spine, Spine1, Spine2, Neck, Head
+            0x30, 0x38, 0x40, 0x28, 0x20, // Spine, Spine1, Spine2, Neck, Head
+            0x48, 0x50, 0x58, 0x60,     // LeftShoulder, LeftUpperarm, LeftForearm, LeftHand
+            0x68, 0x70, 0x78, 0x80,     // RightShoulder, RightUpperarm, RightForearm, RightHand
+            0x250                         // WeaponContainer (central held model)
         };
         const float yawWeights[] = {
             0.40f,
             0.18f, 0.12f, 0.08f, 0.04f,
            -0.18f,-0.12f,-0.08f,-0.04f,
-            0.22f, 0.28f, 0.30f, 0.12f, 0.08f
+            0.22f, 0.28f, 0.30f, 0.12f, 0.08f,
+            0.20f, 0.26f, 0.18f, 0.10f,
+           -0.20f,-0.26f,-0.18f,-0.10f,
+            0.34f
         };
         const float pitchWeights[] = {
             0.10f,
             0.28f,-0.22f, 0.16f,-0.08f,
            -0.28f, 0.22f,-0.16f, 0.08f,
-            0.05f, 0.10f, 0.15f, 0.30f, 0.40f
+            0.05f, 0.10f, 0.15f, 0.30f, 0.40f,
+            0.18f,-0.24f, 0.20f,-0.12f,
+           -0.18f, 0.24f,-0.20f, 0.12f,
+            0.22f
         };
         const float rollWeights[] = {
             0.18f,
             0.20f,-0.16f, 0.12f,-0.08f,
            -0.20f, 0.16f,-0.12f, 0.08f,
-            0.04f,-0.04f, 0.06f,-0.08f, 0.10f
+            0.04f,-0.04f, 0.06f,-0.08f, 0.10f,
+            0.30f,-0.26f, 0.22f,-0.16f,
+           -0.30f, 0.26f,-0.22f, 0.16f,
+            0.24f
         };
         const float roll = (phase & 1) ? 42.0f : -42.0f;
         bool wrote = false;
@@ -7026,7 +7038,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 (silentAntiAimHookReady ? "Input + detached snapshot hooks installed" : "Anti-aim hooks failed to install"));
         }
         ImGui::Spacing();
-        ImGui::TextWrapped("Post-Mecanim full-body jitter rotates hips, both leg chains, spine, neck and head. Camera AimingData is never modified.");
+        ImGui::TextWrapped("Post-Mecanim full-body jitter rotates hips, legs, torso, shoulders, arms, hands, head and the held model. Camera AimingData is never modified.");
         ImGui::TextDisabled("late:%ld bones:%ld set:%ld get:%ld in:%ld out:%ld",
             InterlockedCompareExchange(&silentAntiAimLateAimCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimBonePasses, 0, 0),
