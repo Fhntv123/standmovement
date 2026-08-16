@@ -275,9 +275,12 @@ struct Matrix16 {
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0x86C0E0
 #define OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE      0x86C9A0  // AimController.riz(Vector3)
 #define OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE      0x86C9F0  // AimController.rja() -> Vector3
+#define OFFSET_AIMCONTROLLER_LATE_AIM                0x86C5A0  // AimController.qod(), post-Mecanim aim pass
 #define OFFSET_AIMINGDATA_CLONE                      0x86F9C0
 #define OFFSET_TRANSFORM_GET_EULERANGLES            0x2F066B0
 #define OFFSET_TRANSFORM_SET_EULERANGLES            0x2F07020
+#define OFFSET_TRANSFORM_GET_LOCALEULERANGLES       0x2F06890
+#define OFFSET_TRANSFORM_SET_LOCALEULERANGLES       0x2F07100
 #define OFFSET_COMPONENT_GET_GAMEOBJECT             0x2EF2CA0
 #define OFFSET_OBJECT_INSTANTIATE                    0x2EFA020
 #define OFFSET_OBJECT_DESTROY                        0x2EF95C0
@@ -435,6 +438,8 @@ volatile LONG silentAntiAimDirectiveSetCalls = 0;
 volatile LONG silentAntiAimDirectiveGetCalls = 0;
 volatile LONG silentAntiAimDirectiveApplied = 0;
 volatile LONG silentAntiAimPoseApplied = 0;
+volatile LONG silentAntiAimLateAimCalls = 0;
+volatile LONG silentAntiAimBonePasses = 0;
 char silentAntiAimStatus[96] = "Disabled";
 bool thirdPersonEnabled = false;
 uintptr_t customizedThirdPersonPlayer = 0;
@@ -1722,6 +1727,8 @@ Vector3(__fastcall* o_Transform_get_position)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_forward)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_eulerAngles)(uintptr_t) = nullptr;
 void(__fastcall* o_Transform_set_eulerAngles)(uintptr_t, Vector3) = nullptr;
+Vector3(__fastcall* o_Transform_get_localEulerAngles)(uintptr_t) = nullptr;
+void(__fastcall* o_Transform_set_localEulerAngles)(uintptr_t, Vector3) = nullptr;
 
 uintptr_t(__fastcall* o_Component_get_transform)(uintptr_t) = nullptr;
 
@@ -1910,6 +1917,7 @@ void(__fastcall* o_AimController_ApplySnapshot)(uintptr_t, uintptr_t, const Il2C
 uintptr_t(__fastcall* o_AimController_GetSnapshot)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 Vector3(__fastcall* o_AimController_GetHeadDirective)(uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_AimController_LateAim)(uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_AimingData_Clone)(uintptr_t, const Il2CppMethod*) = nullptr;
 
 
@@ -3091,6 +3099,50 @@ static bool IsLocalAimControllerUnsafe(uintptr_t aimController)
     }
 }
 
+static void ApplySilentDirectionJitterBonesUnsafe(uintptr_t aimController)
+{
+    if (!aimController || !o_Transform_get_localEulerAngles ||
+        !o_Transform_set_localEulerAngles)
+        return;
+    __try {
+        // Generated dump/il2cpp.h proves inherited Controller.bzvf is BipedMap at +0x28.
+        const uintptr_t bipedMap =
+            *reinterpret_cast<uintptr_t*>(aimController + 0x28);
+        if (!bipedMap) return;
+        const float yawOffsets[4] = { 90.0f, 180.0f, 270.0f, 0.0f };
+        const int phase = static_cast<int>((GetTickCount64() / 180ULL) & 3ULL);
+        const float yaw = yawOffsets[phase];
+        const float pitch = (phase & 1) ? 55.0f : -55.0f;
+        // Apply after the game's own qod aim pass. Spine chain gets distributed yaw;
+        // neck/head get the comic pitch. FPSCamera/AimingData are separate fields.
+        const uintptr_t boneOffsets[5] = { 0x30, 0x38, 0x40, 0x28, 0x20 };
+        const float yawWeights[5] = { 0.22f, 0.28f, 0.30f, 0.12f, 0.08f };
+        const float pitchWeights[5] = { 0.05f, 0.10f, 0.15f, 0.30f, 0.40f };
+        bool wrote = false;
+        for (int i = 0; i < 5; ++i) {
+            const uintptr_t bone =
+                *reinterpret_cast<uintptr_t*>(bipedMap + boneOffsets[i]);
+            if (!bone) continue;
+            Vector3 local = o_Transform_get_localEulerAngles(bone);
+            local.y += yaw * yawWeights[i];
+            local.x += pitch * pitchWeights[i];
+            o_Transform_set_localEulerAngles(bone, local);
+            wrote = true;
+        }
+        if (wrote) InterlockedIncrement(&silentAntiAimBonePasses);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+void __fastcall hk_AimController_LateAim(
+    uintptr_t aimController, const Il2CppMethod* method)
+{
+    InterlockedIncrement(&silentAntiAimLateAimCalls);
+    o_AimController_LateAim(aimController, method);
+    if (silentAntiAimEnabled && IsLocalAimControllerUnsafe(aimController))
+        ApplySilentDirectionJitterBonesUnsafe(aimController);
+}
+
 void __fastcall hk_AimController_SetHeadDirective(
     uintptr_t aimController, Vector3 angles, const Il2CppMethod* method)
 {
@@ -3295,30 +3347,6 @@ static void CancelVisibleAimbotCamera()
     visibleAimbotAimingData = 0;
 }
 
-static void ApplySilentDirectionJitterPoseUnsafe()
-{
-    if (!silentAntiAimEnabled || !liveHudLocalPlayer ||
-        !o_Transform_set_eulerAngles)
-        return;
-    __try {
-        const uintptr_t aimController =
-            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
-        if (!aimController) return;
-        // AimController.spineDirector (+0x68) is the rendered TPS aim pivot.
-        // FPSCamera (+0x70) and live AimingData (+0x88) are not touched.
-        const uintptr_t spineDirector =
-            *reinterpret_cast<uintptr_t*>(aimController + 0x68);
-        if (!spineDirector) return;
-        const Vector3 realAim = silentAntiAimLatestInputValid ?
-            silentAntiAimLatestRealAimAngle :
-            *reinterpret_cast<Vector3*>(aimController + 0xC0);
-        o_Transform_set_eulerAngles(
-            spineDirector, GetSilentDirectionJitterAngles(realAim));
-        InterlockedIncrement(&silentAntiAimPoseApplied);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-}
-
 static bool SendPendingPixelSurfChatMessageUnsafe()
 {
     if (!o_GameChatHud_SendMessage || !g_il2cpp.string_new) return false;
@@ -3348,7 +3376,6 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
-    ApplySilentDirectionJitterPoseUnsafe();
     if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
         SendPendingPixelSurfChatMessageUnsafe();
     UpdateFrozenCorpses();
@@ -6966,6 +6993,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&silentAntiAimDirectiveGetCalls, 0);
             InterlockedExchange(&silentAntiAimDirectiveApplied, 0);
             InterlockedExchange(&silentAntiAimPoseApplied, 0);
+            InterlockedExchange(&silentAntiAimLateAimCalls, 0);
+            InterlockedExchange(&silentAntiAimBonePasses, 0);
             silentAntiAimLatestInputValid = false;
             silentAntiAimLatestFiring = false;
             silentAntiAimLatestPlayer = 0;
@@ -6974,12 +7003,12 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
         ImGui::Spacing();
         ImGui::TextWrapped("Native head-directive set/get and detached snapshots cycle right, back, left and forward. Camera AimingData is never modified.");
-        ImGui::TextDisabled("pose:%ld set:%ld get:%ld apply:%ld changed:%ld out:%ld",
-            InterlockedCompareExchange(&silentAntiAimPoseApplied, 0, 0),
+        ImGui::TextDisabled("late:%ld bones:%ld set:%ld get:%ld in:%ld out:%ld",
+            InterlockedCompareExchange(&silentAntiAimLateAimCalls, 0, 0),
+            InterlockedCompareExchange(&silentAntiAimBonePasses, 0, 0),
             InterlockedCompareExchange(&silentAntiAimDirectiveSetCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimDirectiveGetCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimApplySnapshotCalls, 0, 0),
-            InterlockedCompareExchange(&silentAntiAimDirectiveApplied, 0, 0),
             InterlockedCompareExchange(&silentAntiAimAppliedCalls, 0, 0));
         ImGui::EndChild();
     }
@@ -7460,6 +7489,8 @@ DWORD WINAPI HackThread(LPVOID)
     o_Transform_get_forward = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_FORWARD);
     o_Transform_get_eulerAngles = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_EULERANGLES);
     o_Transform_set_eulerAngles = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_EULERANGLES);
+    o_Transform_get_localEulerAngles = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_LOCALEULERANGLES);
+    o_Transform_set_localEulerAngles = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_LOCALEULERANGLES);
 
     o_Component_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_TRANSFORM);
 
@@ -7584,6 +7615,14 @@ DWORD WINAPI HackThread(LPVOID)
         hitLogEnabled = false;
     o_AimingData_Clone = (uintptr_t(__fastcall*)(uintptr_t, const Il2CppMethod*))
         (base + OFFSET_AIMINGDATA_CLONE);
+    const MH_STATUS antiAimLateAimCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM),
+        hk_AimController_LateAim,
+        (LPVOID*)&o_AimController_LateAim);
+    const MH_STATUS antiAimLateAimEnableStatus =
+        antiAimLateAimCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM)) :
+        antiAimLateAimCreateStatus;
     const MH_STATUS antiAimDirectiveCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE),
         hk_AimController_SetHeadDirective,
@@ -7624,7 +7663,9 @@ DWORD WINAPI HackThread(LPVOID)
     const MH_STATUS antiAimInputEnableStatus = antiAimInputCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND)) :
         antiAimInputCreateStatus;
-    silentAntiAimHookReady = antiAimDirectiveCreateStatus == MH_OK &&
+    silentAntiAimHookReady = antiAimLateAimCreateStatus == MH_OK &&
+        antiAimLateAimEnableStatus == MH_OK &&
+        antiAimDirectiveCreateStatus == MH_OK &&
         antiAimDirectiveEnableStatus == MH_OK &&
         antiAimDirectiveGetCreateStatus == MH_OK &&
         antiAimDirectiveGetEnableStatus == MH_OK &&
@@ -7643,7 +7684,8 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimFallbackCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_PLAYERCONTROLLER_COMMAND)) :
         antiAimFallbackCreateStatus;
-    LINDY_LOG("[anti-aim] AimController.riz create=%d enable=%d; rja create=%d enable=%d; qdq create=%d enable=%d; qdr create=%d enable=%d; KeyboardControl.bbft create=%d enable=%d ready=%d; qhq diagnostic create=%d enable=%d",
+    LINDY_LOG("[anti-aim] qod create=%d enable=%d; riz create=%d enable=%d; rja create=%d enable=%d; qdq create=%d enable=%d; qdr create=%d enable=%d; KeyboardControl.bbft create=%d enable=%d ready=%d; qhq diagnostic create=%d enable=%d",
+        (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
         (int)antiAimDirectiveCreateStatus, (int)antiAimDirectiveEnableStatus,
         (int)antiAimDirectiveGetCreateStatus, (int)antiAimDirectiveGetEnableStatus,
         (int)antiAimApplySnapshotCreateStatus, (int)antiAimApplySnapshotEnableStatus,
