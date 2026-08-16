@@ -214,6 +214,8 @@ struct Matrix16 {
 #define OFFSET_OBJECT_FIND_OBJECTS_OF_TYPE            0x2EF9B30
 #define OFFSET_OBJECT_OP_IMPLICIT                     0x2EFADC0
 #define OFFSET_PHYSICS_RAYCAST_HIT                    0x2F55FE0
+#define OFFSET_PHYSICS_RAYCAST_ALL                    0x2F54060
+#define OFFSET_SURFACE_IS_PENETRABLE                  0x9A33F0
 #define OFFSET_RAYCASTHIT_GET_COLLIDER                0x2F57A70
 #define OFFSET_COMPONENT_GET_IN_PARENT                0x2EF29E0
 #define OFFSET_COMPONENT_GET_IN_CHILDREN              0x2EF2950
@@ -1876,6 +1878,8 @@ void(__fastcall* o_AimView_UpdateSniperPanels)(uintptr_t, float, float, const Il
 uintptr_t(__fastcall* o_Component_get_gameObject)(uintptr_t) = nullptr;
 bool(__fastcall* o_Object_IsAlive)(uintptr_t, const Il2CppMethod*) = nullptr;
 bool(__fastcall* o_Physics_RaycastHit)(Vector3, Vector3, RaycastHitNative*, float, int, int, const Il2CppMethod*) = nullptr;
+Il2CppArray*(__fastcall* o_Physics_RaycastAll)(Vector3, Vector3, float, int, int, const Il2CppMethod*) = nullptr;
+bool(__fastcall* o_Surface_IsPenetrable)(int, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_RaycastHit_get_collider)(RaycastHitNative*, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Component_GetInParent)(uintptr_t, uintptr_t, bool, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Component_GetInChildren)(uintptr_t, uintptr_t, bool, const Il2CppMethod*) = nullptr;
@@ -4411,10 +4415,9 @@ static bool ProbePenetrableSurfaceUnsafe(Vector3 origin, Vector3 direction, floa
                 items + 0x20 + static_cast<uintptr_t>(i) * sizeof(uintptr_t));
             if (!penetration) continue;
             const int type = *reinterpret_cast<int*>(penetration + 0x28); // cjv.cegl / cjw
-            // Character is a player/ragdoll segment, never a penetrable map wall.
-            // Unknown/ground/trigger/water classes are also not wallbang geometry.
-            if (type <= 0 || type == 13 || type == 14 || type == 15 ||
-                type == 18 || type == 20 || type == 21 || type == 23 || type == 24) continue;
+            // cjs.wxp(cjw): the exact native surface predicate used by HitCaster.
+            // Character is additionally rejected so players/ragdolls never enter the wall cache.
+            if (type == 13 || !o_Surface_IsPenetrable || !o_Surface_IsPenetrable(type, nullptr)) continue;
             const Vector3 candidate = *reinterpret_cast<Vector3*>(penetration + 0x10);
             const float dx = candidate.x - origin.x, dy = candidate.y - origin.y, dz = candidate.z - origin.z;
             const float distance = sqrtf(dx * dx + dy * dy + dz * dz);
@@ -4426,14 +4429,29 @@ static bool ProbePenetrableSurfaceUnsafe(Vector3 origin, Vector3 direction, floa
         }
         if (!selected) return false;
         *surfaceType = selectedType;
-        // Start immediately before this exact cjv entry. A ray from the camera would
-        // return an earlier player/corpse collider and associate the wrong Renderer.
-        const float backoff = (std::min)(0.10f, entryDistance * 0.5f);
-        const Vector3 localOrigin(entry.x - direction.x * backoff,
-            entry.y - direction.y * backoff, entry.z - direction.z * backoff);
-        RaycastHitNative hit = {};
-        if (!o_Physics_RaycastHit(localOrigin, direction, &hit, backoff + 0.20f, -1, 1, nullptr)) return false;
-        const uintptr_t collider = o_RaycastHit_get_collider(&hit, nullptr);
+        // Use every collider from the original Auto Wall ray and choose the one whose
+        // hit distance matches this exact native cjv entry. Starting a new ray inside
+        // geometry created detached/empty visuals and often selected no wall at all.
+        if (!o_Physics_RaycastAll) return false;
+        Il2CppArray* allHits = o_Physics_RaycastAll(origin, direction,
+            entryDistance + 0.75f, -1, 1, nullptr);
+        const uintptr_t hitArray = reinterpret_cast<uintptr_t>(allHits);
+        const size_t hitCount = hitArray ? *reinterpret_cast<size_t*>(hitArray + 0x18) : 0;
+        if (!hitCount || hitCount > 256) return false;
+        RaycastHitNative selectedHit = {};
+        float bestDelta = 0.40f;
+        bool haveHit = false;
+        for (size_t i = 0; i < hitCount; ++i) {
+            const RaycastHitNative candidateHit = *reinterpret_cast<RaycastHitNative*>(
+                hitArray + 0x20 + i * sizeof(RaycastHitNative));
+            const float delta = fabsf(candidateHit.distance - entryDistance);
+            if (!isfinite(candidateHit.distance) || candidateHit.distance < 0.0f || delta >= bestDelta) continue;
+            selectedHit = candidateHit;
+            bestDelta = delta;
+            haveHit = true;
+        }
+        if (!haveHit) return false;
+        const uintptr_t collider = o_RaycastHit_get_collider(&selectedHit, nullptr);
         if (!collider) return false;
         uintptr_t found = o_Component_GetInParent(collider, rendererType, true, nullptr);
         if (!found) found = o_Component_GetInChildren(collider, rendererType, true, nullptr);
@@ -4588,12 +4606,8 @@ static void ApplyPenetrableSurfaceEntry(PenetrableSurfaceVisual& entry)
     std::vector<uintptr_t> transparentMaterials(
         entry.originalMaterials.size(), penetrableSurfaceMaterial);
     SetRendererMaterialArray(entry.renderer, transparentMaterials);
-    if (!IsUnityObjectAliveUnsafe(entry.outlineObject)) {
-        entry.outlineObject = 0;
-        entry.outlineRenderer = 0;
-        CreateOutlineCloneUnsafe(entry.renderer, penetrableSurfaceOutlineMaterial,
-            &entry.outlineObject, &entry.outlineRenderer);
-    }
+    // Never instantiate/scale map renderers: static-batched walls produced phantom
+    // invisible objects. Highlight only the exact confirmed wall Renderer in place.
 }
 
 static void UpdatePenetrableSurfaceVisualization()
@@ -4663,7 +4677,7 @@ static void UpdatePenetrableSurfaceVisualization()
             ++it;
         }
     }
-    sprintf_s(penetrableSurfaceStatus, "World scan 100%%: %zu wall(s), %zu new hit(s)",
+    sprintf_s(penetrableSurfaceStatus, "Auto Wall scan: %zu wall(s), %zu confirmed hit(s)",
         penetrableSurfaceVisuals.size(), hitsThisStep);
 }
 
@@ -6899,7 +6913,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (penetrableSurfacesEnabled) {
             ImGui::TextDisabled("360-degree native wallbang scan around you");
             ImGui::ColorEdit3("Penetrable Fill", penetrableSurfaceFillColor);
-            ImGui::ColorEdit3("Penetrable Outline", penetrableSurfaceOutlineColor);
+            ImGui::TextDisabled("Uses Auto Wall native surface rules");
             ImGui::SliderFloat("Penetrable Transparency", &penetrableSurfaceAlpha, 0.05f, 0.80f, "%.2f");
             ImGui::SliderFloat("Penetrable World Radius", &penetrableSurfaceScanDistance, 10.0f, 250.0f, "%.0f m");
             ImGui::TextDisabled("%s", penetrableSurfaceStatus);
@@ -7394,6 +7408,8 @@ DWORD WINAPI HackThread(LPVOID)
     o_Component_get_gameObject = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_GAMEOBJECT);
     o_Object_IsAlive = (bool(__fastcall*)(uintptr_t, const Il2CppMethod*))(base + OFFSET_OBJECT_OP_IMPLICIT);
     o_Physics_RaycastHit = (bool(__fastcall*)(Vector3, Vector3, RaycastHitNative*, float, int, int, const Il2CppMethod*))(base + OFFSET_PHYSICS_RAYCAST_HIT);
+    o_Physics_RaycastAll = (Il2CppArray*(__fastcall*)(Vector3, Vector3, float, int, int, const Il2CppMethod*))(base + OFFSET_PHYSICS_RAYCAST_ALL);
+    o_Surface_IsPenetrable = (bool(__fastcall*)(int, const Il2CppMethod*))(base + OFFSET_SURFACE_IS_PENETRABLE);
     o_RaycastHit_get_collider = (uintptr_t(__fastcall*)(RaycastHitNative*, const Il2CppMethod*))(base + OFFSET_RAYCASTHIT_GET_COLLIDER);
     o_Component_GetInParent = (uintptr_t(__fastcall*)(uintptr_t, uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_COMPONENT_GET_IN_PARENT);
     o_Component_GetInChildren = (uintptr_t(__fastcall*)(uintptr_t, uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_COMPONENT_GET_IN_CHILDREN);
