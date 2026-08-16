@@ -173,135 +173,135 @@ struct Matrix16 {
 
 // CharacterController methods
 
-#define OFFSET_CHARACTERCONTROLLER_GET_ISGROUNDED  0x2F4DEB0
+#define OFFSET_CHARACTERCONTROLLER_GET_ISGROUNDED  0x34CEF60
 
-#define OFFSET_CHARACTERCONTROLLER_MOVE            0x2F4DD80
+#define OFFSET_CHARACTERCONTROLLER_MOVE            0x34CEE30
 
-#define OFFSET_CHARACTERCONTROLLER_GET_VELOCITY    0x2F4DF80
-#define OFFSET_TIME_GET_DELTATIME                   0x2F048A0
+#define OFFSET_CHARACTERCONTROLLER_GET_VELOCITY    0x34CF030
+#define OFFSET_TIME_GET_DELTATIME                   0x3489450
 
-#define OFFSET_TRANSFORM_GET_POSITION              0x2F06CE0
-#define OFFSET_TRANSFORM_GET_FORWARD               0x2F06780
+#define OFFSET_TRANSFORM_GET_POSITION              0x348B9F0
+#define OFFSET_TRANSFORM_GET_FORWARD               0x348B490
 
-#define OFFSET_COMPONENT_GET_TRANSFORM             0x2EF2D50
+#define OFFSET_COMPONENT_GET_TRANSFORM             0x34747D0
 
-#define OFFSET_GET_PLAYERCONTROLLER                0x83F820  // PlayerManager.qjm() -> dcvh (current player controller)
+#define OFFSET_GET_PLAYERCONTROLLER                0xBEA600  // PlayerManager.ncm() -> current player controller
 
-#define OFFSET_CAMERA_MAIN                         0x2EC1090
+#define OFFSET_CAMERA_MAIN                         0x3442EC0
 
-#define OFFSET_CAMERA_SET_FIELDOFVIEW              0x2EC1A80
+#define OFFSET_CAMERA_SET_FIELDOFVIEW              0x34438B0
 
-#define OFFSET_CAMERA_SET_BACKGROUNDCOLOR          0x2EC1890
+#define OFFSET_CAMERA_SET_BACKGROUNDCOLOR          0x34436C0
 
-#define OFFSET_CAMERA_SET_CLEARFLAGS               0x2EC1920
+#define OFFSET_CAMERA_SET_CLEARFLAGS               0x3443750
 
-#define OFFSET_TEXTURE2D_CTOR                      0x2EDB780
-#define OFFSET_IMAGECONVERSION_LOADIMAGE           0x2F2B980
-#define OFFSET_SHADER_FIND                         0x2ED9DD0
-#define OFFSET_MATERIAL_CTOR                       0x2ECEA40
-#define OFFSET_MATERIAL_COPY_CTOR                  0x2ECEB30
-#define OFFSET_MATERIAL_SET_SHADER                 0x2ECF430
-#define OFFSET_MATERIAL_SET_MAINTEXTURE            0x2ECF320
-#define OFFSET_RENDERER_GET_MATERIAL                0x2ED8EA0
-#define OFFSET_RENDERER_SET_MATERIAL                0x2ED9230
-#define OFFSET_RENDERER_GET_MATERIALS                0x2ED8E20
-#define OFFSET_RENDERER_IS_STATIC_BATCH              0x2ED9370
-#define OFFSET_RENDERER_SET_MATERIALS                0x2ED91C0
-#define OFFSET_RENDERER_GET_ENABLED                  0x2ED9330
-#define OFFSET_RENDERER_SET_ENABLED                  0x2ED9560
-#define OFFSET_SKINNEDMESHRENDERER_SET_UPDATE_WHEN_OFFSCREEN 0x2EDA260
-#define OFFSET_OBJECT_OCCLUDEE_SET_VISIBLE_STATE    0x886240
-#define OFFSET_OBJECT_FIND_OBJECTS_OF_TYPE            0x2EF9B30
-#define OFFSET_OBJECT_OP_IMPLICIT                     0x2EFADC0
-#define OFFSET_PHYSICS_RAYCAST_HIT                    0x2F55FE0
-#define OFFSET_PHYSICS_RAYCAST_ALL                    0x2F54060
-#define OFFSET_RAYCASTHIT_GET_COLLIDER                0x2F57A70
-#define OFFSET_COMPONENT_GET_IN_PARENT                0x2EF29E0
-#define OFFSET_COMPONENT_GET_TAG                      0x2EF2CE0
-#define OFFSET_SURFACE_TYPE_FROM_TAG                  0x9A3D60
-#define OFFSET_COMPONENT_GET_IN_CHILDREN              0x2EF2950
-#define OFFSET_TRANSFORM_GET_PARENT                   0x2F05E10
-#define OFFSET_MATERIAL_GET_COLOR                   0x2ECEBB0
-#define OFFSET_MATERIAL_SET_COLOR                   0x2ECF040
-#define OFFSET_MATERIAL_SET_RENDERQUEUE             0x2ECF3F0
-#define OFFSET_MATERIAL_SET_FLOAT                   0x2ECE360
-#define OFFSET_MATERIAL_HAS_PROPERTY                0x2ECE050
-#define OFFSET_MATERIAL_GET_COLOR_ID                0x2ECD9E0
-#define OFFSET_MATERIAL_SET_COLOR_ID                0x2ECE1E0
-#define OFFSET_SHADER_PROPERTY_TO_ID                0x2ED9E40
-#define OFFSET_RENDERSETTINGS_GET_FOG               0x2ED8D30
-#define OFFSET_RENDERSETTINGS_GET_FOG_START         0x2ED8D00
-#define OFFSET_RENDERSETTINGS_GET_FOG_END           0x2ED8CD0
-#define OFFSET_RENDERSETTINGS_GET_FOG_COLOR         0x2ED8C20
-#define OFFSET_RENDERSETTINGS_GET_FOG_DENSITY       0x2ED8CA0
-#define OFFSET_RENDERSETTINGS_GET_SKYBOX            0x2ED8D60
-#define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x2ED8D90
-#define OFFSET_GLOVES_SET_ARMS                    0x8F8110
-#define OFFSET_ARMSLOD_SET_VISIBLE                 0x81F1E0
-#define OFFSET_WEAPONRY_TAKE_WEAPON                0x8491C0
-#define OFFSET_GUNCONTROLLER_FIRE                  0x996BE0
-#define OFFSET_GUNCONTROLLER_COMMAND               0x998290
-#define OFFSET_HITCASTER_CAST                      0x99FBB0
-#define OFFSET_RAGDOLL_ACTIVATE                    0x85E690  // RagdollController.qvf
-#define OFFSET_RAGDOLL_MANAGER_RELEASE             0x860530  // RagdollManager.qvw
-#define OFFSET_RIGIDBODY_GET_IS_KINEMATIC          0x2F58060
-#define OFFSET_RIGIDBODY_SET_IS_KINEMATIC          0x2F58530
-#define OFFSET_RIGIDBODY_SET_VELOCITY              0x2F587A0
-#define OFFSET_RIGIDBODY_SET_ANGULAR_VELOCITY      0x2F58360
-#define OFFSET_AIMVIEW_AWAKE                       0xA60AA0
-#define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
-#define OFFSET_HUDVIEW_UPDATE                       0xA68C60
-#define OFFSET_GAMECHATHUD_SEND_MESSAGE               0x9FD8E0  // GameChatHud.znr(string)
-#define OFFSET_HITMARKERVIEW_SHOW                    0xA6AFC0
-#define OFFSET_HITMARKERVIEW_LOCAL_HIT               0xA6B470  // HitMarkerView.bbcz(PlayerController, chv)
-#define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xA5D6C0
-#define OFFSET_CHEAT_RUNTIME_SET_BHOP              0xA5DD90
-#define OFFSET_PLAYERCONTROLLER_COMMAND             0x83D210
-#define OFFSET_PLAYERCONTROLLER_GET_ACTOR           0x83ABA0  // PlayerController.qgk() -> eva
-#define OFFSET_PLAYERMANAGER_PLAYER_EVENT_A          0x840BF0  // PlayerManager.qkb(PlayerController)
-#define OFFSET_PLAYERMANAGER_PLAYER_EVENT_B          0x840DE0  // PlayerManager.qkc(PlayerController)
-#define OFFSET_PLAYERMANAGER_PLAYER_EVENT_C          0x840E10  // PlayerManager.qkd(PlayerController)
-#define OFFSET_WEAPONCONTROLLER_GET_ID                0x5409B0  // WeaponController.whs() -> glg
-#define OFFSET_PLAYER_HEALTH_GET_CURRENT               0x8B77E0  // bqw.scy() after network updates
-#define OFFSET_PLAYER_HEALTH_APPLY_A                   0x8B6B70  // bqw.scu(...)
-#define OFFSET_PLAYER_HEALTH_APPLY_B                   0x8B6F90  // bqw.scv(...)
-#define OFFSET_PLAYER_HEALTH_APPLY_C                   0x8B7210  // bqw.scw(...)
-#define OFFSET_PLAYER_HEALTH_APPLY_D                   0x8B7660  // bqw.scx(...)
-#define OFFSET_PLAYER_HIT_CONFIRMED_A                  0x87A690  // PlayerHitController.ria(boo)
-#define OFFSET_PLAYER_HIT_CONFIRMED_B                  0x87A890  // PlayerHitController.rib(boo)
-#define OFFSET_DAMAGE_RESULT_GET_HEALTH                0x880990  // boo.rfu() / dcxl
-#define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xA6E220
-#define OFFSET_PLAYERCONTROLS_UPDATE                 0xA70320
-#define OFFSET_CAMERAMOVEMENTCONTROLLER_UPDATE       0xA78D50
-#define OFFSET_CAMERAMOVEMENTCONTROLLER_FIXEDUPDATE 0xA78CC0
-#define OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT         0x86C060  // AimController.qdq(AimSnapshot)
-#define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0x86C0E0
-#define OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE      0x86C9A0  // AimController.riz(Vector3)
-#define OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE      0x86C9F0  // AimController.rja() -> Vector3
-#define OFFSET_CAMERA_FIRE_ON_PRE_CULL                0x2EBF8F0 // Camera.FireOnPreCull(Camera), final render boundary
-#define OFFSET_AIMINGDATA_CLONE                      0x86F9C0
-#define OFFSET_TRANSFORM_GET_EULERANGLES            0x2F066B0
-#define OFFSET_TRANSFORM_SET_EULERANGLES            0x2F07020
-#define OFFSET_TRANSFORM_GET_LOCALEULERANGLES       0x2F06890
-#define OFFSET_TRANSFORM_SET_LOCALEULERANGLES       0x2F07100
-#define OFFSET_COMPONENT_GET_GAMEOBJECT             0x2EF2CA0
-#define OFFSET_OBJECT_INSTANTIATE                    0x2EFA020
-#define OFFSET_OBJECT_DESTROY                        0x2EF95C0
-#define OFFSET_TRANSFORM_GET_LOCALSCALE              0x2F06AF0
-#define OFFSET_TRANSFORM_SET_LOCALSCALE              0x2F07320
-#define OFFSET_GAMEOBJECT_SETACTIVE                 0x2EF6620
-#define OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY     0x2EF6A20
-#define OFFSET_CANVASGROUP_SET_ALPHA                0x312A590
+#define OFFSET_TEXTURE2D_CTOR                      0x345D030
+#define OFFSET_IMAGECONVERSION_LOADIMAGE           0x34ACD00
+#define OFFSET_SHADER_FIND                         0x345B670
+#define OFFSET_MATERIAL_CTOR                       0x34506B0
+#define OFFSET_MATERIAL_COPY_CTOR                  0x34507A0
+#define OFFSET_MATERIAL_SET_SHADER                 0x34510A0
+#define OFFSET_MATERIAL_SET_MAINTEXTURE            0x3450F90
+#define OFFSET_RENDERER_GET_MATERIAL                0x345A740
+#define OFFSET_RENDERER_SET_MATERIAL                0x345AAD0
+#define OFFSET_RENDERER_GET_MATERIALS                0x345A6C0
+#define OFFSET_RENDERER_IS_STATIC_BATCH              0x345AC10
+#define OFFSET_RENDERER_SET_MATERIALS                0x345AA60
+#define OFFSET_RENDERER_GET_ENABLED                  0x345ABD0
+#define OFFSET_RENDERER_SET_ENABLED                  0x345AE00
+#define OFFSET_SKINNEDMESHRENDERER_SET_UPDATE_WHEN_OFFSCREEN 0x345BB00
+#define OFFSET_OBJECT_OCCLUDEE_SET_VISIBLE_STATE    0xC26260
+#define OFFSET_OBJECT_FIND_OBJECTS_OF_TYPE            0x347B5D0
+#define OFFSET_OBJECT_OP_IMPLICIT                     0x347C930
+#define OFFSET_PHYSICS_RAYCAST_HIT                    0x34D70B0
+#define OFFSET_PHYSICS_RAYCAST_ALL                    0x34D5130
+#define OFFSET_RAYCASTHIT_GET_COLLIDER                0x34D8B70
+#define OFFSET_COMPONENT_GET_IN_PARENT                0x3474410
+#define OFFSET_COMPONENT_GET_TAG                      0x3474760
+#define OFFSET_SURFACE_TYPE_FROM_TAG                  0xA2A1B0
+#define OFFSET_COMPONENT_GET_IN_CHILDREN              0x3474380
+#define OFFSET_TRANSFORM_GET_PARENT                   0x348AA60
+#define OFFSET_MATERIAL_GET_COLOR                   0x3450820
+#define OFFSET_MATERIAL_SET_COLOR                   0x3450CB0
+#define OFFSET_MATERIAL_SET_RENDERQUEUE             0x3451060
+#define OFFSET_MATERIAL_SET_FLOAT                   0x344FFD0
+#define OFFSET_MATERIAL_HAS_PROPERTY                0x344FCC0
+#define OFFSET_MATERIAL_GET_COLOR_ID                0x344F680
+#define OFFSET_MATERIAL_SET_COLOR_ID                0x344FE50
+#define OFFSET_SHADER_PROPERTY_TO_ID                0x345B6E0
+#define OFFSET_RENDERSETTINGS_GET_FOG               0x345A5D0
+#define OFFSET_RENDERSETTINGS_GET_FOG_START         0x345A5A0
+#define OFFSET_RENDERSETTINGS_GET_FOG_END           0x345A570
+#define OFFSET_RENDERSETTINGS_GET_FOG_COLOR         0x345A4C0
+#define OFFSET_RENDERSETTINGS_GET_FOG_DENSITY       0x345A540
+#define OFFSET_RENDERSETTINGS_GET_SKYBOX            0x345A600
+#define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x345A630
+#define OFFSET_GLOVES_SET_ARMS                    0x966490
+#define OFFSET_ARMSLOD_SET_VISIBLE                 0xBCCFA0
+#define OFFSET_WEAPONRY_TAKE_WEAPON                0xBFA0C0
+#define OFFSET_GUNCONTROLLER_FIRE                  0xA21040
+#define OFFSET_GUNCONTROLLER_COMMAND               0xA1E030
+#define OFFSET_HITCASTER_CAST                      0x0
+#define OFFSET_RAGDOLL_ACTIVATE                    0xBF4810  // RagdollController.nol
+#define OFFSET_RAGDOLL_MANAGER_RELEASE             0xBF67B0  // RagdollManager.npc
+#define OFFSET_RIGIDBODY_GET_IS_KINEMATIC          0x34D92F0
+#define OFFSET_RIGIDBODY_SET_IS_KINEMATIC          0x34D97C0
+#define OFFSET_RIGIDBODY_SET_VELOCITY              0x34D9A30
+#define OFFSET_RIGIDBODY_SET_ANGULAR_VELOCITY      0x34D95F0
+#define OFFSET_AIMVIEW_AWAKE                       0xB283C0
+#define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xB29290
+#define OFFSET_HUDVIEW_UPDATE                       0xB45320
+#define OFFSET_GAMECHATHUD_SEND_MESSAGE               0xA95F70  // GameChatHud.ywa(string)
+#define OFFSET_HITMARKERVIEW_SHOW                    0xB47680
+#define OFFSET_HITMARKERVIEW_LOCAL_HIT               0xB47B30  // HitMarkerView.bbru(PlayerController, ccv)
+#define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xAEFED0
+#define OFFSET_CHEAT_RUNTIME_SET_BHOP              0xAF0760
+#define OFFSET_PLAYERCONTROLLER_COMMAND             0xBD6B50
+#define OFFSET_PLAYERCONTROLLER_GET_ACTOR           0xBD4730  // PlayerController.mzj() -> dwg
+#define OFFSET_PLAYERMANAGER_PLAYER_EVENT_A          0xBEB260  // PlayerManager.ndb(PlayerController)
+#define OFFSET_PLAYERMANAGER_PLAYER_EVENT_B          0xBEB430  // PlayerManager.ndc(PlayerController)
+#define OFFSET_PLAYERMANAGER_PLAYER_EVENT_C          0xBEB460  // PlayerManager.ndd(PlayerController)
+#define OFFSET_WEAPONCONTROLLER_GET_ID                0x5BD0A0  // WeaponController.vhi() -> dvu
+#define OFFSET_PLAYER_HEALTH_GET_CURRENT               0x8E49D0  // bdl.pbq() after network updates
+#define OFFSET_PLAYER_HEALTH_APPLY_A                   0x8E4370  // bdl.pbm(...)
+#define OFFSET_PLAYER_HEALTH_APPLY_B                   0x8E4500  // bdl.pbn(...)
+#define OFFSET_PLAYER_HEALTH_APPLY_C                   0x8E4740  // bdl.pbo(...)
+#define OFFSET_PLAYER_HEALTH_APPLY_D                   0x8E48D0  // bdl.pbp(...)
+#define OFFSET_PLAYER_HIT_CONFIRMED_A                  0xC2AB10  // PlayerHitController.obl(bai)
+#define OFFSET_PLAYER_HIT_CONFIRMED_B                  0xC2ACD0  // PlayerHitController.obm(bai)
+#define OFFSET_DAMAGE_RESULT_GET_HEALTH                0xC2C440  // bai.nzh() / dhsx
+#define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xB4A790
+#define OFFSET_PLAYERCONTROLS_UPDATE                 0xB4CFB0
+#define OFFSET_CAMERAMOVEMENTCONTROLLER_UPDATE       0xB5C790
+#define OFFSET_CAMERAMOVEMENTCONTROLLER_FIXEDUPDATE 0xB5C700
+#define OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT         0xC19440  // AimController.mwp(AimSnapshot)
+#define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0xC194C0
+#define OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE      0xC19D80  // AimController.och(Vector3)
+#define OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE      0xC19DD0  // AimController.oci() -> Vector3
+#define OFFSET_CAMERA_FIRE_ON_PRE_CULL                0x3441780 // Camera.FireOnPreCull(Camera), final render boundary
+#define OFFSET_AIMINGDATA_CLONE                      0xC1D170
+#define OFFSET_TRANSFORM_GET_EULERANGLES            0x348B3C0
+#define OFFSET_TRANSFORM_SET_EULERANGLES            0x348BD30
+#define OFFSET_TRANSFORM_GET_LOCALEULERANGLES       0x348B5A0
+#define OFFSET_TRANSFORM_SET_LOCALEULERANGLES       0x348BE10
+#define OFFSET_COMPONENT_GET_GAMEOBJECT             0x3474720
+#define OFFSET_OBJECT_INSTANTIATE                    0x347BAC0
+#define OFFSET_OBJECT_DESTROY                        0x347B060
+#define OFFSET_TRANSFORM_GET_LOCALSCALE              0x348B800
+#define OFFSET_TRANSFORM_SET_LOCALSCALE              0x348C030
+#define OFFSET_GAMEOBJECT_SETACTIVE                 0x3478090
+#define OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY     0x3478490
+#define OFFSET_CANVASGROUP_SET_ALPHA                0x36ABFD0
 
-#define OFFSET_WORLDTOSCREENPOINT                  0x2EC0950
+#define OFFSET_WORLDTOSCREENPOINT                  0x3442780
 
 
 
 // Camera matrix getters
 
-#define OFFSET_CAMERA_GET_WORLDTOCAMERAMATRIX      0x2EC16F0
+#define OFFSET_CAMERA_GET_WORLDTOCAMERAMATRIX      0x3443520
 
-#define OFFSET_CAMERA_GET_PROJECTIONMATRIX         0x2EC13A0
+#define OFFSET_CAMERA_GET_PROJECTIONMATRIX         0x34431D0
 
 
 
@@ -313,7 +313,7 @@ struct Matrix16 {
 
 #define OFFSET_WEAPONRYCONTROLLER                  0xD0
 
-#define OFFSET_WEAPONCONTROLLER                    0xA0
+#define OFFSET_WEAPONCONTROLLER                    0x98
 
 
 
@@ -327,7 +327,7 @@ struct Matrix16 {
 
 // GunController methods (wyw() / wyy())
 
-#define OFFSET_GUNCONTROLLER_GETCURRENTAMMO        0x999180  // wyy() -> cegy, current magazine
+#define OFFSET_GUNCONTROLLER_GETCURRENTAMMO        0xA1F050  // vze() -> cgub, current magazine
 
 
 
@@ -947,7 +947,7 @@ static void CacheUpdatedHealth(uintptr_t state) {
     const int hp = ReadHealthStateNow(state);
     if (hp < 0) return;
     uintptr_t player = 0;
-    __try { player = *reinterpret_cast<uintptr_t*>(state + 0x40); } // bqw.cbcu
+    __try { player = *reinterpret_cast<uintptr_t*>(state + 0x40); } // bdl.ccgy
     __except (EXCEPTION_EXECUTE_HANDLER) { player = 0; }
     AcquireSRWLockExclusive(&g_LiveHealthLock);
     g_LiveHealthByState[state] = hp;
@@ -995,7 +995,7 @@ static uintptr_t SafeGetPlayerHitActor(void* player) {
     __try {
         const uintptr_t hitController = *reinterpret_cast<uintptr_t*>(
             reinterpret_cast<uintptr_t>(player) + 0xF0);
-        return hitController ? *reinterpret_cast<uintptr_t*>(hitController + 0xB0) : 0;
+        return hitController ? *reinterpret_cast<uintptr_t*>(hitController + 0xD0) : 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
@@ -1029,37 +1029,10 @@ static void* FindPlayerByActor(uintptr_t actor) {
 }
 
 static void CacheConfirmedDamageResult(uintptr_t hitController, uintptr_t result) {
-    if (!hitController || !result || !base) return;
-    int headHits = -1, bodyHits = -1, feetHits = -1, damage = -1;
-    uintptr_t controllerPlayer = 0;
-    uintptr_t victimActor = 0;
-    uintptr_t shooterActor = 0;
-    __try {
-        controllerPlayer = *reinterpret_cast<uintptr_t*>(hitController + 0x90);
-        victimActor = *reinterpret_cast<uintptr_t*>(result + 0x10);  // boq.carm: damaged hit actor
-        shooterActor = *reinterpret_cast<uintptr_t*>(result + 0x40); // boo.card: attacker hit actor
-        headHits = *reinterpret_cast<int*>(result + 0x18);
-        bodyHits = *reinterpret_cast<int*>(result + 0x1C);
-        feetHits = *reinterpret_cast<int*>(result + 0x20);
-        using GetResultDamageFn = int(__fastcall*)(uintptr_t, const Il2CppMethod*);
-        static GetResultDamageFn getResultDamage = nullptr;
-        if (!getResultDamage)
-            getResultDamage = reinterpret_cast<GetResultDamageFn>(base + OFFSET_DAMAGE_RESULT_GET_HEALTH);
-        damage = getResultDamage(result, nullptr); // boo.rfu / dcxl: total damage
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return; }
-
-    InterlockedExchange(&boxEspConfirmedFieldA, headHits);
-    InterlockedExchange(&boxEspConfirmedFieldB, bodyHits);
-    InterlockedExchange(&boxEspConfirmedFieldC, feetHits);
-    InterlockedExchange(&boxEspConfirmedHealth, damage);
+    // dump1 changed the damage-result hierarchy/layout (boo/boq -> bai/bak).
+    // Keep hook counters only; do not dereference the old result fields.
+    if (!hitController || !result) return;
     InterlockedIncrement(&boxEspConfirmedHits);
-
-    // Preserve ESP diagnostics for the controller that received this result.
-    if (!controllerPlayer || damage < 0 || damage > 100) return;
-    AcquireSRWLockExclusive(&g_LiveHealthLock);
-    g_ConfirmedHealthByPlayer[controllerPlayer] = damage;
-    ReleaseSRWLockExclusive(&g_LiveHealthLock);
 }
 void __fastcall hk_PlayerHitConfirmedA(uintptr_t hitController, uintptr_t result, const Il2CppMethod* method) {
     o_PlayerHitConfirmedA(hitController, result, method);
@@ -2282,7 +2255,7 @@ static bool ApplyAdminBhopState()
     if (!player) { strcpy_s(adminBhopStatus, "Waiting for local player"); return false; }
     __try {
         const uintptr_t movement = *reinterpret_cast<uintptr_t*>(player + 0xE0);
-        const uintptr_t translation = movement ? *reinterpret_cast<uintptr_t*>(movement + 0x80) : 0;
+        const uintptr_t translation = movement ? *reinterpret_cast<uintptr_t*>(movement + 0x78) : 0;
         const uintptr_t jump = translation ? *reinterpret_cast<uintptr_t*>(translation + 0x38) : 0;
         if (!movement || !jump) { strcpy_s(adminBhopStatus, "Waiting for native movement parameters"); return false; }
         if (movement != adminBhopObservedMovement || jump != adminBhopObservedJumpParameters) {
@@ -2901,7 +2874,7 @@ void __fastcall hk_AimView_Awake(uintptr_t instance, const Il2CppMethod* method)
     o_AimView_Awake(instance, method);
     __try {
         liveAimView = instance;
-        sniperSightObject = instance ? *(uintptr_t*)(instance + 0x48) : 0;
+        sniperSightObject = instance ? *(uintptr_t*)(instance + 0x50) : 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { sniperSightObject = 0; }
 }
@@ -2912,7 +2885,7 @@ void __fastcall hk_AimView_UpdateSniperPanels(uintptr_t instance, float a, float
     __try {
         if (instance) {
             liveAimView = instance;
-            sniperSightObject = *(uintptr_t*)(instance + 0x48);
+            sniperSightObject = *(uintptr_t*)(instance + 0x50);
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -2928,7 +2901,7 @@ static void ApplyScopeOverlayState()
     __try {
         const bool scoped = o_GameObject_get_activeInHierarchy(sniperSightObject);
         customScopeReticleVisible = removeScopeBorders && scoped;
-        const uintptr_t scopeCanvasGroup = *(uintptr_t*)(liveAimView + 0xA8);
+        const uintptr_t scopeCanvasGroup = *(uintptr_t*)(liveAimView + 0xB0);
         if (scopeCanvasGroup) o_CanvasGroup_set_alpha(scopeCanvasGroup, removeScopeBorders && scoped ? 0.0f : 1.0f);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { customScopeReticleVisible = false; }
@@ -3005,11 +2978,11 @@ static bool CaptureCommandAntiAimInput(uintptr_t player, uintptr_t command)
     if (!silentAntiAimEnabled || !player || !command) return false;
     __try {
         // Current dump.cs: PlayerController.AimController +0xC8;
-        // AimController.aimingData +0x88; real angles +0x18/+0x24.
+        // AimController.aimingData +0x80; real angles +0x18/+0x24.
         const uintptr_t aimController =
             *reinterpret_cast<uintptr_t*>(player + 0xC8);
         const uintptr_t aimingData = aimController ?
-            *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
+            *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
         if (!aimController || !aimingData) return false;
 
         silentAntiAimLatestRealAimAngle =
@@ -3069,7 +3042,7 @@ static void ApplyFakeAimingDataUnsafe()
     if (!silentAntiAimEnabled || !silentAntiAimLatestPlayer) return;
     __try {
         const uintptr_t aimController = *reinterpret_cast<uintptr_t*>(silentAntiAimLatestPlayer + 0xC8);
-        const uintptr_t aimingData = aimController ? *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
+        const uintptr_t aimingData = aimController ? *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
         if (aimingData) {
             *reinterpret_cast<float*>(aimingData + 0x18) = silentAntiAimLatestFakeAngles.x;
             *reinterpret_cast<float*>(aimingData + 0x28) = silentAntiAimLatestFakeAngles.y;
@@ -3083,7 +3056,7 @@ static void RestoreRealAimingDataUnsafe()
     if (!silentAntiAimEnabled || !silentAntiAimRealCameraValid || !silentAntiAimLatestPlayer) return;
     __try {
         const uintptr_t aimController = *reinterpret_cast<uintptr_t*>(silentAntiAimLatestPlayer + 0xC8);
-        const uintptr_t aimingData = aimController ? *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
+        const uintptr_t aimingData = aimController ? *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
         if (aimingData) {
             *reinterpret_cast<float*>(aimingData + 0x18) = silentAntiAimRealCameraAngles.x;
             *reinterpret_cast<float*>(aimingData + 0x28) = silentAntiAimRealCameraAngles.y;
@@ -3158,7 +3131,7 @@ static void ApplyCommandAntiAim(uintptr_t player, uintptr_t command)
         const uintptr_t aimController =
             *reinterpret_cast<uintptr_t*>(player + 0xC8);
         const uintptr_t aimingData = aimController ?
-            *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
+            *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
         if (!aimingData) {
             strcpy_s(silentAntiAimStatus, "Waiting for live AimingData");
             return;
@@ -3200,7 +3173,7 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
                 bool currentYawValid = false;
                 const uintptr_t aimController = *reinterpret_cast<uintptr_t*>(player + 0xC8);
                 const uintptr_t aimingData = aimController ?
-                    *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
+                    *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
                 if (aimingData) {
                     currentYaw = reinterpret_cast<Vector3*>(aimingData + 0x18)->y;
                     currentYawValid = isfinite(currentYaw);
@@ -3256,9 +3229,8 @@ void __fastcall hk_PlayerControls_Update(
     uintptr_t controls, const Il2CppMethod* method)
 {
     // Full dumwp.cs shows the real owner of command construction and dispatch:
-    // PlayerControls.Update (A70320) owns KeyboardControl, PlayerController, the
-    // cached blr and Action<blr>. Therefore this is the matching end boundary for
-    // bbft, unlike PlayerController.qhq which runtime proved is not called here.
+    // dump1 PlayerControls.Update (B4CFB0) owns KeyboardControl, PlayerController,
+    // cached xl and Action<xl>; this remains the matching end boundary for bbuq.
     o_PlayerControls_Update(controls, method);
     RestoreAntiAimAimingDataUnsafe();
 
@@ -3277,12 +3249,12 @@ static bool ReadAntiAimFpsCameraTransformUnsafe(uintptr_t* transform)
     if (!player) return false;
     __try {
         // Source m_aim->m_FPSP maps exactly to dump.cs:
-        // AimController.FPSCamera (+0x70).
+        // AimController.FPSCamera (+0x68).
         const uintptr_t aimController =
             *reinterpret_cast<uintptr_t*>(player + 0xC8);
         if (!aimController || aimController != silentAntiAimLatestController)
             return false;
-        *transform = *reinterpret_cast<uintptr_t*>(aimController + 0x70);
+        *transform = *reinterpret_cast<uintptr_t*>(aimController + 0x68);
         return *transform != 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -3374,7 +3346,7 @@ static void BeginVisibleAimbotCameraSnap(const Vector3& targetDirection)
     if (!visibleAimbotEnabled || !liveHudLocalPlayer) return;
     __try {
         const uintptr_t aimController = *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
-        const uintptr_t aimingData = aimController ? *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
+        const uintptr_t aimingData = aimController ? *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
         if (!aimingData) return;
         visibleAimbotAimingData = aimingData;
         visibleAimbotOriginalAimAngle = *reinterpret_cast<Vector3*>(aimingData + 0x18);
@@ -3444,7 +3416,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
         liveAimView = instance ? *(uintptr_t*)(instance + 0x38) : 0;
         liveHitMarkerView = instance ? *(uintptr_t*)(instance + 0x48) : 0;
         liveHudLocalPlayer = instance ? *(uintptr_t*)(instance + 0xD0) : 0;
-        sniperSightObject = liveAimView ? *(uintptr_t*)(liveAimView + 0x48) : 0;
+        sniperSightObject = liveAimView ? *(uintptr_t*)(liveAimView + 0x50) : 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
@@ -4071,10 +4043,10 @@ static ULONGLONG GetNativeAutoFireIntervalMs(uintptr_t gun)
 {
     if (!gun || !base) return 100;
     __try {
-        const uintptr_t parameters = *reinterpret_cast<uintptr_t*>(gun + 0x188);
+        const uintptr_t parameters = *reinterpret_cast<uintptr_t*>(gun + 0x180);
         if (!parameters) return 100;
         using GetFireRateFn = int(__fastcall*)(uintptr_t, const Il2CppMethod*);
-        const int fireRate = reinterpret_cast<GetFireRateFn>(base + 0x99E350)(parameters, nullptr);
+        const int fireRate = reinterpret_cast<GetFireRateFn>(base + 0xA24FF0)(parameters, nullptr);
         if (fireRate < 30 || fireRate > 3000) return 100;
         ULONGLONG interval = static_cast<ULONGLONG>(60000 / fireRate);
         if (interval < 20) interval = 20;
@@ -4226,7 +4198,7 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
         __try {
             *reinterpret_cast<short*>(instance + OFFSET_CURRENT_AMMO) = ammoBeforeShot;
             using SetAmmoFn = void(__fastcall*)(uintptr_t, short, const Il2CppMethod*);
-            reinterpret_cast<SetAmmoFn>(base + 0x999190)(instance, ammoBeforeShot, nullptr);
+            reinterpret_cast<SetAmmoFn>(base + 0xA1F060)(instance, ammoBeforeShot, nullptr);
             *reinterpret_cast<short*>(instance + OFFSET_CURRENT_AMMO) = ammoBeforeShot;
             InterlockedExchange(&infinityAmmoLastField, ammoBeforeShot);
             InterlockedIncrement(&infinityAmmoRestores);
@@ -4293,7 +4265,7 @@ void InfinityAmmoLoop()
         }
         if (frozenAmmoValue >= 0 && frozenAmmoValue < 1000) {
             using SetAmmoFn = void(__fastcall*)(uintptr_t, short, const Il2CppMethod*);
-            reinterpret_cast<SetAmmoFn>(base + 0x999190)(weaponController, frozenAmmoValue, nullptr);
+            reinterpret_cast<SetAmmoFn>(base + 0xA1F060)(weaponController, frozenAmmoValue, nullptr);
             *reinterpret_cast<short*>(weaponController + OFFSET_CURRENT_AMMO) = frozenAmmoValue;
         }
     }
@@ -7491,42 +7463,42 @@ DWORD WINAPI HackThread(LPVOID)
 
     MH_Initialize();
 
-    // IL2CPP init: locate PlayerManager and its LazySingleton<T>.cgxr static field
+    // IL2CPP init: locate dump1 classes and singleton backing fields
         bool __ok_init = g_il2cpp.init();
     LINDY_LOG("[init] g_il2cpp.init=%d ga=%p", (int)__ok_init, (void*)g_il2cpp.ga);
     if (__ok_init) {
-        g_GameControllerClass = g_il2cpp.find_class("Axlebolt.Standoff.Game", "GameController");
+        g_GameControllerClass = g_il2cpp.find_class("Chillow.StandChillow.Game", "GameController");
         if (g_GameControllerClass)
-            g_GameControllerInstanceField = g_il2cpp.class_get_field_from_name(g_GameControllerClass, "<ceva>k__BackingField");
-        g_PlayerManagerClass = g_il2cpp.find_class("Axlebolt.Standoff.Player", "PlayerManager");
+            g_GameControllerInstanceField = g_il2cpp.class_get_field_from_name(g_GameControllerClass, "<chmn>k__BackingField");
+        g_PlayerManagerClass = g_il2cpp.find_class("Chillow.StandChillow.Player", "PlayerManager");
         if (!g_PlayerManagerClass) g_PlayerManagerClass = g_il2cpp.find_class("", "PlayerManager");
         LINDY_LOG("[init] PlayerManagerClass=%p", (void*)g_PlayerManagerClass);
         if (g_PlayerManagerClass) {
-            Il2CppClass* playerControllerClass = g_il2cpp.find_class("Axlebolt.Standoff.Player", "PlayerController");
+            Il2CppClass* playerControllerClass = g_il2cpp.find_class("Chillow.StandChillow.Player", "PlayerController");
             if (!playerControllerClass) playerControllerClass = g_il2cpp.find_class("", "PlayerController");
             if (playerControllerClass && g_il2cpp.class_get_type && g_il2cpp.type_get_object) {
                 const Il2CppType* playerType = g_il2cpp.class_get_type(playerControllerClass);
                 g_PlayerControllerReflectionType = playerType ? g_il2cpp.type_get_object(playerType) : nullptr;
             }
             LINDY_LOG("[init] PlayerController reflection type=%p", (void*)g_PlayerControllerReflectionType);
-            // The static instance field lives on the LazySingleton<PlayerManager> parent as 'cgxr'.
+            // dump1 LazySingleton<T> stores the instance in parent field ckjy.
             Il2CppClass* parent = g_il2cpp.class_get_parent ? g_il2cpp.class_get_parent(g_PlayerManagerClass) : nullptr;
             if (parent) {
-                g_PlayerManagerInstanceField = g_il2cpp.class_get_field_from_name(parent, "cgxr");
+                g_PlayerManagerInstanceField = g_il2cpp.class_get_field_from_name(parent, "ckjy");
             }
             if (!g_PlayerManagerInstanceField) {
                 // fallback: try on class itself
-                g_PlayerManagerInstanceField = g_il2cpp.class_get_field_from_name(g_PlayerManagerClass, "cgxr");
+                g_PlayerManagerInstanceField = g_il2cpp.class_get_field_from_name(g_PlayerManagerClass, "ckjy");
             }
         }
-        g_GlovesManagerClass = g_il2cpp.find_class("Axlebolt.Standoff.Main.Inventory.Gloves", "GlovesManager");
+        g_GlovesManagerClass = g_il2cpp.find_class("Chillow.StandChillow.Main.Inventory.Gloves", "GlovesManager");
         LINDY_LOG("[init] GlovesManagerClass=%p", (void*)g_GlovesManagerClass);
         if (g_GlovesManagerClass) {
-            // Singleton<GlovesManager> stores the active instance in parent field cgyg.
+            // dump1 Singleton<T> stores the active instance in parent field ckky.
             Il2CppClass* parent = g_il2cpp.class_get_parent ? g_il2cpp.class_get_parent(g_GlovesManagerClass) : nullptr;
-            if (parent) g_GlovesManagerInstanceField = g_il2cpp.class_get_field_from_name(parent, "cgyg");
+            if (parent) g_GlovesManagerInstanceField = g_il2cpp.class_get_field_from_name(parent, "ckky");
             if (!g_GlovesManagerInstanceField)
-                g_GlovesManagerInstanceField = g_il2cpp.class_get_field_from_name(g_GlovesManagerClass, "cgyg");
+                g_GlovesManagerInstanceField = g_il2cpp.class_get_field_from_name(g_GlovesManagerClass, "ckky");
         }
     }
     base = (uintptr_t)GetModuleHandleA("GameAssembly.dll");
@@ -7762,8 +7734,18 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_COMMAND));
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE));
-    MH_CreateHook((LPVOID)(base + OFFSET_HITCASTER_CAST), hk_HitCaster_Cast, (LPVOID*)&o_HitCaster_Cast);
-    MH_EnableHook((LPVOID)(base + OFFSET_HITCASTER_CAST));
+    // dump1 changed HitCaster.vxe to a generic method returning cer by value.
+    // The legacy uintptr_t-return hook has an incompatible x64 ABI, so it is not
+    // installed until the generic sret wrapper is ported.
+    o_HitCaster_Cast = nullptr;
+    aimbotEnabled = false;
+    visibleAimbotEnabled = false;
+    noSpreadEnabled = false;
+    aimbotAutoFire = false;
+    bulletTracerEnabled = false;
+    bulletImpactsEnabled = false;
+    hitLogEnabled = false;
+    strcpy_s(aimbotStatus, "dump1 HitCaster ABI changed; shot features disabled safely");
 
     MH_CreateHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE), hk_RagdollActivate, (LPVOID*)&o_RagdollActivate);
     MH_EnableHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE));
