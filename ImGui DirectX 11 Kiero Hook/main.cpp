@@ -1898,6 +1898,7 @@ thread_local int activeLocalHitCastDepth = 0;
 thread_local HitCasterCeq aimbotLastCeq = {};
 thread_local bool aimbotLastCeqValid = false;
 thread_local uintptr_t aimbotLastCeqGun = 0;
+thread_local const Il2CppMethod* aimbotLastHitCasterMethod = nullptr;
 void(__fastcall* o_AimView_Awake)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimView_UpdateSniperPanels)(uintptr_t, float, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Component_get_gameObject)(uintptr_t) = nullptr;
@@ -3897,7 +3898,8 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
 }
 
 static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
-    const HitCasterCeq* castParameters, Vector3& outDirection)
+    const HitCasterCeq* castParameters, const Il2CppMethod* castMethod,
+    Vector3& outDirection)
 {
     void* localPlayer = GetLocalPC();
     if (!localPlayer) return false;
@@ -3928,11 +3930,11 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
         const Vector3 candidate(delta.x / distance, delta.y / distance, delta.z / distance);
 
         bool reachable = false;
-        if (castParameters && o_HitCaster_Cast) {
+        if (castParameters && castMethod && o_HitCaster_Cast) {
             // This is the old working algorithm ported to dump1's value ABI: let the
             // game calculate penetration and damage, then accept only the exact target.
             const HitCasterCer probe = o_HitCaster_Cast(
-                origin, candidate, distance + 0.35f, *castParameters, nullptr);
+                origin, candidate, distance + 0.35f, *castParameters, castMethod);
             int nativeDamage = 0;
             const bool hitExactTarget =
                 ReadDump1NativeTargetDamage(probe, player, nativeDamage);
@@ -3989,13 +3991,14 @@ HitCasterCer __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction,
             }
         }
         aimbotLastCeq = hitParameters;
-        aimbotLastCeqValid = hitParameters.damageDefinition != 0;
+        aimbotLastCeqValid = hitParameters.damageDefinition != 0 && method != nullptr;
         aimbotLastCeqGun = activeLocalWeaponController;
+        aimbotLastHitCasterMethod = method;
     }
     if (keyValidated && insideLocalGunFire && (aimbotEnabled || visibleAimbotEnabled)) {
         InterlockedIncrement(&aimbotShots);
         Vector3 targetDirection;
-        if (FindVisibleAimbotDirection(origin, true, &hitParameters, targetDirection)) {
+        if (FindVisibleAimbotDirection(origin, true, &hitParameters, method, targetDirection)) {
             direction = targetDirection;
             visibleSnapDirection = targetDirection;
             applyVisibleSnapAfterCast = visibleAimbotEnabled;
@@ -4164,9 +4167,12 @@ static bool HasVisibleTargetBeforeNativeFire(uintptr_t gun)
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
     Vector3 direction;
-    const HitCasterCeq* cached = aimbotLastCeqValid && aimbotLastCeqGun == gun ?
-        &aimbotLastCeq : nullptr;
-    return haveOrigin && FindVisibleAimbotDirection(origin, true, cached, direction);
+    const bool haveCachedCast = aimbotLastCeqValid && aimbotLastCeqGun == gun &&
+        aimbotLastHitCasterMethod != nullptr;
+    const HitCasterCeq* cached = haveCachedCast ? &aimbotLastCeq : nullptr;
+    const Il2CppMethod* cachedMethod = haveCachedCast ? aimbotLastHitCasterMethod : nullptr;
+    return haveOrigin && FindVisibleAimbotDirection(
+        origin, true, cached, cachedMethod, direction);
 }
 
 void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, float frameTime, float commandTime, const Il2CppMethod* method)
