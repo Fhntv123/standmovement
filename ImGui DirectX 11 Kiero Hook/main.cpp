@@ -3064,16 +3064,54 @@ static bool ReadAntiAimFpsCameraTransformUnsafe(uintptr_t* transform);
 static bool ReadAntiAimTpsCameraTransformUnsafe(uintptr_t* transform);
 static void RestoreAntiAimCameraTransformUnsafe(uintptr_t transform);
 
+static void ApplyFakeAimingDataUnsafe()
+{
+    if (!silentAntiAimEnabled || !silentAntiAimLatestPlayer) return;
+    __try {
+        const uintptr_t aimController = *reinterpret_cast<uintptr_t*>(silentAntiAimLatestPlayer + 0xC8);
+        const uintptr_t aimingData = aimController ? *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
+        if (aimingData) {
+            *reinterpret_cast<float*>(aimingData + 0x18) = silentAntiAimLatestFakeAngles.x;
+            *reinterpret_cast<float*>(aimingData + 0x28) = silentAntiAimLatestFakeAngles.y;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+static void RestoreRealAimingDataUnsafe()
+{
+    if (!silentAntiAimEnabled || !silentAntiAimRealCameraValid || !silentAntiAimLatestPlayer) return;
+    __try {
+        const uintptr_t aimController = *reinterpret_cast<uintptr_t*>(silentAntiAimLatestPlayer + 0xC8);
+        const uintptr_t aimingData = aimController ? *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
+        if (aimingData) {
+            *reinterpret_cast<float*>(aimingData + 0x18) = silentAntiAimRealCameraAngles.x;
+            *reinterpret_cast<float*>(aimingData + 0x28) = silentAntiAimRealCameraAngles.y;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 void __fastcall hk_CameraMovementController_Update(uintptr_t self, const Il2CppMethod* method)
 {
-    if (silentAntiAimEnabled) return;
-    o_CameraMovementController_Update(self, method);
+    if (silentAntiAimEnabled) {
+        RestoreRealAimingDataUnsafe();
+        o_CameraMovementController_Update(self, method);
+        ApplyFakeAimingDataUnsafe();
+    } else {
+        o_CameraMovementController_Update(self, method);
+    }
 }
 
 void __fastcall hk_CameraMovementController_FixedUpdate(uintptr_t self, const Il2CppMethod* method)
 {
-    if (silentAntiAimEnabled) return;
-    o_CameraMovementController_FixedUpdate(self, method);
+    if (silentAntiAimEnabled) {
+        RestoreRealAimingDataUnsafe();
+        o_CameraMovementController_FixedUpdate(self, method);
+        ApplyFakeAimingDataUnsafe();
+    } else {
+        o_CameraMovementController_FixedUpdate(self, method);
+    }
 }
 
 static void ApplyCameraRotationBypass(uintptr_t player, bool bypass)
@@ -3209,24 +3247,9 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
 
 static void RestoreAntiAimAimingDataUnsafe()
 {
-    if (!silentAntiAimEnabled || !silentAntiAimRealCameraValid ||
-        !silentAntiAimLatestPlayer)
-        return;
-    __try {
-        const uintptr_t aimController =
-            *reinterpret_cast<uintptr_t*>(silentAntiAimLatestPlayer + 0xC8);
-        const uintptr_t aimingData = aimController ?
-            *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
-        if (aimingData) {
-            *reinterpret_cast<float*>(aimingData + 0x18) =
-                silentAntiAimRealCameraAngles.x;
-            *reinterpret_cast<float*>(aimingData + 0x28) =
-                silentAntiAimRealCameraAngles.y;
-            ApplyCameraRotationBypass(silentAntiAimLatestPlayer, false);
-            InterlockedIncrement(&silentAntiAimCommandCalls);
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    RestoreRealAimingDataUnsafe();
+    ApplyCameraRotationBypass(silentAntiAimLatestPlayer, false);
+    InterlockedIncrement(&silentAntiAimCommandCalls);
 }
 
 void __fastcall hk_PlayerControls_Update(
@@ -7070,7 +7093,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Spin Speed", &silentAntiAimSpinSpeed,
                 1.0f, 1080.0f, "%.0f deg/s");
         }
-        ImGui::TextWrapped("CameraMovementController.Update and FixedUpdate are completely bypassed during anti-aim to freeze the camera at real angles, preventing any jerking or movement.");
+        ImGui::TextWrapped("CameraMovementController.Update and FixedUpdate are sandwiched with real AimingData to allow smooth mouse look, while keeping fake angles active for the network and pose.");
         ImGui::TextDisabled("build:%ld restored:%ld preCull:%ld applied:%ld  %s",
             InterlockedCompareExchange(&silentAntiAimInputBuildCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
