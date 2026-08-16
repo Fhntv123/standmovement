@@ -439,12 +439,10 @@ uintptr_t silentAntiAimLatestController = 0;
 Vector3 silentAntiAimLatestRealAimAngle;
 Vector3 silentAntiAimLatestRealAimEuler;
 Vector3 silentAntiAimLatestFakeAngles;
-uintptr_t silentAntiAimCapturedFpsCamera = 0;
-uintptr_t silentAntiAimCapturedTpsCamera = 0;
-Vector3 silentAntiAimCapturedFpsAngles;
-Vector3 silentAntiAimCapturedTpsAngles;
-bool silentAntiAimCapturedFpsValid = false;
-bool silentAntiAimCapturedTpsValid = false;
+uintptr_t silentAntiAimCameraFpsTransform = 0;
+uintptr_t silentAntiAimCameraTpsTransform = 0;
+Vector3 silentAntiAimRealCameraAngles;
+bool silentAntiAimRealCameraValid = false;
 ULONGLONG silentAntiAimLastSpinTick = 0;
 float silentAntiAimSpinYaw = 0.0f;
 bool silentAntiAimJitterFlip = false;
@@ -3018,37 +3016,42 @@ static bool CaptureCommandAntiAimInput(uintptr_t player, uintptr_t command)
         silentAntiAimLatestPlayer = player;
         silentAntiAimLatestController = aimController;
 
-        // Preserve the exact world rotation of each camera transform before the
-        // fake command enters the game. AimingData.curEulerAngles is an aim-space
-        // value, not a Transform Euler value; using it for both cameras caused
-        // the visible snap/jitter reported with the first command build.
-        silentAntiAimCapturedFpsCamera =
-            *reinterpret_cast<uintptr_t*>(aimController + 0x70);
-        silentAntiAimCapturedTpsCamera =
-            *reinterpret_cast<uintptr_t*>(aimController + 0x80);
-        silentAntiAimCapturedFpsValid = false;
-        silentAntiAimCapturedTpsValid = false;
-        if (o_Transform_get_eulerAngles) {
-            if (silentAntiAimCapturedFpsCamera) {
-                silentAntiAimCapturedFpsAngles = o_Transform_get_eulerAngles(
-                    silentAntiAimCapturedFpsCamera);
-                silentAntiAimCapturedFpsValid = true;
-            }
-            if (silentAntiAimCapturedTpsCamera &&
-                silentAntiAimCapturedTpsCamera != silentAntiAimCapturedFpsCamera) {
-                silentAntiAimCapturedTpsAngles = o_Transform_get_eulerAngles(
-                    silentAntiAimCapturedTpsCamera);
-                silentAntiAimCapturedTpsValid = true;
-            }
+        // The supplied source keeps a persistent real view angle and advances it
+        // with the original command delta before replacing that command. This
+        // avoids recapturing a Transform that may already contain last tick's fake
+        // rotation (the feedback loop that caused the remaining camera jerk).
+        const uint8_t originalAngleMode =
+            *reinterpret_cast<uint8_t*>(command + 0x29);
+        const Vector3 originalCommandAngles =
+            *reinterpret_cast<Vector3*>(command + 0x2C);
+        if (!silentAntiAimRealCameraValid) {
+            silentAntiAimRealCameraAngles = silentAntiAimLatestRealAimAngle;
+            silentAntiAimRealCameraValid = true;
         }
+        if (originalAngleMode == 1) { // bpg.DeltaAngle
+            silentAntiAimRealCameraAngles.x -= originalCommandAngles.x;
+            silentAntiAimRealCameraAngles.y += originalCommandAngles.y;
+        } else { // bpg.TargetAngle
+            silentAntiAimRealCameraAngles = originalCommandAngles;
+        }
+        if (silentAntiAimRealCameraAngles.x > 70.0f)
+            silentAntiAimRealCameraAngles.x = 70.0f;
+        if (silentAntiAimRealCameraAngles.x < -70.0f)
+            silentAntiAimRealCameraAngles.x = -70.0f;
+        silentAntiAimRealCameraAngles.y = NormalizeAngle360(
+            silentAntiAimRealCameraAngles.y);
+        silentAntiAimRealCameraAngles.z = 0.0f;
+        silentAntiAimCameraFpsTransform =
+            *reinterpret_cast<uintptr_t*>(aimController + 0x70);
+        silentAntiAimCameraTpsTransform =
+            *reinterpret_cast<uintptr_t*>(aimController + 0x80);
         silentAntiAimLatestInputValid = true;
         liveHudLocalPlayer = player;
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         silentAntiAimLatestInputValid = false;
-        silentAntiAimCapturedFpsValid = false;
-        silentAntiAimCapturedTpsValid = false;
+        silentAntiAimRealCameraValid = false;
         return false;
     }
 }
@@ -3066,7 +3069,7 @@ static void ApplyCommandAntiAim(uintptr_t player, uintptr_t command)
 
     __try {
         const float realYaw = NormalizeAngle360(
-            silentAntiAimLatestRealAimAngle.y);
+            silentAntiAimRealCameraAngles.y);
         const float yawOffset = GetCommandAntiAimYawOffset();
         Vector3 fakeAngles(
             GetCommandAntiAimPitch(),
@@ -3155,35 +3158,38 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     return command;
 }
 
+static void RestoreCommandAntiAimCameraUnsafe()
+{
+    if (!silentAntiAimEnabled || !silentAntiAimLatestInputValid ||
+        !silentAntiAimRealCameraValid || !o_Transform_set_eulerAngles)
+        return;
+    __try {
+        // Same separation as the supplied source: fake angles stay in the command
+        // and native body pose; the camera is forced back to the persistent real
+        // view angle after game updates and again immediately before rendering.
+        // Never rotate both: in this game the FPS and TPS transforms participate
+        // in the same camera hierarchy, so writing both applies the correction
+        // twice and produces a visible kick. Match the source and restore only
+        // the transform for the currently selected view.
+        const uintptr_t activeCamera = thirdPersonEnabled ?
+            silentAntiAimCameraTpsTransform :
+            silentAntiAimCameraFpsTransform;
+        if (activeCamera)
+            o_Transform_set_eulerAngles(
+                activeCamera, silentAntiAimRealCameraAngles);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        silentAntiAimRealCameraValid = false;
+    }
+}
+
 void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
     o_AimController_LateAim(aimController, method);
-    if (!silentAntiAimEnabled || !silentAntiAimLatestInputValid ||
-        aimController != silentAntiAimLatestController ||
-        !o_Transform_set_eulerAngles)
-        return;
-
-    __try {
-        // Restore each transform to its own pre-command world rotation. Never
-        // feed AimingData.curEulerAngles into a camera Transform and never copy
-        // one camera's rotation onto the other.
-        if (silentAntiAimCapturedFpsValid &&
-            silentAntiAimCapturedFpsCamera)
-            o_Transform_set_eulerAngles(
-                silentAntiAimCapturedFpsCamera,
-                silentAntiAimCapturedFpsAngles);
-        if (silentAntiAimCapturedTpsValid &&
-            silentAntiAimCapturedTpsCamera)
-            o_Transform_set_eulerAngles(
-                silentAntiAimCapturedTpsCamera,
-                silentAntiAimCapturedTpsAngles);
-        InterlockedIncrement(&silentAntiAimCommandCalls);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        silentAntiAimCapturedFpsValid = false;
-        silentAntiAimCapturedTpsValid = false;
-    }
+    if (aimController != silentAntiAimLatestController) return;
+    RestoreCommandAntiAimCameraUnsafe();
+    InterlockedIncrement(&silentAntiAimCommandCalls);
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -6562,6 +6568,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (keyValidated) {
         ApplyCameraFov();
         ApplyCustomSkybox();
+        RestoreCommandAntiAimCameraUnsafe();
     }
 
 
@@ -6897,10 +6904,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             silentAntiAimLatestFiring = false;
             silentAntiAimLatestPlayer = 0;
             silentAntiAimLatestController = 0;
-            silentAntiAimCapturedFpsCamera = 0;
-            silentAntiAimCapturedTpsCamera = 0;
-            silentAntiAimCapturedFpsValid = false;
-            silentAntiAimCapturedTpsValid = false;
+            silentAntiAimCameraFpsTransform = 0;
+            silentAntiAimCameraTpsTransform = 0;
+            silentAntiAimRealCameraValid = false;
             silentAntiAimLastSpinTick = 0;
             silentAntiAimSpinYaw = 0.0f;
             strcpy_s(silentAntiAimStatus, !silentAntiAimEnabled ? "Disabled" :
@@ -6929,7 +6935,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Spin Speed", &silentAntiAimSpinSpeed,
                 1.0f, 1080.0f, "%.0f deg/s");
         }
-        ImGui::TextWrapped("Native command angles drive the complete game pose. Movement is corrected; each camera transform is restored to its own rotation captured before the fake command.");
+        ImGui::TextWrapped("Native command angles drive the complete game pose. Movement is corrected; the real view angle is accumulated from original mouse-command deltas and restored only on the active FPS/TPS transform after qod and before rendering.");
         ImGui::TextDisabled("build:%ld camera:%ld applied:%ld  %s",
             InterlockedCompareExchange(&silentAntiAimInputBuildCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
