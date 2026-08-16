@@ -141,6 +141,16 @@ struct Vector4 {
 
 
 
+struct RaycastHitNative {
+    Vector3 point;
+    Vector3 normal;
+    uint32_t faceID;
+    float distance;
+    Vector2 uv;
+    int colliderInstanceID;
+};
+static_assert(sizeof(RaycastHitNative) == 0x2C, "Unity RaycastHit layout changed");
+
 struct Color {
 
     float r, g, b, a;
@@ -202,6 +212,10 @@ struct Matrix16 {
 #define OFFSET_SKINNEDMESHRENDERER_SET_UPDATE_WHEN_OFFSCREEN 0x2EDA260
 #define OFFSET_OBJECT_OCCLUDEE_SET_VISIBLE_STATE    0x886240
 #define OFFSET_OBJECT_FIND_OBJECTS_OF_TYPE            0x2EF9B30
+#define OFFSET_PHYSICS_RAYCAST_HIT                    0x2F55FE0
+#define OFFSET_RAYCASTHIT_GET_COLLIDER                0x2F57A70
+#define OFFSET_COMPONENT_GET_IN_PARENT                0x2EF29E0
+#define OFFSET_COMPONENT_GET_IN_CHILDREN              0x2EF2950
 #define OFFSET_MATERIAL_GET_COLOR                   0x2ECEBB0
 #define OFFSET_MATERIAL_SET_COLOR                   0x2ECF040
 #define OFFSET_MATERIAL_SET_RENDERQUEUE             0x2ECF3F0
@@ -440,6 +454,27 @@ ULONGLONG worldColorNextRetryTick = 0;
 int worldColorRetryCount = 0;
 const int worldColorMaxRetries = 12;
 char worldColorStatus[128] = "Disabled";
+
+bool penetrableSurfacesEnabled = false;
+float penetrableSurfaceFillColor[3] = { 0.05f, 0.80f, 1.0f };
+float penetrableSurfaceOutlineColor[3] = { 1.0f, 0.82f, 0.12f };
+float penetrableSurfaceAlpha = 0.18f;
+float penetrableSurfaceScanDistance = 120.0f;
+ULONGLONG penetrableSurfaceNextScan = 0;
+uintptr_t penetrableSurfaceMaterial = 0;
+uintptr_t penetrableSurfaceOutlineMaterial = 0;
+uint32_t penetrableSurfaceMaterialHandle = 0;
+uint32_t penetrableSurfaceOutlineMaterialHandle = 0;
+struct PenetrableSurfaceVisual {
+    uintptr_t renderer;
+    std::vector<uintptr_t> originalMaterials;
+    uintptr_t outlineObject;
+    uintptr_t outlineRenderer;
+    int surfaceType;
+};
+PenetrableSurfaceVisual penetrableSurfaceVisual = {};
+char penetrableSurfaceStatus[128] = "Disabled";
+
 bool fogEnabled = false;
 float fogColor[3] = { 0.55f, 0.62f, 0.72f };
 float fogStartDistance = 0.0f;
@@ -1411,6 +1446,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(silentAntiAimEnabled); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(freezeCorpsesFadeEnabled); SAVE_FLOAT(freezeCorpsesFadeDuration); SAVE_INT(freezeCorpsesChamsMode); SAVE_FLOAT(freezeCorpsesChamsAlpha); SAVE_FLOAT(freezeCorpsesMetallic); SAVE_FLOAT(freezeCorpsesSmoothness); SAVE_FLOAT(freezeCorpsesAnimationSpeed); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
     SAVE_BOOL(espShowName); SAVE_BOOL(espShowHealth); SAVE_BOOL(espShowWeapon); SAVE_BOOL(espGradient);
     SAVE_BOOL(worldColorEnabled); SAVE_INT(worldColorMode); SAVE_FLOAT(worldColorStrength); SAVE_FLOAT(worldColorAlpha);
+    SAVE_BOOL(penetrableSurfacesEnabled); SAVE_FLOAT(penetrableSurfaceAlpha); SAVE_FLOAT(penetrableSurfaceScanDistance);
     SAVE_BOOL(fogEnabled); SAVE_FLOAT(fogStartDistance); SAVE_FLOAT(fogEndDistance); SAVE_FLOAT(fogDensity);
     SAVE_BOOL(thirdPersonEnabled); SAVE_FLOAT(thirdPersonHorizontalOffset); SAVE_FLOAT(thirdPersonHeightAdjustment); SAVE_FLOAT(thirdPersonDistanceAdjustment);
     SAVE_BOOL(infinityAmmo); SAVE_BOOL(doubleTapEnabled); SAVE_BOOL(noSpreadEnabled); SAVE_BOOL(removeScopeBorders);
@@ -1437,6 +1473,8 @@ static bool SaveConfig(const char* requestedName)
     SAVE_INT(ammoBind.key); SAVE_BOOL(ammoBind.toggleMode); SAVE_INT(espBind.key); SAVE_BOOL(espBind.toggleMode);
     WriteConfigColor(path, "menuColor", menuColor); WriteConfigColor(path, "accentColor", accentColor);
     WriteConfigColor(path, "worldColor", worldColor); WriteConfigColor(path, "fogColor", fogColor);
+    WriteConfigColor(path, "penetrableSurfaceFillColor", penetrableSurfaceFillColor);
+    WriteConfigColor(path, "penetrableSurfaceOutlineColor", penetrableSurfaceOutlineColor);
     WriteConfigColor(path, "customSkyboxColor", customSkyboxColor);
     WriteConfigColor(path, "hitMarkerColor", hitMarkerColor);
     WriteConfigColor(path, "freezeCorpsesChamsColor", freezeCorpsesChamsColor);
@@ -1478,6 +1516,9 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(silentAntiAimEnabled); LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(freezeCorpsesFadeEnabled); LOAD_FLOAT(freezeCorpsesFadeDuration); LOAD_INT(freezeCorpsesChamsMode); LOAD_FLOAT(freezeCorpsesChamsAlpha); LOAD_FLOAT(freezeCorpsesMetallic); LOAD_FLOAT(freezeCorpsesSmoothness); LOAD_FLOAT(freezeCorpsesAnimationSpeed); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
     LOAD_BOOL(espShowName); LOAD_BOOL(espShowHealth); LOAD_BOOL(espShowWeapon); LOAD_BOOL(espGradient);
     LOAD_BOOL(worldColorEnabled); LOAD_INT(worldColorMode); LOAD_FLOAT(worldColorStrength); LOAD_FLOAT(worldColorAlpha);
+    LOAD_BOOL(penetrableSurfacesEnabled); LOAD_FLOAT(penetrableSurfaceAlpha); LOAD_FLOAT(penetrableSurfaceScanDistance);
+    if (penetrableSurfaceAlpha < 0.05f) penetrableSurfaceAlpha = 0.05f; if (penetrableSurfaceAlpha > 0.80f) penetrableSurfaceAlpha = 0.80f;
+    if (penetrableSurfaceScanDistance < 10.0f) penetrableSurfaceScanDistance = 10.0f; if (penetrableSurfaceScanDistance > 250.0f) penetrableSurfaceScanDistance = 250.0f;
     LOAD_BOOL(fogEnabled); LOAD_FLOAT(fogStartDistance); LOAD_FLOAT(fogEndDistance); LOAD_FLOAT(fogDensity);
     LOAD_BOOL(thirdPersonEnabled); LOAD_FLOAT(thirdPersonHorizontalOffset); LOAD_FLOAT(thirdPersonHeightAdjustment); LOAD_FLOAT(thirdPersonDistanceAdjustment);
     LOAD_BOOL(infinityAmmo); LOAD_BOOL(doubleTapEnabled); LOAD_BOOL(noSpreadEnabled); LOAD_BOOL(removeScopeBorders);
@@ -1504,6 +1545,8 @@ static bool LoadConfig(const char* requestedName)
     LOAD_INT(ammoBind.key); LOAD_BOOL(ammoBind.toggleMode); LOAD_INT(espBind.key); LOAD_BOOL(espBind.toggleMode);
     ReadConfigColor(path, "menuColor", menuColor); ReadConfigColor(path, "accentColor", accentColor);
     ReadConfigColor(path, "worldColor", worldColor); ReadConfigColor(path, "fogColor", fogColor);
+    ReadConfigColor(path, "penetrableSurfaceFillColor", penetrableSurfaceFillColor);
+    ReadConfigColor(path, "penetrableSurfaceOutlineColor", penetrableSurfaceOutlineColor);
     ReadConfigColor(path, "customSkyboxColor", customSkyboxColor);
     ReadConfigColor(path, "hitMarkerColor", hitMarkerColor);
     ReadConfigColor(path, "freezeCorpsesChamsColor", freezeCorpsesChamsColor);
@@ -1825,6 +1868,10 @@ thread_local int activeLocalHitCastDepth = 0;
 void(__fastcall* o_AimView_Awake)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimView_UpdateSniperPanels)(uintptr_t, float, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Component_get_gameObject)(uintptr_t) = nullptr;
+bool(__fastcall* o_Physics_RaycastHit)(Vector3, Vector3, RaycastHitNative*, float, int, int, const Il2CppMethod*) = nullptr;
+uintptr_t(__fastcall* o_RaycastHit_get_collider)(RaycastHitNative*, const Il2CppMethod*) = nullptr;
+uintptr_t(__fastcall* o_Component_GetInParent)(uintptr_t, uintptr_t, bool, const Il2CppMethod*) = nullptr;
+uintptr_t(__fastcall* o_Component_GetInChildren)(uintptr_t, uintptr_t, bool, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GameObject_SetActive)(uintptr_t, bool) = nullptr;
 bool(__fastcall* o_GameObject_get_activeInHierarchy)(uintptr_t) = nullptr;
 void(__fastcall* o_CanvasGroup_set_alpha)(uintptr_t, float) = nullptr;
@@ -3058,6 +3105,7 @@ static void UpdateArmChams(uintptr_t knownArmsLodGroup = 0);
 static void UpdateGloveChams(uintptr_t knownArmsLodGroup = 0);
 static void UpdateLocalPlayerChams(uintptr_t knownCharacterLodGroup = 0);
 static void UpdateEnemyChams();
+static void UpdatePenetrableSurfaceVisualization();
 
 static Vector3 DirectionToCameraEuler(const Vector3& direction)
 {
@@ -3128,6 +3176,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
     UpdateFrozenCorpses();
+    UpdatePenetrableSurfaceVisualization();
     UpdateVisibleAimbotCamera();
     if (thirdPersonEnabled && !InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0))
         ApplyCustomizedThirdPersonOffsets();
@@ -4299,6 +4348,204 @@ static void DestroyOutlineCloneUnsafe(uintptr_t* outlineObject, uintptr_t* outli
     __except (EXCEPTION_EXECUTE_HANDLER) {}
     *outlineObject = 0;
     *outlineRenderer = 0;
+}
+
+static bool ReadManagedArrayCountUnsafe(uintptr_t arrayAddress, size_t* count)
+{
+    if (!arrayAddress || !count) return false;
+    __try {
+        *count = *reinterpret_cast<size_t*>(arrayAddress + 0x18);
+        return *count > 0 && *count <= 64;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { *count = 0; return false; }
+}
+
+static bool ReadManagedArrayElementUnsafe(uintptr_t arrayAddress, size_t count,
+    size_t index, uintptr_t* value)
+{
+    if (!arrayAddress || !value || index >= count) return false;
+    __try {
+        *value = *reinterpret_cast<uintptr_t*>(arrayAddress + 0x20 + index * sizeof(uintptr_t));
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { *value = 0; return false; }
+}
+
+static bool ProbePenetrableSurfaceUnsafe(Vector3 origin, Vector3 direction, float maxDistance,
+    uintptr_t hitParameters, uintptr_t rendererType, uintptr_t* renderer, int* surfaceType)
+{
+    if (!renderer || !surfaceType) return false;
+    *renderer = 0; *surfaceType = 0;
+    if (!o_HitCaster_Cast || !o_Physics_RaycastHit || !o_RaycastHit_get_collider ||
+        !o_Component_GetInParent || !o_Component_GetInChildren || !rendererType || !hitParameters) return false;
+    __try {
+        // cjr.cega is authoritative: if it has no cjv segment, this is not shown as penetrable.
+        const uintptr_t result = o_HitCaster_Cast(origin, direction, maxDistance, hitParameters, nullptr);
+        const uintptr_t list = result ? *reinterpret_cast<uintptr_t*>(result + 0x18) : 0;
+        const uintptr_t items = list ? *reinterpret_cast<uintptr_t*>(list + 0x10) : 0;
+        const int count = list ? *reinterpret_cast<int*>(list + 0x18) : 0;
+        if (!items || count <= 0 || count > 64) return false;
+        const uintptr_t penetration = *reinterpret_cast<uintptr_t*>(items + 0x20);
+        if (!penetration) return false;
+        const Vector3 entry = *reinterpret_cast<Vector3*>(penetration + 0x10);
+        *surfaceType = *reinterpret_cast<int*>(penetration + 0x28); // cjv.cegl / cjw
+        const float dx = entry.x - origin.x, dy = entry.y - origin.y, dz = entry.z - origin.z;
+        const float entryDistance = sqrtf(dx * dx + dy * dy + dz * dz);
+        if (!isfinite(entryDistance) || entryDistance < 0.05f || entryDistance > maxDistance + 1.0f) return false;
+        RaycastHitNative hit = {};
+        if (!o_Physics_RaycastHit(origin, direction, &hit, entryDistance + 0.35f, -1, 1, nullptr)) return false;
+        const uintptr_t collider = o_RaycastHit_get_collider(&hit, nullptr);
+        if (!collider) return false;
+        uintptr_t found = o_Component_GetInParent(collider, rendererType, true, nullptr);
+        if (!found) found = o_Component_GetInChildren(collider, rendererType, true, nullptr);
+        if (!found) return false;
+        *renderer = found;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { *renderer = 0; *surfaceType = 0; return false; }
+}
+
+static const char* GetPenetrableSurfaceTypeName(int type)
+{
+    static const char* names[] = {
+        "Unknown", "Glass", "Cardboard", "Metal Grate", "Wood", "Plaster", "Tile",
+        "Metal", "Concrete", "Brick", "Solid Metal", "Thin Metal", "Thin Wood", "Character",
+        "Ground", "Surface Trigger", "Snow Concrete", "Snow Metal", "Snow Ground",
+        "Solid Metal No Hole", "Gravel", "Grass", "Paper", "Water", "Glass Waterfall",
+        "Solid Wood", "Glass No Decal"
+    };
+    return type >= 0 && type < static_cast<int>(IM_ARRAYSIZE(names)) ? names[type] : "Penetrable";
+}
+
+static void RestorePenetrableSurfaceVisualization()
+{
+    if (penetrableSurfaceVisual.renderer && !penetrableSurfaceVisual.originalMaterials.empty())
+        SetRendererMaterialArray(penetrableSurfaceVisual.renderer, penetrableSurfaceVisual.originalMaterials);
+    DestroyOutlineCloneUnsafe(&penetrableSurfaceVisual.outlineObject,
+        &penetrableSurfaceVisual.outlineRenderer);
+    penetrableSurfaceVisual.renderer = 0;
+    penetrableSurfaceVisual.originalMaterials.clear();
+    penetrableSurfaceVisual.surfaceType = 0;
+}
+
+static bool EnsurePenetrableSurfaceMaterials()
+{
+    if (!penetrableSurfaceMaterial) {
+        penetrableSurfaceMaterial = CreateWeaponChamsMaterial("Unlit/Transparent", true);
+        if (!penetrableSurfaceMaterial)
+            penetrableSurfaceMaterial = CreateWeaponChamsMaterial("Legacy Shaders/Transparent/Diffuse", true);
+        if (penetrableSurfaceMaterial && g_il2cpp.gchandle_new)
+            penetrableSurfaceMaterialHandle = g_il2cpp.gchandle_new(
+                reinterpret_cast<Il2CppObject*>(penetrableSurfaceMaterial), false);
+    }
+    if (!penetrableSurfaceOutlineMaterial) {
+        penetrableSurfaceOutlineMaterial = CreateWeaponChamsMaterial("Hidden/Internal-Colored", true);
+        if (!penetrableSurfaceOutlineMaterial)
+            penetrableSurfaceOutlineMaterial = CreateWeaponChamsMaterial("Unlit/Color", true);
+        if (penetrableSurfaceOutlineMaterial) {
+            ConfigureOutlineChamsMaterial(penetrableSurfaceOutlineMaterial);
+            if (g_il2cpp.gchandle_new)
+                penetrableSurfaceOutlineMaterialHandle = g_il2cpp.gchandle_new(
+                    reinterpret_cast<Il2CppObject*>(penetrableSurfaceOutlineMaterial), false);
+        }
+    }
+    if (!penetrableSurfaceMaterial || !penetrableSurfaceOutlineMaterial || !o_Material_set_color) return false;
+    if (o_Material_SetFloat && g_il2cpp.string_new) {
+        o_Material_SetFloat(penetrableSurfaceMaterial, g_il2cpp.string_new("_SrcBlend"), 5.0f);
+        o_Material_SetFloat(penetrableSurfaceMaterial, g_il2cpp.string_new("_DstBlend"), 10.0f);
+        o_Material_SetFloat(penetrableSurfaceMaterial, g_il2cpp.string_new("_ZWrite"), 0.0f);
+        o_Material_SetFloat(penetrableSurfaceMaterial, g_il2cpp.string_new("_Cull"), 0.0f);
+    }
+    if (o_Material_set_renderQueue) o_Material_set_renderQueue(penetrableSurfaceMaterial, 3000);
+    o_Material_set_color(penetrableSurfaceMaterial, Color(
+        penetrableSurfaceFillColor[0], penetrableSurfaceFillColor[1],
+        penetrableSurfaceFillColor[2], penetrableSurfaceAlpha));
+    o_Material_set_color(penetrableSurfaceOutlineMaterial, Color(
+        penetrableSurfaceOutlineColor[0], penetrableSurfaceOutlineColor[1],
+        penetrableSurfaceOutlineColor[2], 1.0f));
+    return true;
+}
+
+static bool CapturePenetrableSurfaceRenderer(uintptr_t renderer, int surfaceType)
+{
+    if (!renderer || !o_Renderer_get_materials) return false;
+    Il2CppArray* materials = o_Renderer_get_materials(renderer);
+    const uintptr_t arrayAddress = reinterpret_cast<uintptr_t>(materials);
+    size_t count = 0;
+    if (!ReadManagedArrayCountUnsafe(arrayAddress, &count)) return false;
+    PenetrableSurfaceVisual next{};
+    next.renderer = renderer;
+    next.surfaceType = surfaceType;
+    next.originalMaterials.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        uintptr_t material = 0;
+        if (!ReadManagedArrayElementUnsafe(arrayAddress, count, i, &material)) return false;
+        next.originalMaterials.push_back(material);
+    }
+    RestorePenetrableSurfaceVisualization();
+    penetrableSurfaceVisual = std::move(next);
+    return true;
+}
+
+static void UpdatePenetrableSurfaceVisualization()
+{
+    if (!penetrableSurfacesEnabled || !keyValidated) {
+        if (penetrableSurfaceVisual.renderer) RestorePenetrableSurfaceVisualization();
+        strcpy_s(penetrableSurfaceStatus, "Disabled");
+        return;
+    }
+    if (!aimbotLastHitParameters) {
+        if (penetrableSurfaceVisual.renderer) RestorePenetrableSurfaceVisualization();
+        strcpy_s(penetrableSurfaceStatus, "Fire once to initialize native penetration data");
+        return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (now < penetrableSurfaceNextScan) return;
+    penetrableSurfaceNextScan = now + 100;
+    if (!EnsurePenetrableSurfaceMaterials()) {
+        strcpy_s(penetrableSurfaceStatus, "Transparent/outline shader unavailable");
+        return;
+    }
+    const uintptr_t camera = GetCamera();
+    const uintptr_t transform = camera && o_Component_get_transform ? o_Component_get_transform(camera) : 0;
+    if (!transform || !o_Transform_get_position || !o_Transform_get_forward) {
+        if (penetrableSurfaceVisual.renderer) RestorePenetrableSurfaceVisualization();
+        strcpy_s(penetrableSurfaceStatus, "Waiting for camera");
+        return;
+    }
+    Il2CppClass* rendererClass = g_il2cpp.find_class("UnityEngine", "Renderer");
+    const Il2CppType* rendererIl2CppType = rendererClass && g_il2cpp.class_get_type ?
+        g_il2cpp.class_get_type(rendererClass) : nullptr;
+    Il2CppObject* reflectionType = rendererIl2CppType && g_il2cpp.type_get_object ?
+        g_il2cpp.type_get_object(rendererIl2CppType) : nullptr;
+    if (!reflectionType) {
+        strcpy_s(penetrableSurfaceStatus, "Renderer type unavailable");
+        return;
+    }
+    uintptr_t renderer = 0;
+    int surfaceType = 0;
+    const Vector3 origin = o_Transform_get_position(transform);
+    const Vector3 direction = o_Transform_get_forward(transform);
+    if (!ProbePenetrableSurfaceUnsafe(origin, direction, penetrableSurfaceScanDistance,
+        aimbotLastHitParameters, reinterpret_cast<uintptr_t>(reflectionType), &renderer, &surfaceType)) {
+        if (penetrableSurfaceVisual.renderer) RestorePenetrableSurfaceVisualization();
+        strcpy_s(penetrableSurfaceStatus, "No penetrable surface under crosshair");
+        return;
+    }
+    if (renderer != penetrableSurfaceVisual.renderer &&
+        !CapturePenetrableSurfaceRenderer(renderer, surfaceType)) {
+        strcpy_s(penetrableSurfaceStatus, "Penetrable collider has no renderable mesh");
+        return;
+    }
+    if (!penetrableSurfaceVisual.renderer) return;
+    std::vector<uintptr_t> transparentMaterials(
+        penetrableSurfaceVisual.originalMaterials.size(), penetrableSurfaceMaterial);
+    SetRendererMaterialArray(penetrableSurfaceVisual.renderer, transparentMaterials);
+    if (!penetrableSurfaceVisual.outlineObject)
+        CreateOutlineCloneUnsafe(penetrableSurfaceVisual.renderer, penetrableSurfaceOutlineMaterial,
+            &penetrableSurfaceVisual.outlineObject, &penetrableSurfaceVisual.outlineRenderer);
+    sprintf_s(penetrableSurfaceStatus, "%s: transparent + outline",
+        GetPenetrableSurfaceTypeName(penetrableSurfaceVisual.surfaceType));
 }
 
 static uintptr_t EnsureSelectedWeaponChamsMaterial()
@@ -6526,6 +6773,18 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 ImGui::SliderFloat("World Animation Speed", &worldColorAnimationSpeed, 0.1f, 5.0f, "%.2f"))
                 InterlockedExchange(&pendingWorldColorCommand, 1);
         }
+        if (ImGui::Checkbox("Penetrable Surfaces", &penetrableSurfacesEnabled)) {
+            if (!penetrableSurfacesEnabled) RestorePenetrableSurfaceVisualization();
+            penetrableSurfaceNextScan = 0;
+        }
+        if (penetrableSurfacesEnabled) {
+            ImGui::TextDisabled("Aim at a native wallbang surface");
+            ImGui::ColorEdit3("Penetrable Fill", penetrableSurfaceFillColor);
+            ImGui::ColorEdit3("Penetrable Outline", penetrableSurfaceOutlineColor);
+            ImGui::SliderFloat("Penetrable Transparency", &penetrableSurfaceAlpha, 0.05f, 0.80f, "%.2f");
+            ImGui::SliderFloat("Penetrable Scan Distance", &penetrableSurfaceScanDistance, 10.0f, 250.0f, "%.0f m");
+            ImGui::TextDisabled("%s", penetrableSurfaceStatus);
+        }
         if (ImGui::Checkbox("Third Person", &thirdPersonEnabled)) {
             strcpy_s(thirdPersonStatus, thirdPersonEnabled ? "TPS transition queued" : "FPS transition queued");
             InterlockedExchange(&pendingThirdPersonCommand, 1);
@@ -7014,6 +7273,10 @@ DWORD WINAPI HackThread(LPVOID)
 
 
     o_Component_get_gameObject = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_GAMEOBJECT);
+    o_Physics_RaycastHit = (bool(__fastcall*)(Vector3, Vector3, RaycastHitNative*, float, int, int, const Il2CppMethod*))(base + OFFSET_PHYSICS_RAYCAST_HIT);
+    o_RaycastHit_get_collider = (uintptr_t(__fastcall*)(RaycastHitNative*, const Il2CppMethod*))(base + OFFSET_RAYCASTHIT_GET_COLLIDER);
+    o_Component_GetInParent = (uintptr_t(__fastcall*)(uintptr_t, uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_COMPONENT_GET_IN_PARENT);
+    o_Component_GetInChildren = (uintptr_t(__fastcall*)(uintptr_t, uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_COMPONENT_GET_IN_CHILDREN);
     o_GameObject_get_activeInHierarchy = (bool(__fastcall*)(uintptr_t))(base + OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY);
     o_CanvasGroup_set_alpha = (void(__fastcall*)(uintptr_t, float))(base + OFFSET_CANVASGROUP_SET_ALPHA);
     MH_CreateHook((LPVOID)(base + OFFSET_GAMEOBJECT_SETACTIVE), hk_GameObject_SetActive, (LPVOID*)&o_GameObject_SetActive);
