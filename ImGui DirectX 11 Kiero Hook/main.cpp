@@ -272,6 +272,8 @@ struct Matrix16 {
 #define OFFSET_DAMAGE_RESULT_GET_HEALTH                0x880990  // boo.rfu() / dcxl
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xA6E220
 #define OFFSET_PLAYERCONTROLS_UPDATE                 0xA70320
+#define OFFSET_CAMERAMOVEMENTCONTROLLER_UPDATE       0xA78D50
+#define OFFSET_CAMERAMOVEMENTCONTROLLER_FIXEDUPDATE 0xA78CC0
 #define OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT         0x86C060  // AimController.qdq(AimSnapshot)
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0x86C0E0
 #define OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE      0x86C9A0  // AimController.riz(Vector3)
@@ -1920,6 +1922,8 @@ void(__fastcall* o_HitMarkerView_LocalHit)(uintptr_t, void*, uintptr_t, const Il
 void(__fastcall* o_PlayerController_Command)(uintptr_t, uintptr_t, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_KeyboardControl_BuildCommand)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_PlayerControls_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_CameraMovementController_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_CameraMovementController_FixedUpdate)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_ApplySnapshot)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_AimController_GetSnapshot)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
@@ -3059,6 +3063,18 @@ static bool CaptureCommandAntiAimInput(uintptr_t player, uintptr_t command)
 static bool ReadAntiAimFpsCameraTransformUnsafe(uintptr_t* transform);
 static bool ReadAntiAimTpsCameraTransformUnsafe(uintptr_t* transform);
 static void RestoreAntiAimCameraTransformUnsafe(uintptr_t transform);
+
+void __fastcall hk_CameraMovementController_Update(uintptr_t self, const Il2CppMethod* method)
+{
+    if (silentAntiAimEnabled) return;
+    o_CameraMovementController_Update(self, method);
+}
+
+void __fastcall hk_CameraMovementController_FixedUpdate(uintptr_t self, const Il2CppMethod* method)
+{
+    if (silentAntiAimEnabled) return;
+    o_CameraMovementController_FixedUpdate(self, method);
+}
 
 static void ApplyCameraRotationBypass(uintptr_t player, bool bypass)
 {
@@ -7054,7 +7070,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Spin Speed", &silentAntiAimSpinSpeed,
                 1.0f, 1080.0f, "%.0f deg/s");
         }
-        ImGui::TextWrapped("Fake pitch/yaw are injected on the bbft path; PlayerFPSCamera._applyRotation is bypassed during dispatch to completely prevent camera jerking, then restored immediately after.");
+        ImGui::TextWrapped("CameraMovementController.Update and FixedUpdate are completely bypassed during anti-aim to freeze the camera at real angles, preventing any jerking or movement.");
         ImGui::TextDisabled("build:%ld restored:%ld preCull:%ld applied:%ld  %s",
             InterlockedCompareExchange(&silentAntiAimInputBuildCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
@@ -7672,6 +7688,11 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimPreCullCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_CAMERA_FIRE_ON_PRE_CULL)) :
         antiAimPreCullCreateStatus;
+    MH_CreateHook((LPVOID)(base + OFFSET_CAMERAMOVEMENTCONTROLLER_UPDATE), hk_CameraMovementController_Update, (LPVOID*)&o_CameraMovementController_Update);
+    MH_EnableHook((LPVOID)(base + OFFSET_CAMERAMOVEMENTCONTROLLER_UPDATE));
+    MH_CreateHook((LPVOID)(base + OFFSET_CAMERAMOVEMENTCONTROLLER_FIXEDUPDATE), hk_CameraMovementController_FixedUpdate, (LPVOID*)&o_CameraMovementController_FixedUpdate);
+    MH_EnableHook((LPVOID)(base + OFFSET_CAMERAMOVEMENTCONTROLLER_FIXEDUPDATE));
+
     const MH_STATUS antiAimConsumeCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_PLAYERCONTROLS_UPDATE),
         hk_PlayerControls_Update,
