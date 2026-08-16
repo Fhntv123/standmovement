@@ -276,7 +276,6 @@ struct Matrix16 {
 #define OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE      0x86C9A0  // AimController.riz(Vector3)
 #define OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE      0x86C9F0  // AimController.rja() -> Vector3
 #define OFFSET_AIMCONTROLLER_LATE_AIM                0x86C5A0  // AimController.qod(), post-Mecanim aim pass
-#define OFFSET_PLAYERFPSCAMERA_UPDATE               0xA7EE80  // PlayerFPSCamera.Update(), rendered FPS camera owner
 #define OFFSET_AIMINGDATA_CLONE                      0x86F9C0
 #define OFFSET_TRANSFORM_GET_EULERANGLES            0x2F066B0
 #define OFFSET_TRANSFORM_SET_EULERANGLES            0x2F07020
@@ -1924,7 +1923,6 @@ uintptr_t(__fastcall* o_AimController_GetSnapshot)(uintptr_t, const Il2CppMethod
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 Vector3(__fastcall* o_AimController_GetHeadDirective)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_LateAim)(uintptr_t, const Il2CppMethod*) = nullptr;
-void(__fastcall* o_PlayerFPSCamera_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_AimingData_Clone)(uintptr_t, const Il2CppMethod*) = nullptr;
 
 
@@ -3158,21 +3156,16 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     return command;
 }
 
-static bool ReadAntiAimFpsCameraTransformUnsafe(
-    uintptr_t fpsCamera, uintptr_t* transform)
+static bool ReadAntiAimFpsCameraTransformUnsafe(uintptr_t* transform)
 {
-    if (!fpsCamera || !transform) return false;
+    if (!transform) return false;
     *transform = 0;
     const uintptr_t player = silentAntiAimLatestPlayer;
     if (!player) return false;
     __try {
-        // Only restore after the local player's own PlayerFPSCamera.Update.
-        // PlayerController.dcuu is the backing PlayerFPSCamera at +0x88.
-        const uintptr_t localFpsCamera =
-            *reinterpret_cast<uintptr_t*>(player + 0x88);
-        if (localFpsCamera != fpsCamera) return false;
-
-        // Source m_aim->m_FPSP maps to dump.cs AimController.FPSCamera (+0x70).
+        // Source m_aim->m_FPSP maps exactly to dump.cs
+        // AimController.FPSCamera (+0x70). This helper is called only from the
+        // matching local AimController.qod hook after its native work is done.
         const uintptr_t aimController =
             *reinterpret_cast<uintptr_t*>(player + 0xC8);
         if (!aimController || aimController != silentAntiAimLatestController)
@@ -3220,26 +3213,21 @@ static void RestoreAntiAimCameraTransformUnsafe(uintptr_t transform)
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
-void __fastcall hk_PlayerFPSCamera_Update(
-    uintptr_t fpsCamera, const Il2CppMethod* method)
-{
-    o_PlayerFPSCamera_Update(fpsCamera, method);
-    if (!silentAntiAimEnabled || thirdPersonEnabled || !fpsCamera) return;
-
-    uintptr_t transform = 0;
-    if (ReadAntiAimFpsCameraTransformUnsafe(fpsCamera, &transform))
-        RestoreAntiAimCameraTransformUnsafe(transform);
-}
-
 void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
     o_AimController_LateAim(aimController, method);
     if (aimController != silentAntiAimLatestController) return;
-    if (silentAntiAimEnabled && thirdPersonEnabled) {
+    if (silentAntiAimEnabled) {
         uintptr_t transform = 0;
-        if (ReadAntiAimTpsCameraTransformUnsafe(&transform))
-            RestoreAntiAimCameraTransformUnsafe(transform);
+        // Do not interpret PlayerController +0x79 as a view mode: dumwp.cs
+        // declares that field as cwf, and cwf is the team enum (None/Tr/Ct/
+        // Spectator). The existing native TPS toggle is the only verified mode
+        // source in this project.
+        const bool cameraReady = thirdPersonEnabled ?
+            ReadAntiAimTpsCameraTransformUnsafe(&transform) :
+            ReadAntiAimFpsCameraTransformUnsafe(&transform);
+        if (cameraReady) RestoreAntiAimCameraTransformUnsafe(transform);
     }
     InterlockedIncrement(&silentAntiAimCommandCalls);
 }
@@ -6985,7 +6973,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Spin Speed", &silentAntiAimSpinSpeed,
                 1.0f, 1080.0f, "%.0f deg/s");
         }
-        ImGui::TextWrapped("Fake TargetAngle stays in the outgoing command. The real angle is accumulated from original input; FPS camera is restored after PlayerFPSCamera.Update, TPS after qod.");
+        ImGui::TextWrapped("Fake TargetAngle stays in the outgoing command. The real angle is accumulated from original input; the active FPS/TPS camera is restored only after the native qod post-Mecanim pass.");
         ImGui::TextDisabled("build:%ld qod:%ld camera:%ld applied:%ld  %s",
             InterlockedCompareExchange(&silentAntiAimInputBuildCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
@@ -7603,14 +7591,6 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimLateAimCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM)) :
         antiAimLateAimCreateStatus;
-    const MH_STATUS antiAimCameraCreateStatus = MH_CreateHook(
-        (LPVOID)(base + OFFSET_PLAYERFPSCAMERA_UPDATE),
-        hk_PlayerFPSCamera_Update,
-        (LPVOID*)&o_PlayerFPSCamera_Update);
-    const MH_STATUS antiAimCameraEnableStatus =
-        antiAimCameraCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_PLAYERFPSCAMERA_UPDATE)) :
-        antiAimCameraCreateStatus;
     const MH_STATUS antiAimInputCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND),
         hk_KeyboardControl_BuildCommand,
@@ -7621,15 +7601,12 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimInputCreateStatus;
     silentAntiAimHookReady = antiAimLateAimCreateStatus == MH_OK &&
         antiAimLateAimEnableStatus == MH_OK &&
-        antiAimCameraCreateStatus == MH_OK &&
-        antiAimCameraEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
         antiAimInputEnableStatus == MH_OK;
 
-    LINDY_LOG("[anti-aim] command bbft=%d/%d; qod=%d/%d; FPS camera Update=%d/%d; ready=%d",
+    LINDY_LOG("[anti-aim] command bbft=%d/%d; late camera qod=%d/%d; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
         (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
-        (int)antiAimCameraCreateStatus, (int)antiAimCameraEnableStatus,
         silentAntiAimHookReady ? 1 : 0);
 
     // Capture the live ArmsLodGroup directly whenever its first-person visibility is enabled.
