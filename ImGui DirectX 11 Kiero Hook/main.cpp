@@ -3060,6 +3060,20 @@ static bool ReadAntiAimFpsCameraTransformUnsafe(uintptr_t* transform);
 static bool ReadAntiAimTpsCameraTransformUnsafe(uintptr_t* transform);
 static void RestoreAntiAimCameraTransformUnsafe(uintptr_t transform);
 
+static void ApplyCameraRotationBypass(uintptr_t player, bool bypass)
+{
+    if (!player) return;
+    __try {
+        // PlayerController.bzwp (PlayerFPSCamera) is at 0x88.
+        // CameraMovementController._applyRotation is at 0x3A.
+        const uintptr_t fpsCamera = *reinterpret_cast<uintptr_t*>(player + 0x88);
+        if (fpsCamera) {
+            *reinterpret_cast<bool*>(fpsCamera + 0x3A) = !bypass;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 static void ApplyCommandAntiAim(uintptr_t player, uintptr_t command)
 {
     if (!CaptureCommandAntiAimInput(player, command)) {
@@ -3097,6 +3111,7 @@ static void ApplyCommandAntiAim(uintptr_t player, uintptr_t command)
         }
         *reinterpret_cast<float*>(aimingData + 0x18) = fakeAngles.x;
         *reinterpret_cast<float*>(aimingData + 0x28) = fakeAngles.y;
+        ApplyCameraRotationBypass(player, true);
         FixAntiAimMovement(command, realYaw, fakeAngles.y);
         silentAntiAimLatestFakeAngles = fakeAngles;
         InterlockedIncrement(&silentAntiAimAppliedCalls);
@@ -3191,6 +3206,7 @@ static void RestoreAntiAimAimingDataUnsafe()
                 silentAntiAimRealCameraAngles.x;
             *reinterpret_cast<float*>(aimingData + 0x28) =
                 silentAntiAimRealCameraAngles.y;
+            ApplyCameraRotationBypass(silentAntiAimLatestPlayer, false);
             InterlockedIncrement(&silentAntiAimCommandCalls);
         }
     }
@@ -7038,7 +7054,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Spin Speed", &silentAntiAimSpinSpeed,
                 1.0f, 1080.0f, "%.0f deg/s");
         }
-        ImGui::TextWrapped("Fake pitch/yaw are injected on the observed bbft command-build path; PlayerControls.Update then restores real AimingData and the camera holder immediately after dispatch.");
+        ImGui::TextWrapped("Fake pitch/yaw are injected on the bbft path; PlayerFPSCamera._applyRotation is bypassed during dispatch to completely prevent camera jerking, then restored immediately after.");
         ImGui::TextDisabled("build:%ld restored:%ld preCull:%ld applied:%ld  %s",
             InterlockedCompareExchange(&silentAntiAimInputBuildCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
