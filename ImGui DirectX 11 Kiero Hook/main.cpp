@@ -3160,27 +3160,10 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
 
 static void RestoreCommandAntiAimCameraUnsafe()
 {
-    if (!silentAntiAimEnabled || !silentAntiAimLatestInputValid ||
-        !silentAntiAimRealCameraValid || !o_Transform_set_eulerAngles)
-        return;
-    __try {
-        // Same separation as the supplied source: fake angles stay in the command
-        // and native body pose; the camera is forced back to the persistent real
-        // view angle after game updates and again immediately before rendering.
-        // Never rotate both: in this game the FPS and TPS transforms participate
-        // in the same camera hierarchy, so writing both applies the correction
-        // twice and produces a visible kick. Match the source and restore only
-        // the transform for the currently selected view.
-        const uintptr_t activeCamera = thirdPersonEnabled ?
-            silentAntiAimCameraTpsTransform :
-            silentAntiAimCameraFpsTransform;
-        if (activeCamera)
-            o_Transform_set_eulerAngles(
-                activeCamera, silentAntiAimRealCameraAngles);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        silentAntiAimRealCameraValid = false;
-    }
+    // Intentionally empty. The command-angle path must not write arbitrary
+    // Euler values into Unity camera transforms: those transforms are owned by
+    // PlayerMainCamera/PlayerFPSCamera and writing the AimController fields made
+    // the scene disappear. Native camera state is left untouched.
 }
 
 void __fastcall hk_AimController_LateAim(
@@ -3188,7 +3171,7 @@ void __fastcall hk_AimController_LateAim(
 {
     o_AimController_LateAim(aimController, method);
     if (aimController != silentAntiAimLatestController) return;
-    RestoreCommandAntiAimCameraUnsafe();
+    // qod is retained only as a diagnostic boundary; no camera Transform writes.
     InterlockedIncrement(&silentAntiAimCommandCalls);
 }
 
@@ -6568,7 +6551,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (keyValidated) {
         ApplyCameraFov();
         ApplyCustomSkybox();
-        RestoreCommandAntiAimCameraUnsafe();
     }
 
 
@@ -6935,7 +6917,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Spin Speed", &silentAntiAimSpinSpeed,
                 1.0f, 1080.0f, "%.0f deg/s");
         }
-        ImGui::TextWrapped("Native command angles drive the complete game pose. Movement is corrected; the real view angle is accumulated from original mouse-command deltas and restored only on the active FPS/TPS transform after qod and before rendering.");
+        ImGui::TextWrapped("Native command angles drive the complete game pose. Movement is corrected; camera transforms are never mutated by anti-aim.");
         ImGui::TextDisabled("build:%ld camera:%ld applied:%ld  %s",
             InterlockedCompareExchange(&silentAntiAimInputBuildCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
