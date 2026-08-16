@@ -3163,10 +3163,40 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
 
-    // Apply after movement features, matching the supplied source's createMove.
-    if (silentAntiAimEnabled && player && command)
-        ApplyCommandAntiAim(player, command);
+    // KeyboardControl.bbft only builds/returns the command. The supplied source's
+    // callback_event_create_move runs when that command is consumed, not here.
+    // Applying fake AimingData in this factory left it visible to local camera
+    // updates and could process the same backing command more than once.
     return command;
+}
+
+void __fastcall hk_PlayerController_Command(
+    uintptr_t player, uintptr_t command, float deltaTime,
+    const Il2CppMethod* method)
+{
+    const bool localCommand = silentAntiAimEnabled && player && command &&
+        (!liveHudLocalPlayer || player == liveHudLocalPlayer);
+    if (localCommand)
+        ApplyCommandAntiAim(player, command);
+
+    // qhq(blr,float) is the dump-backed command-consumption boundary. Keep fake
+    // AimingData alive only while native code builds/queues the outgoing state.
+    o_PlayerController_Command(player, command, deltaTime, method);
+
+    if (!localCommand || !silentAntiAimRealCameraValid) return;
+    __try {
+        const uintptr_t aimController =
+            *reinterpret_cast<uintptr_t*>(player + 0xC8);
+        const uintptr_t aimingData = aimController ?
+            *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
+        if (aimingData) {
+            *reinterpret_cast<float*>(aimingData + 0x18) =
+                silentAntiAimRealCameraAngles.x;
+            *reinterpret_cast<float*>(aimingData + 0x28) =
+                silentAntiAimRealCameraAngles.y;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 static bool ReadAntiAimFpsCameraTransformUnsafe(uintptr_t* transform)
@@ -6994,8 +7024,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Spin Speed", &silentAntiAimSpinSpeed,
                 1.0f, 1080.0f, "%.0f deg/s");
         }
-        ImGui::TextWrapped("The supplied source architecture is used directly: fake pitch/yaw are written to AimingData, while the original blr input remains untouched; the FPSP/TPS holder is restored at Camera.FireOnPreCull.");
-        ImGui::TextDisabled("build:%ld input:%ld preCull:%ld applied:%ld  %s",
+        ImGui::TextWrapped("Fake AimingData exists only inside PlayerController.qhq while the outgoing command is consumed, then real pitch/yaw are restored immediately; the FPSP/TPS holder is also corrected before render.");
+        ImGui::TextDisabled("build:%ld consumed:%ld preCull:%ld applied:%ld  %s",
             InterlockedCompareExchange(&silentAntiAimInputBuildCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimCameraRestoreCalls, 0, 0),
@@ -7612,6 +7642,14 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimPreCullCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_CAMERA_FIRE_ON_PRE_CULL)) :
         antiAimPreCullCreateStatus;
+    const MH_STATUS antiAimConsumeCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_PLAYERCONTROLLER_COMMAND),
+        hk_PlayerController_Command,
+        (LPVOID*)&o_PlayerController_Command);
+    const MH_STATUS antiAimConsumeEnableStatus =
+        antiAimConsumeCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_PLAYERCONTROLLER_COMMAND)) :
+        antiAimConsumeCreateStatus;
     const MH_STATUS antiAimInputCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND),
         hk_KeyboardControl_BuildCommand,
@@ -7622,11 +7660,14 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimInputCreateStatus;
     silentAntiAimHookReady = antiAimPreCullCreateStatus == MH_OK &&
         antiAimPreCullEnableStatus == MH_OK &&
+        antiAimConsumeCreateStatus == MH_OK &&
+        antiAimConsumeEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
         antiAimInputEnableStatus == MH_OK;
 
-    LINDY_LOG("[anti-aim] source-port bbft=%d/%d; render preCull=%d/%d; ready=%d",
+    LINDY_LOG("[anti-aim] bbft=%d/%d; consume qhq=%d/%d; render preCull=%d/%d; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
+        (int)antiAimConsumeCreateStatus, (int)antiAimConsumeEnableStatus,
         (int)antiAimPreCullCreateStatus, (int)antiAimPreCullEnableStatus,
         silentAntiAimHookReady ? 1 : 0);
 
