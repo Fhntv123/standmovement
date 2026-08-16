@@ -3135,21 +3135,31 @@ static void ApplySilentStaticBackwardsBonesUnsafe(uintptr_t aimController)
             wrote = true;
         }
 
-        // Up/Down is independent from backwards yaw and is distributed through
-        // the upper chain so the pose bends naturally instead of moving the camera.
-        const float pitch = GetSilentAntiAimPitch();
-        if (pitch != 0.0f) {
-            const uintptr_t upperOffsets[] = { 0x30, 0x38, 0x40, 0x28, 0x20 };
-            const float upperWeights[] = { 0.08f, 0.12f, 0.18f, 0.25f, 0.37f };
-            for (int i = 0; i < 5; ++i) {
-                const uintptr_t bone =
-                    *reinterpret_cast<uintptr_t*>(bipedMap + upperOffsets[i]);
-                if (!bone) continue;
-                Vector3 local = o_Transform_get_localEulerAngles(bone);
-                local.x += pitch * upperWeights[i];
-                o_Transform_set_localEulerAngles(bone, local);
-                wrote = true;
-            }
+        // qod has already applied the real camera pitch to these bones. Adding a
+        // fixed value would remain camera-relative, so first cancel the real pitch
+        // and then apply the selected absolute Neutral/Down/Up target.
+        float realPitch = 0.0f;
+        if (silentAntiAimLatestInputValid) {
+            realPitch = NormalizeAngle180(silentAntiAimLatestRealAimAngle.x);
+        } else {
+            const uintptr_t liveAimingData =
+                *reinterpret_cast<uintptr_t*>(aimController + 0x88);
+            if (liveAimingData)
+                realPitch = NormalizeAngle180(
+                    reinterpret_cast<Vector3*>(liveAimingData + 0x18)->x);
+        }
+        const float absolutePitchDelta =
+            GetSilentAntiAimPitch() - realPitch;
+        const uintptr_t upperOffsets[] = { 0x30, 0x38, 0x40, 0x28, 0x20 };
+        const float upperWeights[] = { 0.08f, 0.12f, 0.18f, 0.25f, 0.37f };
+        for (int i = 0; i < 5; ++i) {
+            const uintptr_t bone =
+                *reinterpret_cast<uintptr_t*>(bipedMap + upperOffsets[i]);
+            if (!bone) continue;
+            Vector3 local = o_Transform_get_localEulerAngles(bone);
+            local.x += absolutePitchDelta * upperWeights[i];
+            o_Transform_set_localEulerAngles(bone, local);
+            wrote = true;
         }
         if (wrote) InterlockedIncrement(&silentAntiAimBonePasses);
     }
@@ -7107,7 +7117,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             const char* pitchModes[] = { "Neutral", "Down", "Up" };
             ImGui::SetNextItemWidth(190.0f);
             ImGui::Combo("Look", &silentAntiAimPitch, pitchModes, 3);
-            ImGui::TextWrapped("Static Backwards turns the complete third-person model 180 degrees. Look controls Neutral, Down or Up independently.");
+            ImGui::TextWrapped("Static Backwards turns the complete third-person model 180 degrees. Look is absolute: Neutral, Down or Up no longer follows camera pitch.");
         } else {
             ImGui::TextWrapped("Direction Jitter keeps the existing post-Mecanim full-body jitter mode.");
         }
