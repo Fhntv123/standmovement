@@ -275,7 +275,6 @@ struct Matrix16 {
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0x86C0E0
 #define OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE      0x86C9A0  // AimController.riz(Vector3)
 #define OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE      0x86C9F0  // AimController.rja() -> Vector3
-#define OFFSET_AIMCONTROLLER_LATE_AIM                0x86C5A0  // AimController.qod(), pose pass (not Unity LateUpdate)
 #define OFFSET_CAMERA_FIRE_ON_PRE_CULL                0x2EBF8F0 // Camera.FireOnPreCull(Camera), final render boundary
 #define OFFSET_AIMINGDATA_CLONE                      0x86F9C0
 #define OFFSET_TRANSFORM_GET_EULERANGLES            0x2F066B0
@@ -1923,7 +1922,6 @@ void(__fastcall* o_AimController_ApplySnapshot)(uintptr_t, uintptr_t, const Il2C
 uintptr_t(__fastcall* o_AimController_GetSnapshot)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 Vector3(__fastcall* o_AimController_GetHeadDirective)(uintptr_t, const Il2CppMethod*) = nullptr;
-void(__fastcall* o_AimController_LateAim)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_Camera_FireOnPreCull)(uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_AimingData_Clone)(uintptr_t, const Il2CppMethod*) = nullptr;
 
@@ -3046,6 +3044,7 @@ static bool CaptureCommandAntiAimInput(uintptr_t player, uintptr_t command)
             silentAntiAimRealCameraAngles.y);
         silentAntiAimRealCameraAngles.z = 0.0f;
         silentAntiAimLatestInputValid = true;
+        InterlockedIncrement(&silentAntiAimCommandCalls);
         liveHudLocalPlayer = player;
         return true;
     }
@@ -3076,11 +3075,23 @@ static void ApplyCommandAntiAim(uintptr_t player, uintptr_t command)
             NormalizeAngle360(realYaw - yawOffset),
             0.0f);
 
-        // dump.cs blr: bzyn +0x29 is bpg (TargetAngle=0), bzyo +0x2C
-        // is the command Vector3. The game now builds the full native pose from
-        // fake command angles instead of any manual BipedMap rotation.
-        *reinterpret_cast<uint8_t*>(command + 0x29) = 0;
-        *reinterpret_cast<Vector3*>(command + 0x2C) = fakeAngles;
+        // Exact port of the supplied CLocalPlayer::setViewAngles(): it does NOT
+        // replace CInputs/blr angle mode or angle vector. It writes the two live
+        // AimingData scalar components directly:
+        //   m_angPitch.pitch -> current dump curAimAngle.x (+0x18)
+        //   m_angYaw.yaw     -> current dump curEulerAngles.y (+0x28)
+        // Replacing blr was the feedback path that made local camera state follow
+        // every fake TargetAngle before render restoration.
+        const uintptr_t aimController =
+            *reinterpret_cast<uintptr_t*>(player + 0xC8);
+        const uintptr_t aimingData = aimController ?
+            *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
+        if (!aimingData) {
+            strcpy_s(silentAntiAimStatus, "Waiting for live AimingData");
+            return;
+        }
+        *reinterpret_cast<float*>(aimingData + 0x18) = fakeAngles.x;
+        *reinterpret_cast<float*>(aimingData + 0x28) = fakeAngles.y;
         FixAntiAimMovement(command, realYaw, fakeAngles.y);
         silentAntiAimLatestFakeAngles = fakeAngles;
         InterlockedIncrement(&silentAntiAimAppliedCalls);
@@ -3215,14 +3226,6 @@ static void RestoreAntiAimCameraTransformUnsafe(uintptr_t transform)
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
-void __fastcall hk_AimController_LateAim(
-    uintptr_t aimController, const Il2CppMethod* method)
-{
-    o_AimController_LateAim(aimController, method);
-    if (aimController == silentAntiAimLatestController)
-        InterlockedIncrement(&silentAntiAimCommandCalls);
-}
-
 void __fastcall hk_Camera_FireOnPreCull(
     uintptr_t camera, const Il2CppMethod* method)
 {
@@ -3231,22 +3234,21 @@ void __fastcall hk_Camera_FireOnPreCull(
     // CAntiAim::lateUpdate was incorrectly mapped to AimController.qod; qod is
     // only a Controller pose pass and later camera code can overwrite it.
     o_Camera_FireOnPreCull(camera, method);
-    if (!silentAntiAimEnabled || !camera || !o_Component_get_transform) return;
+    if (!silentAntiAimEnabled || !camera) return;
 
     __try {
-        const uintptr_t renderedTransform = o_Component_get_transform(camera);
-        if (!renderedTransform) return;
-
-        uintptr_t fpsTransform = 0;
-        uintptr_t tpsTransform = 0;
-        const bool isFpsCamera =
-            ReadAntiAimFpsCameraTransformUnsafe(&fpsTransform) &&
-            renderedTransform == fpsTransform;
-        const bool isTpsCamera =
-            ReadAntiAimTpsCameraTransformUnsafe(&tpsTransform) &&
-            renderedTransform == tpsTransform;
-        if (isFpsCamera || isTpsCamera)
-            RestoreAntiAimCameraTransformUnsafe(renderedTransform);
+        // The supplied getCamera() restores AimController.m_FPSP or
+        // PlayerMainCamera.getTransform(). m_FPSP is a holder Transform, not
+        // necessarily Camera.transform; comparing those pointers suppressed the
+        // restore entirely. Run once for Unity's active main Camera, then restore
+        // the same holder Transform selected by the source architecture.
+        const uintptr_t mainCamera = o_Camera_get_main ? o_Camera_get_main() : 0;
+        if (mainCamera && camera != mainCamera) return;
+        uintptr_t cameraTransform = 0;
+        const bool cameraReady = thirdPersonEnabled ?
+            ReadAntiAimTpsCameraTransformUnsafe(&cameraTransform) :
+            ReadAntiAimFpsCameraTransformUnsafe(&cameraTransform);
+        if (cameraReady) RestoreAntiAimCameraTransformUnsafe(cameraTransform);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
@@ -6992,8 +6994,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Spin Speed", &silentAntiAimSpinSpeed,
                 1.0f, 1080.0f, "%.0f deg/s");
         }
-        ImGui::TextWrapped("Fake TargetAngle stays in the outgoing command. The real angle is accumulated from original input; the exact active FPS/TPS camera is restored at Unity Camera.FireOnPreCull, immediately before rendering.");
-        ImGui::TextDisabled("build:%ld pose:%ld preCull:%ld applied:%ld  %s",
+        ImGui::TextWrapped("The supplied source architecture is used directly: fake pitch/yaw are written to AimingData, while the original blr input remains untouched; the FPSP/TPS holder is restored at Camera.FireOnPreCull.");
+        ImGui::TextDisabled("build:%ld input:%ld preCull:%ld applied:%ld  %s",
             InterlockedCompareExchange(&silentAntiAimInputBuildCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimCameraRestoreCalls, 0, 0),
@@ -7602,14 +7604,6 @@ DWORD WINAPI HackThread(LPVOID)
         MH_EnableHook((LPVOID)(base + OFFSET_HITMARKERVIEW_LOCAL_HIT)) : hitLogCreateStatus;
     if (hitLogCreateStatus != MH_OK || hitLogEnableStatus != MH_OK)
         hitLogEnabled = false;
-    const MH_STATUS antiAimLateAimCreateStatus = MH_CreateHook(
-        (LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM),
-        hk_AimController_LateAim,
-        (LPVOID*)&o_AimController_LateAim);
-    const MH_STATUS antiAimLateAimEnableStatus =
-        antiAimLateAimCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM)) :
-        antiAimLateAimCreateStatus;
     const MH_STATUS antiAimPreCullCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_CAMERA_FIRE_ON_PRE_CULL),
         hk_Camera_FireOnPreCull,
@@ -7626,16 +7620,13 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimInputCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND)) :
         antiAimInputCreateStatus;
-    silentAntiAimHookReady = antiAimLateAimCreateStatus == MH_OK &&
-        antiAimLateAimEnableStatus == MH_OK &&
-        antiAimPreCullCreateStatus == MH_OK &&
+    silentAntiAimHookReady = antiAimPreCullCreateStatus == MH_OK &&
         antiAimPreCullEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
         antiAimInputEnableStatus == MH_OK;
 
-    LINDY_LOG("[anti-aim] command bbft=%d/%d; pose qod=%d/%d; render preCull=%d/%d; ready=%d",
+    LINDY_LOG("[anti-aim] source-port bbft=%d/%d; render preCull=%d/%d; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
-        (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
         (int)antiAimPreCullCreateStatus, (int)antiAimPreCullEnableStatus,
         silentAntiAimHookReady ? 1 : 0);
 
