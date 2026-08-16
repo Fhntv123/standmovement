@@ -3828,7 +3828,78 @@ static bool ReadNativeCastTargetDamage(uintptr_t castResult, void* player, int& 
     return false;
 }
 
-static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t, Vector3& outDirection)
+static bool IsStrictlyPenetrableSurface(int type)
+{
+    // dump1 cex. Fail closed: only thin/breakable materials are accepted without
+    // weapon-specific native damage data. Concrete, brick, metal, ground, etc. reject.
+    return type == 1 || type == 2 || type == 3 || type == 11 ||
+        type == 12 || type == 22 || type == 26;
+}
+
+static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float distance,
+    void* targetPlayer, bool allowWallbang)
+{
+    if (!targetPlayer || !o_Physics_RaycastAll || !o_RaycastHit_get_collider ||
+        !o_Component_GetInParent || !g_PlayerControllerReflectionType)
+        return false;
+    __try {
+        Il2CppArray* rayHits = o_Physics_RaycastAll(
+            origin, direction, distance + 0.35f, -1, 1, nullptr);
+        const uintptr_t array = reinterpret_cast<uintptr_t>(rayHits);
+        const size_t count = array ? *reinterpret_cast<size_t*>(array + 0x18) : 0;
+        if (!array || count == 0 || count > 128) return false;
+
+        // RaycastAll is not guaranteed to be ordered. Find the target's nearest hit and
+        // independently inspect every collider before it. No collider-free fallback.
+        float targetDistance = 3.402823466e+38F;
+        for (size_t i = 0; i < count; ++i) {
+            RaycastHitNative* hit = reinterpret_cast<RaycastHitNative*>(
+                array + 0x20 + i * sizeof(RaycastHitNative));
+            if (!isfinite(hit->distance) || hit->distance < 0.0f) continue;
+            const uintptr_t collider = o_RaycastHit_get_collider(hit, nullptr);
+            if (!collider) continue;
+            const uintptr_t hitPlayer = o_Component_GetInParent(
+                collider, reinterpret_cast<uintptr_t>(g_PlayerControllerReflectionType),
+                true, nullptr);
+            if (hitPlayer == reinterpret_cast<uintptr_t>(targetPlayer) &&
+                hit->distance < targetDistance)
+                targetDistance = hit->distance;
+        }
+        if (!isfinite(targetDistance) || targetDistance == 3.402823466e+38F)
+            return false;
+
+        int obstructionCount = 0;
+        for (size_t i = 0; i < count; ++i) {
+            RaycastHitNative* hit = reinterpret_cast<RaycastHitNative*>(
+                array + 0x20 + i * sizeof(RaycastHitNative));
+            if (!isfinite(hit->distance) || hit->distance < 0.0f ||
+                hit->distance >= targetDistance - 0.05f)
+                continue;
+            const uintptr_t collider = o_RaycastHit_get_collider(hit, nullptr);
+            if (!collider) return false;
+            const uintptr_t hitPlayer = o_Component_GetInParent(
+                collider, reinterpret_cast<uintptr_t>(g_PlayerControllerReflectionType),
+                true, nullptr);
+            if (hitPlayer) {
+                // Any different player before the selected target blocks the shot.
+                if (hitPlayer != reinterpret_cast<uintptr_t>(targetPlayer)) return false;
+                continue;
+            }
+            ++obstructionCount;
+            if (!allowWallbang || obstructionCount > 1 || !o_Component_get_tag ||
+                !o_SurfaceType_FromTag)
+                return false;
+            Il2CppString* tag = o_Component_get_tag(collider, nullptr);
+            const int surface = tag ? o_SurfaceType_FromTag(tag, nullptr) : 0;
+            if (!IsStrictlyPenetrableSurface(surface)) return false;
+        }
+        return obstructionCount == 0 || (allowWallbang && obstructionCount == 1);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static bool FindVisibleAimbotDirection(Vector3 origin, bool forceDirectVisibility,
+    Vector3& outDirection)
 {
     void* localPlayer = GetLocalPC();
     if (!localPlayer) return false;
@@ -3849,6 +3920,7 @@ static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t, Vector3& outDi
         if (!player || player == localPlayer) continue;
         const unsigned char team = GetPCTeam(player);
         if (team == 0 || team == 3 || team == localTeam) continue;
+        if (GetPCHealth(player) == 0) continue;
 
         Vector3 head;
         if (!GetAimbotHead(player, head)) continue;
@@ -3857,19 +3929,14 @@ static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t, Vector3& outDi
         if (!isfinite(distance) || distance < 0.5f) continue;
         const Vector3 candidate(delta.x / distance, delta.y / distance, delta.z / distance);
 
-        bool visible = !aimbotVisibleCheck || aimbotAutoWall;
-        if (!visible && o_Physics_RaycastHit) {
-            __try {
-                RaycastHitNative hit = {};
-                const bool blocked = o_Physics_RaycastHit(origin, candidate, &hit,
-                    distance + 0.35f, -1, 1, nullptr);
-                // A clear ray is visible. If Unity reports a collider, accept only when
-                // its contact is at the target head rather than an intervening wall.
-                visible = !blocked || hit.point.Distance(head) <= 1.75f;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) { visible = false; }
+        bool reachable = !forceDirectVisibility && !aimbotVisibleCheck;
+        if (!reachable) {
+            // Auto Fire always passes forceDirectVisibility=true and can never wallbang.
+            // Manual Auto Wall is limited to one strictly tagged thin/breakable surface.
+            reachable = ValidateAimbotRayPath(origin, candidate, distance, player,
+                !forceDirectVisibility && aimbotAutoWall);
         }
-        if (!visible) continue;
+        if (!reachable) continue;
         ++visibleCount;
         if (distance < bestDistance) {
             bestDistance = distance;
@@ -3890,7 +3957,7 @@ HitCasterCer __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction,
     if (keyValidated && insideLocalGunFire && (aimbotEnabled || visibleAimbotEnabled)) {
         InterlockedIncrement(&aimbotShots);
         Vector3 targetDirection;
-        if (FindVisibleAimbotDirection(origin, 0, targetDirection)) {
+        if (FindVisibleAimbotDirection(origin, false, targetDirection)) {
             direction = targetDirection;
             visibleSnapDirection = targetDirection;
             applyVisibleSnapAfterCast = visibleAimbotEnabled;
@@ -4038,14 +4105,15 @@ static ULONGLONG GetNativeAutoFireIntervalMs(uintptr_t gun)
 
 static bool HasVisibleTargetBeforeNativeFire()
 {
-    // No separate Raycaster and no background scanner: use the same live cjq
-    // parameters and exact target test as the real aimbot shot path.
-    if (!aimbotLastHitParameters) return true; // one native bootstrap command obtains cjq
+    // Auto Fire is deliberately stricter than manual aim: it requires a verified
+    // PlayerController collider with zero intervening colliders. Auto Wall never
+    // authorizes automatic firing through a wall.
     Vector3 origin;
     bool haveOrigin = false;
     __try {
         const uintptr_t camera = GetCamera();
-        const uintptr_t transform = camera && o_Component_get_transform ? o_Component_get_transform(camera) : 0;
+        const uintptr_t transform = camera && o_Component_get_transform ?
+            o_Component_get_transform(camera) : 0;
         if (transform && o_Transform_get_position) {
             origin = o_Transform_get_position(transform);
             haveOrigin = true;
@@ -4053,7 +4121,7 @@ static bool HasVisibleTargetBeforeNativeFire()
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
     Vector3 direction;
-    return haveOrigin && FindVisibleAimbotDirection(origin, aimbotLastHitParameters, direction);
+    return haveOrigin && FindVisibleAimbotDirection(origin, true, direction);
 }
 
 void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, float frameTime, float commandTime, const Il2CppMethod* method)
@@ -6979,13 +7047,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Visible Check", &aimbotVisibleCheck);
         if (aimbotVisibleCheck) {
             ImGui::Checkbox("Auto Wall", &aimbotAutoWall);
-            if (aimbotAutoWall) {
-                ImGui::TextDisabled("Uses target hit-list and native damage");
-                ImGui::SliderFloat("Auto Wall Min Damage", &aimbotAutoWallMinDamage,
-                    1.0f, 100.0f, "%.0f");
-            }
+            if (aimbotAutoWall)
+                ImGui::TextDisabled("Manual aim: one thin/breakable wall max");
         }
         ImGui::Checkbox("Auto Fire", &aimbotAutoFire);
+        if (aimbotAutoFire) ImGui::TextDisabled("Direct line of sight only");
         ImGui::Text("FOV: %.0f degrees", aimbotFov);
         ImGui::TextWrapped("Status: %s", aimbotStatus);
         ImGui::TextDisabled("direction=%ld scanned=%ld visible=%ld applied=%ld",
