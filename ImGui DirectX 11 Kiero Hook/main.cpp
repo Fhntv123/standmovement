@@ -3832,8 +3832,9 @@ static bool IsStrictlyPenetrableSurface(int type)
 {
     // dump1 cex. Fail closed: only thin/breakable materials are accepted without
     // weapon-specific native damage data. Concrete, brick, metal, ground, etc. reject.
-    return type == 1 || type == 2 || type == 3 || type == 11 ||
-        type == 12 || type == 22 || type == 26;
+    return type == 1 || type == 2 || type == 3 || type == 4 ||
+        type == 5 || type == 6 || type == 11 || type == 12 ||
+        type == 22 || type == 26;
 }
 
 static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float distance,
@@ -3931,10 +3932,10 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceDirectVisibilit
 
         bool reachable = !forceDirectVisibility && !aimbotVisibleCheck;
         if (!reachable) {
-            // Auto Fire always passes forceDirectVisibility=true and can never wallbang.
-            // Manual Auto Wall is limited to one strictly tagged thin/breakable surface.
+            // Auto Fire always validates the complete path. When Auto Wall is enabled,
+            // that verified path may contain one known penetrable surface.
             reachable = ValidateAimbotRayPath(origin, candidate, distance, player,
-                !forceDirectVisibility && aimbotAutoWall);
+                aimbotAutoWall);
         }
         if (!reachable) continue;
         ++visibleCount;
@@ -4105,9 +4106,8 @@ static ULONGLONG GetNativeAutoFireIntervalMs(uintptr_t gun)
 
 static bool HasVisibleTargetBeforeNativeFire()
 {
-    // Auto Fire is deliberately stricter than manual aim: it requires a verified
-    // PlayerController collider with zero intervening colliders. Auto Wall never
-    // authorizes automatic firing through a wall.
+    // Auto Fire always requires a verified PlayerController collider. Auto Wall may
+    // additionally authorize exactly one known penetrable surface before that target.
     Vector3 origin;
     bool haveOrigin = false;
     __try {
@@ -7048,10 +7048,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (aimbotVisibleCheck) {
             ImGui::Checkbox("Auto Wall", &aimbotAutoWall);
             if (aimbotAutoWall)
-                ImGui::TextDisabled("Manual aim: one thin/breakable wall max");
+                ImGui::TextDisabled("Aim + Auto Fire: one penetrable wall max");
         }
         ImGui::Checkbox("Auto Fire", &aimbotAutoFire);
-        if (aimbotAutoFire) ImGui::TextDisabled("Direct line of sight only");
+        if (aimbotAutoFire) ImGui::TextDisabled(aimbotAutoWall ? "Direct or verified wallbang" : "Direct line of sight only");
         ImGui::Text("FOV: %.0f degrees", aimbotFov);
         ImGui::TextWrapped("Status: %s", aimbotStatus);
         ImGui::TextDisabled("direction=%ld scanned=%ld visible=%ld applied=%ld",
