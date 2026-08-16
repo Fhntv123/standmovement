@@ -481,7 +481,7 @@ float thirdPersonDistanceAdjustment = 0.0f;
 volatile LONG pendingThirdPersonCommand = 0;
 Il2CppClass* g_GameControllerClass = nullptr;
 Il2CppField* g_GameControllerInstanceField = nullptr;
-void(__fastcall* o_CheatRuntime_SetThirdPerson)(uintptr_t, bool) = nullptr;
+void(__fastcall* o_CheatRuntime_SetThirdPerson)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CheatRuntime_SetBhop)(uintptr_t, uintptr_t, bool) = nullptr;
 char thirdPersonStatus[96] = "Disabled";
 bool worldColorEnabled = false;
@@ -2187,15 +2187,15 @@ static uintptr_t GetNativeCheatRuntime()
         if (!name) return 0;
         struct RuntimeField { const char* className; uintptr_t offset; };
         static const RuntimeField fields[] = {
-            { "OfflineModeController", 0x290 },
-            { "GrenadeBattleWithBotsController", 0x2D8 },
-            { "FreeForAllWithBotsController", 0x2B0 },
-            { "DefuseWithBotsController", 0x2F0 },
-            { "EscalationWithBotsController", 0x348 },
-            { "DeathmatchWithBotsController", 0x2B8 },
-            { "ArmsRaceWithBotsController", 0x2E0 },
-            { "DuelV2WithBotsController", 0x290 },
-            { "RankedDefuseController", 0x320 }
+            { "OfflineModeController", 0x298 },
+            { "GrenadeBattleWithBotsController", 0x2E0 },
+            { "FreeForAllWithBotsController", 0x2B8 },
+            { "DefuseWithBotsController", 0x2F8 },
+            { "EscalationWithBotsController", 0x358 },
+            { "DeathmatchWithBotsController", 0x2C0 },
+            { "ArmsRaceWithBotsController", 0x2E8 },
+            { "DuelV2WithBotsController", 0x298 },
+            { "RankedDefuseController", 0x328 }
         };
         for (const RuntimeField& field : fields)
             if (strcmp(name, field.className) == 0)
@@ -2264,7 +2264,7 @@ static bool ApplyNativeThirdPersonState()
         return false;
     }
     __try {
-        o_CheatRuntime_SetThirdPerson(runtime, thirdPersonEnabled);
+        o_CheatRuntime_SetThirdPerson(runtime, thirdPersonEnabled, nullptr);
         strcpy_s(thirdPersonStatus, thirdPersonEnabled ?
             "Active; custom built-in TPS camera" : "Disabled; original offsets restored");
         return true;
@@ -4200,7 +4200,7 @@ void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, 
                 aimbotAutoFireNextDecisionAt = now + GetNativeAutoFireIntervalMs(instance);
                 InterlockedIncrement(&aimbotAutoFireNativeCommands);
             } else {
-                aimbotAutoFireNextDecisionAt = now + 50;
+                aimbotAutoFireNextDecisionAt = now;
                 InterlockedIncrement(&aimbotAutoFireRejected);
                 strcpy_s(aimbotStatus, "Auto Fire blocked: no direct shot or valid wallbang");
             }
@@ -7098,21 +7098,12 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Visible Check", &aimbotVisibleCheck);
         if (aimbotVisibleCheck) {
             ImGui::Checkbox("Auto Wall", &aimbotAutoWall);
-            if (aimbotAutoWall) {
-                ImGui::TextDisabled("Native penetration + exact target damage");
+            if (aimbotAutoWall)
                 ImGui::SliderFloat("Auto Wall Min Damage", &aimbotAutoWallMinDamage,
                     1.0f, 100.0f, "%.0f");
-            }
         }
         ImGui::Checkbox("Auto Fire", &aimbotAutoFire);
-        if (aimbotAutoFire) ImGui::TextDisabled(aimbotAutoWall ? "Direct or verified wallbang" : "Direct line of sight only");
         ImGui::Text("FOV: %.0f degrees", aimbotFov);
-        ImGui::TextWrapped("Status: %s", aimbotStatus);
-        ImGui::TextDisabled("direction=%ld scanned=%ld visible=%ld applied=%ld",
-            InterlockedCompareExchange(&aimbotShots, 0, 0),
-            InterlockedCompareExchange(&aimbotTargetsScanned, 0, 0),
-            InterlockedCompareExchange(&aimbotVisibleTargets, 0, 0),
-            InterlockedCompareExchange(&aimbotApplied, 0, 0));
         ImGui::Spacing();
         ImGui::TextColored(accent, "Keybinds");
         ImGui::Separator();
@@ -7624,7 +7615,7 @@ DWORD WINAPI HackThread(LPVOID)
 
 
 
-    o_CheatRuntime_SetThirdPerson = (void(__fastcall*)(uintptr_t, bool))(base + OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON);
+    o_CheatRuntime_SetThirdPerson = (void(__fastcall*)(uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON);
     o_CheatRuntime_SetBhop = (void(__fastcall*)(uintptr_t, uintptr_t, bool))(base + OFFSET_CHEAT_RUNTIME_SET_BHOP);
     o_GetPlayerController = (uintptr_t(__fastcall*)())(base + OFFSET_GET_PLAYERCONTROLLER);
 
