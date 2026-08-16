@@ -3167,55 +3167,6 @@ static bool CacheSilentStaticPoseUnsafe(uintptr_t aimController)
     }
 }
 
-struct SilentAimSuppressionState
-{
-    uintptr_t bipedMap;
-    uintptr_t tuningParams;
-    bool oldIkEnabled;
-    bool oldDisableSpinesRotation;
-    bool validBiped;
-    bool validTuning;
-};
-
-static SilentAimSuppressionState BeginSilentAimSuppressionUnsafe(
-    uintptr_t aimController)
-{
-    SilentAimSuppressionState state = {};
-    __try {
-        state.bipedMap = *reinterpret_cast<uintptr_t*>(aimController + 0x28);
-        if (state.bipedMap) {
-            state.oldIkEnabled =
-                *reinterpret_cast<bool*>(state.bipedMap + 0x260);
-            *reinterpret_cast<bool*>(state.bipedMap + 0x260) = false;
-            state.validBiped = true;
-        }
-        state.tuningParams =
-            *reinterpret_cast<uintptr_t*>(aimController + 0xB8);
-        if (state.tuningParams) {
-            state.oldDisableSpinesRotation =
-                *reinterpret_cast<bool*>(state.tuningParams + 0x10);
-            *reinterpret_cast<bool*>(state.tuningParams + 0x10) = true;
-            state.validTuning = true;
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-    return state;
-}
-
-static void EndSilentAimSuppressionUnsafe(
-    const SilentAimSuppressionState& state)
-{
-    __try {
-        if (state.validBiped && state.bipedMap)
-            *reinterpret_cast<bool*>(state.bipedMap + 0x260) =
-                state.oldIkEnabled;
-        if (state.validTuning && state.tuningParams)
-            *reinterpret_cast<bool*>(state.tuningParams + 0x10) =
-                state.oldDisableSpinesRotation;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-}
-
 static void ApplySilentStaticPoseForRenderUnsafe()
 {
     if (!silentAntiAimEnabled || silentAntiAimMode != 1 ||
@@ -3253,9 +3204,8 @@ static void ApplySilentStaticPoseForRenderUnsafe()
         silentAntiAimRenderedYaw = targetYaw;
         silentAntiAimLastSpinRenderMs = nowMs;
 
-        // IK and spine aiming are suppressed during qod, so camera pitch no longer
-        // drags arms on Y. Apply absolute Up/Down only once per new game pose and
-        // only to Neck + Head; arms, shoulders and hands remain animation-static.
+        // Apply absolute Up/Down only once per new game pose and only to
+        // Neck + Head. Arms, shoulders and hands are never written by Static.
         if (freshGamePose || pitchChanged) {
             const float targetPitch = GetSilentAntiAimPitch();
             const float weights[2] = { 0.25f, 0.75f };
@@ -3352,18 +3302,16 @@ void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
     InterlockedIncrement(&silentAntiAimLateAimCalls);
+    o_AimController_LateAim(aimController, method);
+
     const bool isLocal = silentAntiAimEnabled &&
         (aimController == silentAntiAimCachedController ||
          IsLocalAimControllerUnsafe(aimController));
-    SilentAimSuppressionState suppression = {};
-    if (isLocal && silentAntiAimMode == 1)
-        suppression = BeginSilentAimSuppressionUnsafe(aimController);
-
-    o_AimController_LateAim(aimController, method);
-
     if (isLocal) {
         if (silentAntiAimMode == 1) {
-            EndSilentAimSuppressionUnsafe(suppression);
+            // Never disable BipedMap.IkEnabled: it gates the animated rig and
+            // freezes the model. Let qod/Mecanim finish normally, then render the
+            // cached Hip/Neck/Head delta without touching arms or locomotion.
             if (CacheSilentStaticPoseUnsafe(aimController))
                 InterlockedIncrement(&silentAntiAimPoseGeneration);
         } else {
@@ -7258,7 +7206,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     1.0f, 1080.0f, "%.0f deg/s");
             }
             ImGui::TextWrapped(silentAntiAimSpin ?
-                "Spin is render-synchronized up to 250 Hz. IK/spine camera aiming is suppressed, so arms stay stable and Look affects only Neck + Head." :
+                "Spin is render-synchronized up to 250 Hz. Animation and IK stay enabled; Static writes only Hip, Neck and Head." :
                 "Static Backwards turns the rendered third-person rig 180 degrees. Look is absolute and camera-independent.");
         } else {
             ImGui::TextWrapped("Direction Jitter keeps the existing post-Mecanim full-body jitter mode.");
