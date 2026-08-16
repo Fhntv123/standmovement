@@ -423,9 +423,10 @@ bool showTrail = false;
 bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool silentAntiAimEnabled = false;
-int silentAntiAimMode = 0; // 0 = Direction Jitter, 1 = Static Backwards
+int silentAntiAimMode = 0; // 0 = Static, 1 = Jitter, 2 = Spin
 int silentAntiAimPitch = 0; // 0 = Neutral, 1 = Down, 2 = Up
-bool silentAntiAimSpin = false;
+float silentAntiAimYaw = 180.0f;
+float silentAntiAimJitterRange = 45.0f;
 float silentAntiAimSpinSpeed = 180.0f; // degrees per second
 bool silentAntiAimHookReady = false;
 volatile LONG silentAntiAimInputBuildCalls = 0;
@@ -434,24 +435,13 @@ volatile LONG silentAntiAimAppliedCalls = 0;
 bool silentAntiAimLatestInputValid = false;
 bool silentAntiAimLatestFiring = false;
 uintptr_t silentAntiAimLatestPlayer = 0;
+uintptr_t silentAntiAimLatestController = 0;
 Vector3 silentAntiAimLatestRealAimAngle;
 Vector3 silentAntiAimLatestRealAimEuler;
-volatile LONG silentAntiAimSnapshotCalls = 0;
-volatile LONG silentAntiAimApplySnapshotCalls = 0;
-volatile LONG silentAntiAimDirectiveSetCalls = 0;
-volatile LONG silentAntiAimDirectiveGetCalls = 0;
-volatile LONG silentAntiAimDirectiveApplied = 0;
-volatile LONG silentAntiAimPoseApplied = 0;
-volatile LONG silentAntiAimLateAimCalls = 0;
-volatile LONG silentAntiAimBonePasses = 0;
-uintptr_t silentAntiAimCachedController = 0;
-uintptr_t silentAntiAimCachedBiped = 0;
-uintptr_t silentAntiAimCachedHip = 0;
-uintptr_t silentAntiAimCachedUpperBones[5] = {};
-volatile LONG silentAntiAimPoseGeneration = 0;
-LONG silentAntiAimRenderedGeneration = -1;
-float silentAntiAimRenderedYaw = 0.0f;
-ULONGLONG silentAntiAimLastSpinRenderMs = 0;
+Vector3 silentAntiAimLatestFakeAngles;
+ULONGLONG silentAntiAimLastSpinTick = 0;
+float silentAntiAimSpinYaw = 0.0f;
+bool silentAntiAimJitterFlip = false;
 char silentAntiAimStatus[96] = "Disabled";
 bool thirdPersonEnabled = false;
 uintptr_t customizedThirdPersonPlayer = 0;
@@ -1480,7 +1470,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(airJump); SAVE_BOOL(edgeBugEnabled); SAVE_FLOAT(edgeBugPullForce);
     SAVE_BOOL(velocityLimiterEnabled); SAVE_FLOAT(velocityLimit);
     SAVE_BOOL(aimbotEnabled); SAVE_BOOL(visibleAimbotEnabled); SAVE_BOOL(aimbotVisibleCheck); SAVE_BOOL(aimbotAutoWall); SAVE_FLOAT(aimbotAutoWallMinDamage); SAVE_BOOL(aimbotAutoFire);
-    SAVE_BOOL(silentAntiAimEnabled); SAVE_INT(silentAntiAimMode); SAVE_INT(silentAntiAimPitch); SAVE_BOOL(silentAntiAimSpin); SAVE_FLOAT(silentAntiAimSpinSpeed); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(freezeCorpsesFadeEnabled); SAVE_FLOAT(freezeCorpsesFadeDuration); SAVE_INT(freezeCorpsesChamsMode); SAVE_FLOAT(freezeCorpsesChamsAlpha); SAVE_FLOAT(freezeCorpsesMetallic); SAVE_FLOAT(freezeCorpsesSmoothness); SAVE_FLOAT(freezeCorpsesAnimationSpeed); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
+    SAVE_BOOL(silentAntiAimEnabled); SAVE_INT(silentAntiAimMode); SAVE_INT(silentAntiAimPitch); SAVE_FLOAT(silentAntiAimYaw); SAVE_FLOAT(silentAntiAimJitterRange); SAVE_FLOAT(silentAntiAimSpinSpeed); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(freezeCorpsesFadeEnabled); SAVE_FLOAT(freezeCorpsesFadeDuration); SAVE_INT(freezeCorpsesChamsMode); SAVE_FLOAT(freezeCorpsesChamsAlpha); SAVE_FLOAT(freezeCorpsesMetallic); SAVE_FLOAT(freezeCorpsesSmoothness); SAVE_FLOAT(freezeCorpsesAnimationSpeed); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
     SAVE_BOOL(espShowName); SAVE_BOOL(espShowHealth); SAVE_BOOL(espShowWeapon); SAVE_BOOL(espGradient);
     SAVE_BOOL(worldColorEnabled); SAVE_INT(worldColorMode); SAVE_FLOAT(worldColorStrength); SAVE_FLOAT(worldColorAlpha);
     SAVE_BOOL(penetrableSurfacesEnabled); SAVE_FLOAT(penetrableSurfaceAlpha); SAVE_FLOAT(penetrableSurfaceScanDistance);
@@ -1550,7 +1540,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(airJump); LOAD_BOOL(edgeBugEnabled); LOAD_FLOAT(edgeBugPullForce);
     LOAD_BOOL(velocityLimiterEnabled); LOAD_FLOAT(velocityLimit);
     LOAD_BOOL(aimbotEnabled); LOAD_BOOL(visibleAimbotEnabled); LOAD_BOOL(aimbotVisibleCheck); LOAD_BOOL(aimbotAutoWall); LOAD_FLOAT(aimbotAutoWallMinDamage); LOAD_BOOL(aimbotAutoFire);
-    LOAD_BOOL(silentAntiAimEnabled); LOAD_INT(silentAntiAimMode); LOAD_INT(silentAntiAimPitch); if (silentAntiAimMode < 0 || silentAntiAimMode > 1) silentAntiAimMode = 0; if (silentAntiAimPitch < 0 || silentAntiAimPitch > 2) silentAntiAimPitch = 0; LOAD_BOOL(silentAntiAimSpin); LOAD_FLOAT(silentAntiAimSpinSpeed); if (silentAntiAimSpinSpeed < 1.0f) silentAntiAimSpinSpeed = 1.0f; if (silentAntiAimSpinSpeed > 1080.0f) silentAntiAimSpinSpeed = 1080.0f; LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(freezeCorpsesFadeEnabled); LOAD_FLOAT(freezeCorpsesFadeDuration); LOAD_INT(freezeCorpsesChamsMode); LOAD_FLOAT(freezeCorpsesChamsAlpha); LOAD_FLOAT(freezeCorpsesMetallic); LOAD_FLOAT(freezeCorpsesSmoothness); LOAD_FLOAT(freezeCorpsesAnimationSpeed); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
+    LOAD_BOOL(silentAntiAimEnabled); LOAD_INT(silentAntiAimMode); LOAD_INT(silentAntiAimPitch); LOAD_FLOAT(silentAntiAimYaw); LOAD_FLOAT(silentAntiAimJitterRange); LOAD_FLOAT(silentAntiAimSpinSpeed); if (silentAntiAimMode < 0 || silentAntiAimMode > 2) silentAntiAimMode = 0; if (silentAntiAimPitch < 0 || silentAntiAimPitch > 2) silentAntiAimPitch = 0; if (silentAntiAimYaw < -180.0f) silentAntiAimYaw = -180.0f; if (silentAntiAimYaw > 180.0f) silentAntiAimYaw = 180.0f; if (silentAntiAimJitterRange < 0.0f) silentAntiAimJitterRange = 0.0f; if (silentAntiAimJitterRange > 180.0f) silentAntiAimJitterRange = 180.0f; if (silentAntiAimSpinSpeed < 1.0f) silentAntiAimSpinSpeed = 1.0f; if (silentAntiAimSpinSpeed > 1080.0f) silentAntiAimSpinSpeed = 1080.0f; LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(freezeCorpsesFadeEnabled); LOAD_FLOAT(freezeCorpsesFadeDuration); LOAD_INT(freezeCorpsesChamsMode); LOAD_FLOAT(freezeCorpsesChamsAlpha); LOAD_FLOAT(freezeCorpsesMetallic); LOAD_FLOAT(freezeCorpsesSmoothness); LOAD_FLOAT(freezeCorpsesAnimationSpeed); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
     LOAD_BOOL(espShowName); LOAD_BOOL(espShowHealth); LOAD_BOOL(espShowWeapon); LOAD_BOOL(espGradient);
     LOAD_BOOL(worldColorEnabled); LOAD_INT(worldColorMode); LOAD_FLOAT(worldColorStrength); LOAD_FLOAT(worldColorAlpha);
     LOAD_BOOL(penetrableSurfacesEnabled); LOAD_FLOAT(penetrableSurfaceAlpha); LOAD_FLOAT(penetrableSurfaceScanDistance);
@@ -2949,55 +2939,48 @@ static float NormalizeAngle180(float angle)
     return angle;
 }
 
-static float GetSilentAntiAimPitch()
+static float GetCommandAntiAimPitch()
 {
-    if (silentAntiAimPitch == 1) return 89.0f;  // Down
-    if (silentAntiAimPitch == 2) return -89.0f; // Up
+    if (silentAntiAimPitch == 1) return 70.0f;  // Down
+    if (silentAntiAimPitch == 2) return -70.0f; // Up
     return 0.0f;                                // Neutral
 }
 
-static float GetSilentStaticYawOffset()
+static float GetCommandAntiAimYawOffset()
 {
-    if (!silentAntiAimSpin) return 180.0f;
-    const double seconds = static_cast<double>(GetTickCount64()) / 1000.0;
-    return NormalizeAngle360(static_cast<float>(
-        seconds * static_cast<double>(silentAntiAimSpinSpeed)));
-}
-
-static Vector3 GetSilentDirectionJitterAngles(const Vector3& realAim)
-{
+    if (silentAntiAimMode == 0) return silentAntiAimYaw;
     if (silentAntiAimMode == 1) {
-        return Vector3(
-            GetSilentAntiAimPitch(),
-            NormalizeAngle360(realAim.y + GetSilentStaticYawOffset()),
-            realAim.z);
+        silentAntiAimJitterFlip = !silentAntiAimJitterFlip;
+        return silentAntiAimYaw +
+            (silentAntiAimJitterFlip ? silentAntiAimJitterRange :
+                                       -silentAntiAimJitterRange);
     }
-    static const float yawOffsets[] = { 90.0f, 180.0f, 270.0f, 0.0f };
-    const unsigned int directionIndex = static_cast<unsigned int>(
-        (GetTickCount64() / 180ULL) % 4ULL);
-    return Vector3(
-        (directionIndex & 1U) ? 70.0f : -70.0f,
-        NormalizeAngle360(realAim.y + yawOffsets[directionIndex]),
-        realAim.z);
+
+    const ULONGLONG now = GetTickCount64();
+    if (!silentAntiAimLastSpinTick) silentAntiAimLastSpinTick = now;
+    const float dt = static_cast<float>(now - silentAntiAimLastSpinTick) / 1000.0f;
+    silentAntiAimLastSpinTick = now;
+    silentAntiAimSpinYaw = NormalizeAngle360(
+        silentAntiAimSpinYaw + silentAntiAimSpinSpeed * dt);
+    return silentAntiAimSpinYaw;
 }
 
 static void FixAntiAimMovement(uintptr_t command, float realYaw, float fakeYaw)
 {
     if (!command) return;
     __try {
-        // blr.bzxz/bzya are the exact movement axes at +0x10/+0x14.
+        // dump.cs blr: bzxz +0x10, bzya +0x14.
         const float horizontal = *reinterpret_cast<float*>(command + 0x10);
         const float vertical = *reinterpret_cast<float*>(command + 0x14);
         if (horizontal == 0.0f && vertical == 0.0f) return;
-        float delta = NormalizeAngle360(fakeYaw) - NormalizeAngle360(realYaw);
-        if (delta > 180.0f) delta -= 360.0f;
-        else if (delta < -180.0f) delta += 360.0f;
+        const float delta = NormalizeAngle180(fakeYaw - realYaw);
         const float radians = delta * 0.017453292519943295f;
         const float cosine = cosf(radians);
         const float sine = sinf(radians);
         float fixedHorizontal = cosine * horizontal - sine * vertical;
         float fixedVertical = sine * horizontal + cosine * vertical;
-        const float length = sqrtf(fixedHorizontal * fixedHorizontal + fixedVertical * fixedVertical);
+        const float length = sqrtf(
+            fixedHorizontal * fixedHorizontal + fixedVertical * fixedVertical);
         if (length > 1.0f) {
             fixedHorizontal /= length;
             fixedVertical /= length;
@@ -3008,41 +2991,71 @@ static void FixAntiAimMovement(uintptr_t command, float realYaw, float fakeYaw)
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
-static bool CaptureSilentAntiAimInput(uintptr_t player, uintptr_t command)
+static bool CaptureCommandAntiAimInput(uintptr_t player, uintptr_t command)
 {
-    // Read-only access to live AimingData. Fake angles are never written here.
     if (!silentAntiAimEnabled || !player || !command) return false;
     __try {
+        // Current dump.cs: PlayerController.AimController +0xC8;
+        // AimController.aimingData +0x88; real angles +0x18/+0x24.
         const uintptr_t aimController =
             *reinterpret_cast<uintptr_t*>(player + 0xC8);
-        const uintptr_t liveAimingData = aimController ?
+        const uintptr_t aimingData = aimController ?
             *reinterpret_cast<uintptr_t*>(aimController + 0x88) : 0;
-        if (!aimController || !liveAimingData) {
-            strcpy_s(silentAntiAimStatus, "Input active; waiting for live aim data");
-            return false;
-        }
+        if (!aimController || !aimingData) return false;
 
         silentAntiAimLatestRealAimAngle =
-            *reinterpret_cast<Vector3*>(liveAimingData + 0x18);
+            *reinterpret_cast<Vector3*>(aimingData + 0x18);
         silentAntiAimLatestRealAimEuler =
-            *reinterpret_cast<Vector3*>(liveAimingData + 0x24);
+            *reinterpret_cast<Vector3*>(aimingData + 0x24);
         silentAntiAimLatestFiring =
             *reinterpret_cast<bool*>(command + 0x21);
         silentAntiAimLatestPlayer = player;
+        silentAntiAimLatestController = aimController;
         silentAntiAimLatestInputValid = true;
         liveHudLocalPlayer = player;
-
-        // Detached snapshots never enter local MovementController, so command
-        // movement is already correct relative to the real camera. Rotating it
-        // here by 180 degrees reverses W/S and A/D.
-        strcpy_s(silentAntiAimStatus,
-            "Input captured; local movement untouched");
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         silentAntiAimLatestInputValid = false;
-        strcpy_s(silentAntiAimStatus, "Input called; live aim read failed safely");
         return false;
+    }
+}
+
+static void ApplyCommandAntiAim(uintptr_t player, uintptr_t command)
+{
+    if (!CaptureCommandAntiAimInput(player, command)) {
+        strcpy_s(silentAntiAimStatus, "Waiting for local command/aim data");
+        return;
+    }
+    if (silentAntiAimLatestFiring) {
+        strcpy_s(silentAntiAimStatus, "Real angles while firing");
+        return;
+    }
+
+    __try {
+        const float realYaw = NormalizeAngle360(
+            silentAntiAimLatestRealAimAngle.y);
+        const float yawOffset = GetCommandAntiAimYawOffset();
+        Vector3 fakeAngles(
+            GetCommandAntiAimPitch(),
+            NormalizeAngle360(realYaw - yawOffset),
+            0.0f);
+
+        // dump.cs blr: bzyn +0x29 is bpg (TargetAngle=0), bzyo +0x2C
+        // is the command Vector3. The game now builds the full native pose from
+        // fake command angles instead of any manual BipedMap rotation.
+        *reinterpret_cast<uint8_t*>(command + 0x29) = 0;
+        *reinterpret_cast<Vector3*>(command + 0x2C) = fakeAngles;
+        FixAntiAimMovement(command, realYaw, fakeAngles.y);
+        silentAntiAimLatestFakeAngles = fakeAngles;
+        InterlockedIncrement(&silentAntiAimAppliedCalls);
+        strcpy_s(silentAntiAimStatus,
+            silentAntiAimMode == 0 ? "Command anti-aim: Static" :
+            (silentAntiAimMode == 1 ? "Command anti-aim: Jitter" :
+                                      "Command anti-aim: Spin"));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        strcpy_s(silentAntiAimStatus, "Command anti-aim write failed safely");
     }
 }
 
@@ -3052,8 +3065,6 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     const uintptr_t command = o_KeyboardControl_BuildCommand(
         keyboardControl, player, method);
     InterlockedIncrement(&silentAntiAimInputBuildCalls);
-    if (silentAntiAimEnabled && player && command)
-        CaptureSilentAntiAimInput(player, command);
 
     if (keyValidated && adminBhopEnabled && adminBhopCsStrafeMode && !jbActive &&
         player && command && player == liveHudLocalPlayer && lastCharacterController &&
@@ -3081,10 +3092,6 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
                     adminBhopPreviousCameraYaw = currentYaw;
                     adminBhopCameraYawValid = true;
                 }
-
-                // Horizontal axis is A=-1 / D=+1. Unity yaw decreases while
-                // turning left and increases while turning right. Their product
-                // is positive only for A+left or D+right.
                 const bool hasManualStrafe = fabsf(manualStrafe) > 0.01f;
                 const bool matchingCameraTurn = hasManualStrafe &&
                     fabsf(yawDelta) > 0.001f && manualStrafe * yawDelta > 0.0f;
@@ -3093,19 +3100,14 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
                 if (matchingCameraTurn) {
                     InterlockedExchange64(&adminBhopManualStrafeGraceUntil,
                         static_cast<LONG64>(GetTickCount64()) + 180);
-                    // Only the correct synchronized pair receives forward air
-                    // acceleration: A+mouse-left or D+mouse-right.
                     forwardInput = fabsf(manualStrafe);
                     strafeInput = 0.0f;
-                }
-                else {
-                    // Wrong/no A/D does not create a sideways route. Preserve only
-                    // backward S input; forward W remains ignored in manual mode.
-                    forwardInput = originalForwardInput < -0.01f ? originalForwardInput : 0.0f;
+                } else {
+                    forwardInput = originalForwardInput < -0.01f ?
+                        originalForwardInput : 0.0f;
                     strafeInput = 0.0f;
                 }
-            }
-            else {
+            } else {
                 InterlockedExchange(&adminBhopManualStrafeHeld, 0);
                 InterlockedExchange64(&adminBhopManualStrafeGraceUntil, 0);
                 adminBhopCameraYawValid = false;
@@ -3114,356 +3116,38 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
+
+    // Apply after movement features, matching the supplied source's createMove.
+    if (silentAntiAimEnabled && player && command)
+        ApplyCommandAntiAim(player, command);
     return command;
-}
-
-static bool IsLocalAimControllerUnsafe(uintptr_t aimController)
-{
-    if (!aimController || !silentAntiAimLatestInputValid ||
-        !silentAntiAimLatestPlayer)
-        return false;
-    __try {
-        // AimController.catd (+0xD0) must match the exact PlayerController passed
-        // to the local KeyboardControl.bbft hook. HUD pointers can be stale while
-        // spectating/respawning, so they are intentionally not accepted here.
-        const uintptr_t ownerPlayer =
-            *reinterpret_cast<uintptr_t*>(aimController + 0xD0);
-        return ownerPlayer == silentAntiAimLatestPlayer;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-static bool CacheSilentStaticPoseUnsafe(uintptr_t aimController)
-{
-    if (!aimController) return false;
-    __try {
-        const uintptr_t bipedMap =
-            *reinterpret_cast<uintptr_t*>(aimController + 0x28);
-        if (!bipedMap) return false;
-        if (aimController != silentAntiAimCachedController ||
-            bipedMap != silentAntiAimCachedBiped) {
-            silentAntiAimCachedController = aimController;
-            silentAntiAimCachedBiped = bipedMap;
-            silentAntiAimCachedHip =
-                *reinterpret_cast<uintptr_t*>(bipedMap + 0x88);
-            const uintptr_t upperOffsets[5] = { 0x30, 0x38, 0x40, 0x28, 0x20 };
-            for (int i = 0; i < 5; ++i)
-                silentAntiAimCachedUpperBones[i] =
-                    *reinterpret_cast<uintptr_t*>(bipedMap + upperOffsets[i]);
-            silentAntiAimRenderedGeneration = -1;
-            silentAntiAimRenderedYaw = 0.0f;
-        }
-        return silentAntiAimCachedHip != 0;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        silentAntiAimCachedController = 0;
-        silentAntiAimCachedBiped = 0;
-        silentAntiAimCachedHip = 0;
-        for (int i = 0; i < 5; ++i) silentAntiAimCachedUpperBones[i] = 0;
-        return false;
-    }
-}
-
-static void ApplySilentStaticPoseAfterQodUnsafe(uintptr_t aimController)
-{
-    if (!CacheSilentStaticPoseUnsafe(aimController) ||
-        !o_Transform_get_localEulerAngles ||
-        !o_Transform_set_localEulerAngles)
-        return;
-    __try {
-        // qod/Mecanim has finished the current animation frame. Apply the full
-        // Static yaw once to the fresh Hip pose, then let Present interpolate only
-        // the missing Spin delta between the game's lower-rate qod updates.
-        const float targetYaw = GetSilentStaticYawOffset();
-        Vector3 hipLocal =
-            o_Transform_get_localEulerAngles(silentAntiAimCachedHip);
-        hipLocal.y = NormalizeAngle360(hipLocal.y + targetYaw);
-        o_Transform_set_localEulerAngles(silentAntiAimCachedHip, hipLocal);
-        silentAntiAimRenderedYaw = targetYaw;
-        silentAntiAimLastSpinRenderMs = GetTickCount64();
-
-        float realPitch = 0.0f;
-        if (silentAntiAimLatestInputValid)
-            realPitch = NormalizeAngle180(
-                silentAntiAimLatestRealAimAngle.x);
-        const float absolutePitchDelta =
-            GetSilentAntiAimPitch() - realPitch;
-
-        // Neutral, Down and Up are all absolute. Spread the correction through
-        // Spine -> Head so the complete upper body follows the selected direction;
-        // because realPitch is subtracted first, camera movement cannot drag it.
-        const float upperWeights[5] = { 0.12f, 0.18f, 0.25f, 0.20f, 0.25f };
-        for (int i = 0; i < 5; ++i) {
-            const uintptr_t bone = silentAntiAimCachedUpperBones[i];
-            if (!bone) continue;
-            Vector3 local = o_Transform_get_localEulerAngles(bone);
-            local.x += absolutePitchDelta * upperWeights[i];
-            o_Transform_set_localEulerAngles(bone, local);
-        }
-        InterlockedIncrement(&silentAntiAimBonePasses);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        silentAntiAimCachedController = 0;
-        silentAntiAimCachedBiped = 0;
-        silentAntiAimCachedHip = 0;
-    }
-}
-
-static void InterpolateSilentStaticSpinForRenderUnsafe()
-{
-    if (!silentAntiAimEnabled || silentAntiAimMode != 1 ||
-        !silentAntiAimSpin || !silentAntiAimCachedHip ||
-        !o_Transform_get_localEulerAngles ||
-        !o_Transform_set_localEulerAngles)
-        return;
-
-    const ULONGLONG nowMs = GetTickCount64();
-    // 120 Hz is visually smooth even at 1080 deg/s, while two Transform calls
-    // cost far less than updating on an uncapped 300-600 FPS Present loop.
-    if (nowMs - silentAntiAimLastSpinRenderMs < 8ULL) return;
-    __try {
-        const float targetYaw = GetSilentStaticYawOffset();
-        const float deltaYaw = NormalizeAngle180(
-            targetYaw - silentAntiAimRenderedYaw);
-        Vector3 hipLocal =
-            o_Transform_get_localEulerAngles(silentAntiAimCachedHip);
-        hipLocal.y = NormalizeAngle360(hipLocal.y + deltaYaw);
-        o_Transform_set_localEulerAngles(silentAntiAimCachedHip, hipLocal);
-        silentAntiAimRenderedYaw = targetYaw;
-        silentAntiAimLastSpinRenderMs = nowMs;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        silentAntiAimCachedController = 0;
-        silentAntiAimCachedBiped = 0;
-        silentAntiAimCachedHip = 0;
-    }
-}
-
-static void ApplySilentDirectionJitterBonesUnsafe(uintptr_t aimController)
-{
-    if (!aimController || !o_Transform_get_localEulerAngles ||
-        !o_Transform_set_localEulerAngles)
-        return;
-    __try {
-        // Generated dump/il2cpp.h proves inherited Controller.bzvf is BipedMap at +0x28.
-        const uintptr_t bipedMap =
-            *reinterpret_cast<uintptr_t*>(aimController + 0x28);
-        if (!bipedMap) return;
-        const float yawOffsets[4] = { 90.0f, 180.0f, 270.0f, 0.0f };
-        const int phase = static_cast<int>((GetTickCount64() / 180ULL) & 3ULL);
-        const float yaw = yawOffsets[phase];
-        const float pitch = (phase & 1) ? 55.0f : -55.0f;
-        // Apply after the game's own qod aim pass. The generated game header proves
-        // these BipedMap offsets, including Hip and both complete leg chains.
-        // FPSCamera/AimingData remain separate and are never modified.
-        const uintptr_t boneOffsets[] = {
-            0x88,                         // Hip
-            0x90, 0x98, 0xA0, 0xA8,     // LeftUpLeg, LeftLeg, LeftFoot, LeftToeBase
-            0xB0, 0xB8, 0xC0, 0xC8,     // RightUpLeg, RightLeg, RightFoot, RightToeBase
-            0x30, 0x38, 0x40, 0x28, 0x20, // Spine, Spine1, Spine2, Neck, Head
-            0x48, 0x50, 0x58, 0x60,     // LeftShoulder, LeftUpperarm, LeftForearm, LeftHand
-            0x68, 0x70, 0x78, 0x80,     // RightShoulder, RightUpperarm, RightForearm, RightHand
-            0x250                         // WeaponContainer (central held model)
-        };
-        const float yawWeights[] = {
-            0.40f,
-            0.18f, 0.12f, 0.08f, 0.04f,
-           -0.18f,-0.12f,-0.08f,-0.04f,
-            0.22f, 0.28f, 0.30f, 0.12f, 0.08f,
-            0.20f, 0.26f, 0.18f, 0.10f,
-           -0.20f,-0.26f,-0.18f,-0.10f,
-            0.34f
-        };
-        const float pitchWeights[] = {
-            0.10f,
-            0.28f,-0.22f, 0.16f,-0.08f,
-           -0.28f, 0.22f,-0.16f, 0.08f,
-            0.05f, 0.10f, 0.15f, 0.30f, 0.40f,
-            0.18f,-0.24f, 0.20f,-0.12f,
-           -0.18f, 0.24f,-0.20f, 0.12f,
-            0.22f
-        };
-        const float rollWeights[] = {
-            0.18f,
-            0.20f,-0.16f, 0.12f,-0.08f,
-           -0.20f, 0.16f,-0.12f, 0.08f,
-            0.04f,-0.04f, 0.06f,-0.08f, 0.10f,
-            0.30f,-0.26f, 0.22f,-0.16f,
-           -0.30f, 0.26f,-0.22f, 0.16f,
-            0.24f
-        };
-        const float roll = (phase & 1) ? 42.0f : -42.0f;
-        bool wrote = false;
-        for (int i = 0; i < static_cast<int>(sizeof(boneOffsets) / sizeof(boneOffsets[0])); ++i) {
-            const uintptr_t bone =
-                *reinterpret_cast<uintptr_t*>(bipedMap + boneOffsets[i]);
-            if (!bone) continue;
-            Vector3 local = o_Transform_get_localEulerAngles(bone);
-            local.y += yaw * yawWeights[i];
-            local.x += pitch * pitchWeights[i];
-            local.z += roll * rollWeights[i];
-            o_Transform_set_localEulerAngles(bone, local);
-            wrote = true;
-        }
-        if (wrote) InterlockedIncrement(&silentAntiAimBonePasses);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
     o_AimController_LateAim(aimController, method);
-    if (!silentAntiAimEnabled || !IsLocalAimControllerUnsafe(aimController))
+    if (!silentAntiAimEnabled || !silentAntiAimLatestInputValid ||
+        aimController != silentAntiAimLatestController ||
+        !o_Transform_set_eulerAngles)
         return;
 
-    InterlockedIncrement(&silentAntiAimLateAimCalls);
-    if (silentAntiAimMode == 1)
-        ApplySilentStaticPoseAfterQodUnsafe(aimController);
-    else
-        ApplySilentDirectionJitterBonesUnsafe(aimController);
-}
-
-void __fastcall hk_AimController_SetHeadDirective(
-    uintptr_t aimController, Vector3 angles, const Il2CppMethod* method)
-{
-    InterlockedIncrement(&silentAntiAimDirectiveSetCalls);
-    if (silentAntiAimEnabled && IsLocalAimControllerUnsafe(aimController)) {
-        angles = GetSilentDirectionJitterAngles(angles);
-        InterlockedIncrement(&silentAntiAimDirectiveApplied);
-    }
-    o_AimController_SetHeadDirective(aimController, angles, method);
-}
-
-Vector3 __fastcall hk_AimController_GetHeadDirective(
-    uintptr_t aimController, const Il2CppMethod* method)
-{
-    InterlockedIncrement(&silentAntiAimDirectiveGetCalls);
-    Vector3 angles = o_AimController_GetHeadDirective(aimController, method);
-    if (silentAntiAimEnabled && IsLocalAimControllerUnsafe(aimController)) {
-        angles = GetSilentDirectionJitterAngles(angles);
-        InterlockedIncrement(&silentAntiAimDirectiveApplied);
-    }
-    return angles;
-}
-
-static bool PrepareSilentApplySnapshotUnsafe(
-    uintptr_t snapshot, uintptr_t* originalAimingData)
-{
-    if (!snapshot || !originalAimingData || !o_AimingData_Clone) return false;
-    *originalAimingData = 0;
+    // Supplied source's lateUpdate/rotateCamera, adapted to current dump.cs:
+    // AimController.FPSCamera +0x70 and camTransform +0x80. Restoring both is
+    // harmless for the inactive view and keeps FPS/TPS camera on real angles.
     __try {
-        const uintptr_t sourceAimingData =
-            *reinterpret_cast<uintptr_t*>(snapshot + 0x18);
-        if (!sourceAimingData) return false;
-        const uintptr_t detachedAimingData =
-            o_AimingData_Clone(sourceAimingData, nullptr);
-        if (!detachedAimingData || detachedAimingData == sourceAimingData)
-            return false;
-        Vector3 angle = *reinterpret_cast<Vector3*>(detachedAimingData + 0x18);
-        Vector3 euler = *reinterpret_cast<Vector3*>(detachedAimingData + 0x24);
-        angle = GetSilentDirectionJitterAngles(angle);
-        euler = GetSilentDirectionJitterAngles(euler);
-        *reinterpret_cast<Vector3*>(detachedAimingData + 0x18) = angle;
-        *reinterpret_cast<Vector3*>(detachedAimingData + 0x24) = euler;
-        *originalAimingData = sourceAimingData;
-        *reinterpret_cast<uintptr_t*>(snapshot + 0x18) = detachedAimingData;
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        *originalAimingData = 0;
-        return false;
-    }
-}
-
-static void RestoreSilentApplySnapshotUnsafe(
-    uintptr_t snapshot, uintptr_t originalAimingData)
-{
-    if (!snapshot || !originalAimingData) return;
-    __try {
-        *reinterpret_cast<uintptr_t*>(snapshot + 0x18) = originalAimingData;
+        const Vector3 realCameraAngles = silentAntiAimLatestRealAimEuler;
+        const uintptr_t fpsCamera =
+            *reinterpret_cast<uintptr_t*>(aimController + 0x70);
+        const uintptr_t camTransform =
+            *reinterpret_cast<uintptr_t*>(aimController + 0x80);
+        if (fpsCamera)
+            o_Transform_set_eulerAngles(fpsCamera, realCameraAngles);
+        if (camTransform && camTransform != fpsCamera)
+            o_Transform_set_eulerAngles(camTransform, realCameraAngles);
+        InterlockedIncrement(&silentAntiAimCommandCalls);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
-}
-
-void __fastcall hk_AimController_ApplySnapshot(
-    uintptr_t aimController, uintptr_t snapshot, const Il2CppMethod* method)
-{
-    InterlockedIncrement(&silentAntiAimApplySnapshotCalls);
-    uintptr_t originalAimingData = 0;
-    const bool changed = silentAntiAimEnabled &&
-        IsLocalAimControllerUnsafe(aimController) &&
-        PrepareSilentApplySnapshotUnsafe(snapshot, &originalAimingData);
-    o_AimController_ApplySnapshot(aimController, snapshot, method);
-    if (changed) {
-        RestoreSilentApplySnapshotUnsafe(snapshot, originalAimingData);
-        InterlockedIncrement(&silentAntiAimDirectiveApplied);
-    }
-}
-
-uintptr_t __fastcall hk_AimController_GetSnapshot(
-    uintptr_t aimController, const Il2CppMethod* method)
-{
-    const uintptr_t snapshot =
-        o_AimController_GetSnapshot(aimController, method);
-    InterlockedIncrement(&silentAntiAimSnapshotCalls);
-    if (!silentAntiAimEnabled || !snapshot || !aimController ||
-        !silentAntiAimLatestInputValid || !o_AimingData_Clone)
-        return snapshot;
-
-    __try {
-        // AimController.catd +0xD0 owns this controller. Filter strictly to the
-        // same local player seen by KeyboardControl.bbft.
-        const uintptr_t ownerPlayer =
-            *reinterpret_cast<uintptr_t*>(aimController + 0xD0);
-        if (!ownerPlayer || ownerPlayer != silentAntiAimLatestPlayer)
-            return snapshot;
-
-        const uintptr_t snapshotAimingData =
-            *reinterpret_cast<uintptr_t*>(snapshot + 0x18);
-        if (!snapshotAimingData) return snapshot;
-
-        // Native AimingData.rjr() creates an independent object. Repoint only
-        // this AimSnapshot; live AimController.aimingData remains untouched.
-        const uintptr_t detachedAimingData =
-            o_AimingData_Clone(snapshotAimingData, nullptr);
-        if (!detachedAimingData || detachedAimingData == snapshotAimingData) {
-            strcpy_s(silentAntiAimStatus, "Snapshot active; aim clone unavailable");
-            return snapshot;
-        }
-        *reinterpret_cast<uintptr_t*>(snapshot + 0x18) = detachedAimingData;
-
-        Vector3 outputAimAngle = silentAntiAimLatestRealAimAngle;
-        Vector3 outputAimEuler = silentAntiAimLatestRealAimEuler;
-        if (!silentAntiAimLatestFiring) {
-            // Only the detached outgoing snapshot is changed; live AimingData and
-            // the camera retain the real angles.
-            outputAimAngle = GetSilentDirectionJitterAngles(silentAntiAimLatestRealAimAngle);
-            outputAimEuler = GetSilentDirectionJitterAngles(silentAntiAimLatestRealAimEuler);
-        }
-        *reinterpret_cast<Vector3*>(detachedAimingData + 0x18) = outputAimAngle;
-        *reinterpret_cast<Vector3*>(detachedAimingData + 0x24) = outputAimEuler;
-        InterlockedIncrement(&silentAntiAimAppliedCalls);
-        strcpy_s(silentAntiAimStatus, silentAntiAimLatestFiring ?
-            "Detached snapshot: real aim while firing" :
-            (silentAntiAimMode == 1 ?
-                (silentAntiAimSpin ? "Detached snapshot: static spin" :
-                 "Detached snapshot: static backwards") :
-                "Detached snapshot: four-way direction jitter"));
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        strcpy_s(silentAntiAimStatus, "Snapshot called; detached mutation failed");
-    }
-    return snapshot;
-}
-
-void __fastcall hk_PlayerController_Command(
-    uintptr_t player, uintptr_t command, float deltaTime, const Il2CppMethod* method)
-{
-    InterlockedIncrement(&silentAntiAimCommandCalls);
-    o_PlayerController_Command(player, command, deltaTime, method);
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -6842,7 +6526,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (keyValidated) {
         ApplyCameraFov();
         ApplyCustomSkybox();
-        InterpolateSilentStaticSpinForRenderUnsafe();
     }
 
 
@@ -7170,59 +6853,48 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::TextColored(accent, "Anti-Aim");
         ImGui::Separator();
         ImGui::Spacing();
-        if (ImGui::Checkbox("Silent Anti-Aim", &silentAntiAimEnabled)) {
+        if (ImGui::Checkbox("Command Anti-Aim", &silentAntiAimEnabled)) {
             InterlockedExchange(&silentAntiAimInputBuildCalls, 0);
             InterlockedExchange(&silentAntiAimCommandCalls, 0);
             InterlockedExchange(&silentAntiAimAppliedCalls, 0);
-            InterlockedExchange(&silentAntiAimSnapshotCalls, 0);
-            InterlockedExchange(&silentAntiAimApplySnapshotCalls, 0);
-            InterlockedExchange(&silentAntiAimDirectiveSetCalls, 0);
-            InterlockedExchange(&silentAntiAimDirectiveGetCalls, 0);
-            InterlockedExchange(&silentAntiAimDirectiveApplied, 0);
-            InterlockedExchange(&silentAntiAimPoseApplied, 0);
-            InterlockedExchange(&silentAntiAimLateAimCalls, 0);
-            InterlockedExchange(&silentAntiAimBonePasses, 0);
             silentAntiAimLatestInputValid = false;
             silentAntiAimLatestFiring = false;
             silentAntiAimLatestPlayer = 0;
-            silentAntiAimCachedController = 0;
-            silentAntiAimCachedBiped = 0;
-            silentAntiAimCachedHip = 0;
-            for (int i = 0; i < 5; ++i) silentAntiAimCachedUpperBones[i] = 0;
-            InterlockedExchange(&silentAntiAimPoseGeneration, 0);
-            silentAntiAimRenderedGeneration = -1;
-            silentAntiAimRenderedYaw = 0.0f;
-            silentAntiAimLastSpinRenderMs = 0;
+            silentAntiAimLatestController = 0;
+            silentAntiAimLastSpinTick = 0;
+            silentAntiAimSpinYaw = 0.0f;
             strcpy_s(silentAntiAimStatus, !silentAntiAimEnabled ? "Disabled" :
-                (silentAntiAimHookReady ? "Input + detached snapshot hooks installed" : "Anti-aim hooks failed to install"));
+                (silentAntiAimHookReady ? "Command hook active" :
+                                         "Command anti-aim hooks failed"));
         }
         ImGui::Spacing();
-        const char* antiAimModes[] = { "Direction Jitter", "Static Backwards" };
+        const char* antiAimModes[] = { "Static", "Jitter", "Spin" };
         ImGui::SetNextItemWidth(190.0f);
-        ImGui::Combo("Mode", &silentAntiAimMode, antiAimModes, 2);
-        if (silentAntiAimMode == 1) {
-            const char* pitchModes[] = { "Neutral", "Down", "Up" };
+        ImGui::Combo("Mode", &silentAntiAimMode, antiAimModes, 3);
+        const char* pitchModes[] = { "Neutral", "Down", "Up" };
+        ImGui::SetNextItemWidth(190.0f);
+        ImGui::Combo("Pitch", &silentAntiAimPitch, pitchModes, 3);
+        if (silentAntiAimMode != 2) {
             ImGui::SetNextItemWidth(190.0f);
-            ImGui::Combo("Look", &silentAntiAimPitch, pitchModes, 3);
-            ImGui::Checkbox("Spin", &silentAntiAimSpin);
-            if (silentAntiAimSpin) {
-                ImGui::SetNextItemWidth(190.0f);
-                ImGui::SliderFloat("Spin Speed", &silentAntiAimSpinSpeed,
-                    1.0f, 1080.0f, "%.0f deg/s");
-            }
-            ImGui::TextWrapped(silentAntiAimSpin ?
-                "Spin is interpolated at 120 Hz between qod animation frames. Neutral/Down/Up are absolute and affect the complete upper body without following the camera." :
-                "Static Backwards is applied after each qod/Mecanim frame. Neutral/Down/Up are absolute and distributed from Spine through Head.");
-        } else {
-            ImGui::TextWrapped("Direction Jitter keeps the existing post-Mecanim full-body jitter mode.");
+            ImGui::SliderFloat("Yaw", &silentAntiAimYaw,
+                -180.0f, 180.0f, "%.0f deg");
         }
-        ImGui::TextDisabled("late:%ld bones:%ld set:%ld get:%ld in:%ld out:%ld",
-            InterlockedCompareExchange(&silentAntiAimLateAimCalls, 0, 0),
-            InterlockedCompareExchange(&silentAntiAimBonePasses, 0, 0),
-            InterlockedCompareExchange(&silentAntiAimDirectiveSetCalls, 0, 0),
-            InterlockedCompareExchange(&silentAntiAimDirectiveGetCalls, 0, 0),
-            InterlockedCompareExchange(&silentAntiAimApplySnapshotCalls, 0, 0),
-            InterlockedCompareExchange(&silentAntiAimAppliedCalls, 0, 0));
+        if (silentAntiAimMode == 1) {
+            ImGui::SetNextItemWidth(190.0f);
+            ImGui::SliderFloat("Jitter Range", &silentAntiAimJitterRange,
+                0.0f, 180.0f, "%.0f deg");
+        }
+        if (silentAntiAimMode == 2) {
+            ImGui::SetNextItemWidth(190.0f);
+            ImGui::SliderFloat("Spin Speed", &silentAntiAimSpinSpeed,
+                1.0f, 1080.0f, "%.0f deg/s");
+        }
+        ImGui::TextWrapped("Native command angles drive the complete game pose. Movement is corrected and FPS/TPS camera transforms are restored to real angles after qod.");
+        ImGui::TextDisabled("build:%ld camera:%ld applied:%ld  %s",
+            InterlockedCompareExchange(&silentAntiAimInputBuildCalls, 0, 0),
+            InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
+            InterlockedCompareExchange(&silentAntiAimAppliedCalls, 0, 0),
+            silentAntiAimStatus);
         ImGui::EndChild();
     }
     else if (currentTab == 2) { // VISUALS
@@ -7826,8 +7498,6 @@ DWORD WINAPI HackThread(LPVOID)
         MH_EnableHook((LPVOID)(base + OFFSET_HITMARKERVIEW_LOCAL_HIT)) : hitLogCreateStatus;
     if (hitLogCreateStatus != MH_OK || hitLogEnableStatus != MH_OK)
         hitLogEnabled = false;
-    o_AimingData_Clone = (uintptr_t(__fastcall*)(uintptr_t, const Il2CppMethod*))
-        (base + OFFSET_AIMINGDATA_CLONE);
     const MH_STATUS antiAimLateAimCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM),
         hk_AimController_LateAim,
@@ -7836,78 +7506,23 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimLateAimCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM)) :
         antiAimLateAimCreateStatus;
-    const MH_STATUS antiAimDirectiveCreateStatus = MH_CreateHook(
-        (LPVOID)(base + OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE),
-        hk_AimController_SetHeadDirective,
-        (LPVOID*)&o_AimController_SetHeadDirective);
-    const MH_STATUS antiAimDirectiveEnableStatus =
-        antiAimDirectiveCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE)) :
-        antiAimDirectiveCreateStatus;
-    const MH_STATUS antiAimDirectiveGetCreateStatus = MH_CreateHook(
-        (LPVOID)(base + OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE),
-        hk_AimController_GetHeadDirective,
-        (LPVOID*)&o_AimController_GetHeadDirective);
-    const MH_STATUS antiAimDirectiveGetEnableStatus =
-        antiAimDirectiveGetCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE)) :
-        antiAimDirectiveGetCreateStatus;
-    const MH_STATUS antiAimApplySnapshotCreateStatus = MH_CreateHook(
-        (LPVOID)(base + OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT),
-        hk_AimController_ApplySnapshot,
-        (LPVOID*)&o_AimController_ApplySnapshot);
-    const MH_STATUS antiAimApplySnapshotEnableStatus =
-        antiAimApplySnapshotCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT)) :
-        antiAimApplySnapshotCreateStatus;
-    if (antiAimDirectiveEnableStatus == MH_OK)
-        MH_DisableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE));
-    if (antiAimDirectiveGetEnableStatus == MH_OK)
-        MH_DisableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE));
-    if (antiAimApplySnapshotEnableStatus == MH_OK)
-        MH_DisableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT));
-    const MH_STATUS antiAimSnapshotCreateStatus = MH_CreateHook(
-        (LPVOID)(base + OFFSET_AIMCONTROLLER_GET_SNAPSHOT),
-        hk_AimController_GetSnapshot,
-        (LPVOID*)&o_AimController_GetSnapshot);
-    const MH_STATUS antiAimSnapshotEnableStatus =
-        antiAimSnapshotCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_GET_SNAPSHOT)) :
-        antiAimSnapshotCreateStatus;
-
     const MH_STATUS antiAimInputCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND),
         hk_KeyboardControl_BuildCommand,
         (LPVOID*)&o_KeyboardControl_BuildCommand);
-    const MH_STATUS antiAimInputEnableStatus = antiAimInputCreateStatus == MH_OK ?
+    const MH_STATUS antiAimInputEnableStatus =
+        antiAimInputCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND)) :
         antiAimInputCreateStatus;
-    // Runtime diagnostics showed riz/rja/qdq stay at zero for this local path.
-    // They remain available diagnostically, but only qod/qdr/input are required.
     silentAntiAimHookReady = antiAimLateAimCreateStatus == MH_OK &&
         antiAimLateAimEnableStatus == MH_OK &&
-        antiAimSnapshotCreateStatus == MH_OK &&
-        antiAimSnapshotEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
         antiAimInputEnableStatus == MH_OK;
 
-    const MH_STATUS antiAimFallbackCreateStatus = MH_CreateHook(
-        (LPVOID)(base + OFFSET_PLAYERCONTROLLER_COMMAND),
-        hk_PlayerController_Command,
-        (LPVOID*)&o_PlayerController_Command);
-    const MH_STATUS antiAimFallbackEnableStatus =
-        antiAimFallbackCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_PLAYERCONTROLLER_COMMAND)) :
-        antiAimFallbackCreateStatus;
-    LINDY_LOG("[anti-aim] qod create=%d enable=%d; riz create=%d enable=%d; rja create=%d enable=%d; qdq create=%d enable=%d; qdr create=%d enable=%d; KeyboardControl.bbft create=%d enable=%d ready=%d; qhq diagnostic create=%d enable=%d",
-        (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
-        (int)antiAimDirectiveCreateStatus, (int)antiAimDirectiveEnableStatus,
-        (int)antiAimDirectiveGetCreateStatus, (int)antiAimDirectiveGetEnableStatus,
-        (int)antiAimApplySnapshotCreateStatus, (int)antiAimApplySnapshotEnableStatus,
-        (int)antiAimSnapshotCreateStatus, (int)antiAimSnapshotEnableStatus,
+    LINDY_LOG("[anti-aim] command bbft create=%d enable=%d; camera qod create=%d enable=%d; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
-        silentAntiAimHookReady ? 1 : 0,
-        (int)antiAimFallbackCreateStatus, (int)antiAimFallbackEnableStatus);
+        (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
+        silentAntiAimHookReady ? 1 : 0);
 
     // Capture the live ArmsLodGroup directly whenever its first-person visibility is enabled.
     MH_CreateHook((LPVOID)(base + OFFSET_ARMSLOD_SET_VISIBLE), hk_ArmsLod_SetVisible, (LPVOID*)&o_ArmsLod_SetVisible);
