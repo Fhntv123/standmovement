@@ -4402,15 +4402,37 @@ static bool ProbePenetrableSurfaceUnsafe(Vector3 origin, Vector3 direction, floa
         const uintptr_t items = list ? *reinterpret_cast<uintptr_t*>(list + 0x10) : 0;
         const int count = list ? *reinterpret_cast<int*>(list + 0x18) : 0;
         if (!items || count <= 0 || count > 64) return false;
-        const uintptr_t penetration = *reinterpret_cast<uintptr_t*>(items + 0x20);
-        if (!penetration) return false;
-        const Vector3 entry = *reinterpret_cast<Vector3*>(penetration + 0x10);
-        *surfaceType = *reinterpret_cast<int*>(penetration + 0x28); // cjv.cegl / cjw
-        const float dx = entry.x - origin.x, dy = entry.y - origin.y, dz = entry.z - origin.z;
-        const float entryDistance = sqrtf(dx * dx + dy * dy + dz * dz);
-        if (!isfinite(entryDistance) || entryDistance < 0.05f || entryDistance > maxDistance + 1.0f) return false;
+        Vector3 entry = {};
+        int selectedType = 0;
+        float entryDistance = maxDistance + 2.0f;
+        bool selected = false;
+        for (int i = 0; i < count; ++i) {
+            const uintptr_t penetration = *reinterpret_cast<uintptr_t*>(
+                items + 0x20 + static_cast<uintptr_t>(i) * sizeof(uintptr_t));
+            if (!penetration) continue;
+            const int type = *reinterpret_cast<int*>(penetration + 0x28); // cjv.cegl / cjw
+            // Character is a player/ragdoll segment, never a penetrable map wall.
+            // Unknown/ground/trigger/water classes are also not wallbang geometry.
+            if (type <= 0 || type == 13 || type == 14 || type == 15 ||
+                type == 18 || type == 20 || type == 21 || type == 23 || type == 24) continue;
+            const Vector3 candidate = *reinterpret_cast<Vector3*>(penetration + 0x10);
+            const float dx = candidate.x - origin.x, dy = candidate.y - origin.y, dz = candidate.z - origin.z;
+            const float distance = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (!isfinite(distance) || distance < 0.05f || distance > maxDistance + 1.0f || distance >= entryDistance) continue;
+            entry = candidate;
+            entryDistance = distance;
+            selectedType = type;
+            selected = true;
+        }
+        if (!selected) return false;
+        *surfaceType = selectedType;
+        // Start immediately before this exact cjv entry. A ray from the camera would
+        // return an earlier player/corpse collider and associate the wrong Renderer.
+        const float backoff = (std::min)(0.10f, entryDistance * 0.5f);
+        const Vector3 localOrigin(entry.x - direction.x * backoff,
+            entry.y - direction.y * backoff, entry.z - direction.z * backoff);
         RaycastHitNative hit = {};
-        if (!o_Physics_RaycastHit(origin, direction, &hit, entryDistance + 0.35f, -1, 1, nullptr)) return false;
+        if (!o_Physics_RaycastHit(localOrigin, direction, &hit, backoff + 0.20f, -1, 1, nullptr)) return false;
         const uintptr_t collider = o_RaycastHit_get_collider(&hit, nullptr);
         if (!collider) return false;
         uintptr_t found = o_Component_GetInParent(collider, rendererType, true, nullptr);
@@ -4641,7 +4663,7 @@ static void UpdatePenetrableSurfaceVisualization()
             ++it;
         }
     }
-    sprintf_s(penetrableSurfaceStatus, "World scan 100%%: %zu surface(s), %zu new hit(s)",
+    sprintf_s(penetrableSurfaceStatus, "World scan 100%%: %zu wall(s), %zu new hit(s)",
         penetrableSurfaceVisuals.size(), hitsThisStep);
 }
 
