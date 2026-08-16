@@ -3173,38 +3173,66 @@ static void ApplySilentStaticPoseAfterQodUnsafe(uintptr_t aimController)
         !o_Transform_set_localEulerAngles)
         return;
     __try {
-        // qod/Mecanim has finished the current animation frame. Add yaw once to
-        // the freshly animated Hip, so walking never freezes or accumulates deltas.
+        // qod/Mecanim has finished the current animation frame. Apply the full
+        // Static yaw once to the fresh Hip pose, then let Present interpolate only
+        // the missing Spin delta between the game's lower-rate qod updates.
+        const float targetYaw = GetSilentStaticYawOffset();
         Vector3 hipLocal =
             o_Transform_get_localEulerAngles(silentAntiAimCachedHip);
-        hipLocal.y = NormalizeAngle360(
-            hipLocal.y + GetSilentStaticYawOffset());
+        hipLocal.y = NormalizeAngle360(hipLocal.y + targetYaw);
         o_Transform_set_localEulerAngles(silentAntiAimCachedHip, hipLocal);
+        silentAntiAimRenderedYaw = targetYaw;
+        silentAntiAimLastSpinRenderMs = GetTickCount64();
 
-        if (silentAntiAimPitch != 0) {
-            float realPitch = 0.0f;
-            if (silentAntiAimLatestInputValid)
-                realPitch = NormalizeAngle180(
-                    silentAntiAimLatestRealAimAngle.x);
+        float realPitch = 0.0f;
+        if (silentAntiAimLatestInputValid)
+            realPitch = NormalizeAngle180(
+                silentAntiAimLatestRealAimAngle.x);
+        const float absolutePitchDelta =
+            GetSilentAntiAimPitch() - realPitch;
 
-            // Cancel camera pitch from the torso so shoulders/arms keep their
-            // current animation, then put the absolute target only on Neck/Head.
-            const float corrections[5] = {
-                -realPitch * 0.18f,
-                -realPitch * 0.27f,
-                -realPitch * 0.55f,
-                GetSilentAntiAimPitch() * 0.25f,
-                GetSilentAntiAimPitch() * 0.75f
-            };
-            for (int i = 0; i < 5; ++i) {
-                const uintptr_t bone = silentAntiAimCachedUpperBones[i];
-                if (!bone) continue;
-                Vector3 local = o_Transform_get_localEulerAngles(bone);
-                local.x += corrections[i];
-                o_Transform_set_localEulerAngles(bone, local);
-            }
+        // Neutral, Down and Up are all absolute. Spread the correction through
+        // Spine -> Head so the complete upper body follows the selected direction;
+        // because realPitch is subtracted first, camera movement cannot drag it.
+        const float upperWeights[5] = { 0.12f, 0.18f, 0.25f, 0.20f, 0.25f };
+        for (int i = 0; i < 5; ++i) {
+            const uintptr_t bone = silentAntiAimCachedUpperBones[i];
+            if (!bone) continue;
+            Vector3 local = o_Transform_get_localEulerAngles(bone);
+            local.x += absolutePitchDelta * upperWeights[i];
+            o_Transform_set_localEulerAngles(bone, local);
         }
         InterlockedIncrement(&silentAntiAimBonePasses);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        silentAntiAimCachedController = 0;
+        silentAntiAimCachedBiped = 0;
+        silentAntiAimCachedHip = 0;
+    }
+}
+
+static void InterpolateSilentStaticSpinForRenderUnsafe()
+{
+    if (!silentAntiAimEnabled || silentAntiAimMode != 1 ||
+        !silentAntiAimSpin || !silentAntiAimCachedHip ||
+        !o_Transform_get_localEulerAngles ||
+        !o_Transform_set_localEulerAngles)
+        return;
+
+    const ULONGLONG nowMs = GetTickCount64();
+    // 120 Hz is visually smooth even at 1080 deg/s, while two Transform calls
+    // cost far less than updating on an uncapped 300-600 FPS Present loop.
+    if (nowMs - silentAntiAimLastSpinRenderMs < 8ULL) return;
+    __try {
+        const float targetYaw = GetSilentStaticYawOffset();
+        const float deltaYaw = NormalizeAngle180(
+            targetYaw - silentAntiAimRenderedYaw);
+        Vector3 hipLocal =
+            o_Transform_get_localEulerAngles(silentAntiAimCachedHip);
+        hipLocal.y = NormalizeAngle360(hipLocal.y + deltaYaw);
+        o_Transform_set_localEulerAngles(silentAntiAimCachedHip, hipLocal);
+        silentAntiAimRenderedYaw = targetYaw;
+        silentAntiAimLastSpinRenderMs = nowMs;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         silentAntiAimCachedController = 0;
@@ -6814,6 +6842,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (keyValidated) {
         ApplyCameraFov();
         ApplyCustomSkybox();
+        InterpolateSilentStaticSpinForRenderUnsafe();
     }
 
 
@@ -7182,8 +7211,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     1.0f, 1080.0f, "%.0f deg/s");
             }
             ImGui::TextWrapped(silentAntiAimSpin ?
-                "Spin is applied once after each local qod/Mecanim animation frame. Live AimingData is never changed; walking and IK remain active." :
-                "Static Backwards is applied after each local qod/Mecanim frame. Down/Up cancel torso camera pitch and place the target on Neck/Head.");
+                "Spin is interpolated at 120 Hz between qod animation frames. Neutral/Down/Up are absolute and affect the complete upper body without following the camera." :
+                "Static Backwards is applied after each qod/Mecanim frame. Neutral/Down/Up are absolute and distributed from Spine through Head.");
         } else {
             ImGui::TextWrapped("Direction Jitter keeps the existing post-Mecanim full-body jitter mode.");
         }
