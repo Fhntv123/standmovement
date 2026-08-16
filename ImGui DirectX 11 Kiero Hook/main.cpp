@@ -251,6 +251,7 @@ struct Matrix16 {
 #define OFFSET_AIMVIEW_AWAKE                       0xA60AA0
 #define OFFSET_AIMVIEW_UPDATE_SNIPER_PANELS         0xA61960
 #define OFFSET_HUDVIEW_UPDATE                       0xA68C60
+#define OFFSET_GAMECHATHUD_SEND_MESSAGE               0x9FD8E0  // GameChatHud.znr(string)
 #define OFFSET_HITMARKERVIEW_SHOW                    0xA6AFC0
 #define OFFSET_HITMARKERVIEW_LOCAL_HIT               0xA6B470  // HitMarkerView.bbcz(PlayerController, chv)
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xA5D6C0
@@ -383,6 +384,7 @@ bool pixelSurfReleaseHop = false;
 volatile LONG64 pixelSurfReleasedAt = 0;
 volatile LONG64 pixelSurfReleaseGraceUntil = 0;
 uintptr_t pixelSurfCharacterController = 0;
+volatile LONG pendingPixelSurfChatMessage = 0;
 
 static void SetPixelSurfActive(bool active)
 {
@@ -391,6 +393,7 @@ static void SetPixelSurfActive(bool active)
     pixelSurf = active;
     if (active) {
         InterlockedExchange64(&pixelSurfReleasedAt, 0);
+        if (!wasActive) InterlockedExchange(&pendingPixelSurfChatMessage, 1);
         InterlockedExchange64(&pixelSurfReleaseGraceUntil, 0);
     }
     else if (wasActive) {
@@ -1890,6 +1893,7 @@ void(__fastcall* o_GameObject_SetActive)(uintptr_t, bool) = nullptr;
 bool(__fastcall* o_GameObject_get_activeInHierarchy)(uintptr_t) = nullptr;
 void(__fastcall* o_CanvasGroup_set_alpha)(uintptr_t, float) = nullptr;
 void(__fastcall* o_HUDView_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_GameChatHud_SendMessage)(uintptr_t, Il2CppString*, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_HitMarkerView_Show)(uintptr_t, bool, bool, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_HitMarkerView_LocalHit)(uintptr_t, void*, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_PlayerController_Command)(uintptr_t, uintptr_t, float, const Il2CppMethod*) = nullptr;
@@ -3179,6 +3183,25 @@ static void CancelVisibleAimbotCamera()
     visibleAimbotAimingData = 0;
 }
 
+static bool SendPendingPixelSurfChatMessageUnsafe()
+{
+    if (!o_GameChatHud_SendMessage || !g_il2cpp.string_new) return false;
+    const uintptr_t controller = GetActiveGameController();
+    if (!controller) return false;
+    __try {
+        // GameController.<cewd>k__BackingField is the live GameChatHud at +0xF8.
+        const uintptr_t chatHud = *reinterpret_cast<uintptr_t*>(controller + 0xF8);
+        if (!chatHud) return false;
+        Il2CppString* message = g_il2cpp.string_new("ze0nware|pixelsurfed");
+        if (!message) return false;
+        o_GameChatHud_SendMessage(chatHud, message, nullptr);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
     __try {
@@ -3189,6 +3212,8 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
+    if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
+        SendPendingPixelSurfChatMessageUnsafe();
     UpdateFrozenCorpses();
     UpdatePenetrableSurfaceVisualization();
     UpdateVisibleAimbotCamera();
@@ -7384,6 +7409,7 @@ DWORD WINAPI HackThread(LPVOID)
     o_Component_GetInChildren = (uintptr_t(__fastcall*)(uintptr_t, uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_COMPONENT_GET_IN_CHILDREN);
     o_Transform_get_parent = (uintptr_t(__fastcall*)(uintptr_t, const Il2CppMethod*))(base + OFFSET_TRANSFORM_GET_PARENT);
     o_GameObject_get_activeInHierarchy = (bool(__fastcall*)(uintptr_t))(base + OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY);
+    o_GameChatHud_SendMessage = (void(__fastcall*)(uintptr_t, Il2CppString*, const Il2CppMethod*))(base + OFFSET_GAMECHATHUD_SEND_MESSAGE);
     o_CanvasGroup_set_alpha = (void(__fastcall*)(uintptr_t, float))(base + OFFSET_CANVASGROUP_SET_ALPHA);
     MH_CreateHook((LPVOID)(base + OFFSET_GAMEOBJECT_SETACTIVE), hk_GameObject_SetActive, (LPVOID*)&o_GameObject_SetActive);
     MH_EnableHook((LPVOID)(base + OFFSET_GAMEOBJECT_SETACTIVE));
