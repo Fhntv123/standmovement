@@ -447,6 +447,7 @@ volatile LONG silentAntiAimBonePasses = 0;
 uintptr_t silentAntiAimCachedController = 0;
 uintptr_t silentAntiAimCachedBiped = 0;
 uintptr_t silentAntiAimCachedHip = 0;
+uintptr_t silentAntiAimCachedUpperBones[5] = {};
 volatile LONG silentAntiAimPoseGeneration = 0;
 LONG silentAntiAimRenderedGeneration = -1;
 float silentAntiAimRenderedYaw = 0.0f;
@@ -3147,6 +3148,10 @@ static bool CacheSilentStaticPoseUnsafe(uintptr_t aimController)
             silentAntiAimCachedBiped = bipedMap;
             silentAntiAimCachedHip =
                 *reinterpret_cast<uintptr_t*>(bipedMap + 0x88);
+            const uintptr_t upperOffsets[5] = { 0x30, 0x38, 0x40, 0x28, 0x20 };
+            for (int i = 0; i < 5; ++i)
+                silentAntiAimCachedUpperBones[i] =
+                    *reinterpret_cast<uintptr_t*>(bipedMap + upperOffsets[i]);
             silentAntiAimRenderedGeneration = -1;
             silentAntiAimRenderedYaw = 0.0f;
         }
@@ -3156,41 +3161,49 @@ static bool CacheSilentStaticPoseUnsafe(uintptr_t aimController)
         silentAntiAimCachedController = 0;
         silentAntiAimCachedBiped = 0;
         silentAntiAimCachedHip = 0;
+        for (int i = 0; i < 5; ++i) silentAntiAimCachedUpperBones[i] = 0;
         return false;
     }
 }
 
-static void ApplySilentStaticPoseForRenderUnsafe()
+static void ApplySilentStaticPoseAfterQodUnsafe(uintptr_t aimController)
 {
-    if (!silentAntiAimEnabled || silentAntiAimMode != 1 ||
+    if (!CacheSilentStaticPoseUnsafe(aimController) ||
         !o_Transform_get_localEulerAngles ||
-        !o_Transform_set_localEulerAngles ||
-        !silentAntiAimCachedController || !silentAntiAimCachedHip)
+        !o_Transform_set_localEulerAngles)
         return;
-
-    const ULONGLONG nowMs = GetTickCount64();
-    const LONG generation =
-        InterlockedCompareExchange(&silentAntiAimPoseGeneration, 0, 0);
-    const bool freshGamePose =
-        generation != silentAntiAimRenderedGeneration;
-    if (!freshGamePose) {
-        if (!silentAntiAimSpin) return;
-        if (nowMs - silentAntiAimLastSpinRenderMs < 4ULL) return;
-    }
-
     __try {
-        if (freshGamePose) {
-            silentAntiAimRenderedGeneration = generation;
-            silentAntiAimRenderedYaw = 0.0f;
-        }
-        const float targetYaw = GetSilentStaticYawOffset();
+        // qod/Mecanim has finished the current animation frame. Add yaw once to
+        // the freshly animated Hip, so walking never freezes or accumulates deltas.
         Vector3 hipLocal =
             o_Transform_get_localEulerAngles(silentAntiAimCachedHip);
         hipLocal.y = NormalizeAngle360(
-            hipLocal.y + targetYaw - silentAntiAimRenderedYaw);
+            hipLocal.y + GetSilentStaticYawOffset());
         o_Transform_set_localEulerAngles(silentAntiAimCachedHip, hipLocal);
-        silentAntiAimRenderedYaw = targetYaw;
-        silentAntiAimLastSpinRenderMs = nowMs;
+
+        if (silentAntiAimPitch != 0) {
+            float realPitch = 0.0f;
+            if (silentAntiAimLatestInputValid)
+                realPitch = NormalizeAngle180(
+                    silentAntiAimLatestRealAimAngle.x);
+
+            // Cancel camera pitch from the torso so shoulders/arms keep their
+            // current animation, then put the absolute target only on Neck/Head.
+            const float corrections[5] = {
+                -realPitch * 0.18f,
+                -realPitch * 0.27f,
+                -realPitch * 0.55f,
+                GetSilentAntiAimPitch() * 0.25f,
+                GetSilentAntiAimPitch() * 0.75f
+            };
+            for (int i = 0; i < 5; ++i) {
+                const uintptr_t bone = silentAntiAimCachedUpperBones[i];
+                if (!bone) continue;
+                Vector3 local = o_Transform_get_localEulerAngles(bone);
+                local.x += corrections[i];
+                o_Transform_set_localEulerAngles(bone, local);
+            }
+        }
         InterlockedIncrement(&silentAntiAimBonePasses);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -3274,61 +3287,15 @@ static void ApplySilentDirectionJitterBonesUnsafe(uintptr_t aimController)
 void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
-    const bool isLocal = silentAntiAimEnabled &&
-        IsLocalAimControllerUnsafe(aimController);
-    uintptr_t liveAimingData = 0;
-    Vector3 savedAimAngle;
-    Vector3 savedAimEuler;
-    bool replacedStaticPitch = false;
-
-    if (isLocal && silentAntiAimMode == 1) {
-        __try {
-            // dump.cs: AimController.aimingData +0x88; AimingData aimAngle
-            // +0x18 and aimEuler +0x24. Feed qod an absolute pitch only for its
-            // own pose calculation, then restore immediately. Mecanim, walking
-            // and IK keep running; camera/live aim never retains the fake value.
-            liveAimingData =
-                *reinterpret_cast<uintptr_t*>(aimController + 0x88);
-            if (liveAimingData) {
-                savedAimAngle =
-                    *reinterpret_cast<Vector3*>(liveAimingData + 0x18);
-                savedAimEuler =
-                    *reinterpret_cast<Vector3*>(liveAimingData + 0x24);
-                Vector3 poseAimAngle = savedAimAngle;
-                Vector3 poseAimEuler = savedAimEuler;
-                poseAimAngle.x = GetSilentAntiAimPitch();
-                poseAimEuler.x = GetSilentAntiAimPitch();
-                *reinterpret_cast<Vector3*>(liveAimingData + 0x18) =
-                    poseAimAngle;
-                *reinterpret_cast<Vector3*>(liveAimingData + 0x24) =
-                    poseAimEuler;
-                replacedStaticPitch = true;
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            liveAimingData = 0;
-            replacedStaticPitch = false;
-        }
-    }
-
     o_AimController_LateAim(aimController, method);
+    if (!silentAntiAimEnabled || !IsLocalAimControllerUnsafe(aimController))
+        return;
 
-    if (replacedStaticPitch && liveAimingData) {
-        __try {
-            *reinterpret_cast<Vector3*>(liveAimingData + 0x18) = savedAimAngle;
-            *reinterpret_cast<Vector3*>(liveAimingData + 0x24) = savedAimEuler;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
-
-    if (!isLocal) return;
     InterlockedIncrement(&silentAntiAimLateAimCalls);
-    if (silentAntiAimMode == 1) {
-        if (CacheSilentStaticPoseUnsafe(aimController))
-            InterlockedIncrement(&silentAntiAimPoseGeneration);
-    } else {
+    if (silentAntiAimMode == 1)
+        ApplySilentStaticPoseAfterQodUnsafe(aimController);
+    else
         ApplySilentDirectionJitterBonesUnsafe(aimController);
-    }
 }
 
 void __fastcall hk_AimController_SetHeadDirective(
@@ -6847,7 +6814,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (keyValidated) {
         ApplyCameraFov();
         ApplyCustomSkybox();
-        ApplySilentStaticPoseForRenderUnsafe();
     }
 
 
@@ -7193,6 +7159,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             silentAntiAimCachedController = 0;
             silentAntiAimCachedBiped = 0;
             silentAntiAimCachedHip = 0;
+            for (int i = 0; i < 5; ++i) silentAntiAimCachedUpperBones[i] = 0;
             InterlockedExchange(&silentAntiAimPoseGeneration, 0);
             silentAntiAimRenderedGeneration = -1;
             silentAntiAimRenderedYaw = 0.0f;
@@ -7215,8 +7182,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     1.0f, 1080.0f, "%.0f deg/s");
             }
             ImGui::TextWrapped(silentAntiAimSpin ?
-                "Spin is render-synchronized up to 250 Hz. qod receives the selected absolute Look only while building the pose; camera aim is restored immediately." :
-                "Static Backwards turns the rendered rig 180 degrees. Neutral/Down/Up are absolute qod pose inputs; walking and IK remain active.");
+                "Spin is applied once after each local qod/Mecanim animation frame. Live AimingData is never changed; walking and IK remain active." :
+                "Static Backwards is applied after each local qod/Mecanim frame. Down/Up cancel torso camera pitch and place the target on Neck/Head.");
         } else {
             ImGui::TextWrapped("Direction Jitter keeps the existing post-Mecanim full-body jitter mode.");
         }
