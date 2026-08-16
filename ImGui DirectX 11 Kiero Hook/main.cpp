@@ -310,7 +310,7 @@ struct Matrix16 {
 
 // PlayerController.<bzwy>k__BackingField (WeaponryController) at 0xD0
 
-// WeaponryController.<caca>k__BackingField (current WeaponController) at 0xA0
+// dump1 WeaponryController.<cbbc>k__BackingField (current WeaponController) at 0x98
 
 #define OFFSET_WEAPONRYCONTROLLER                  0xD0
 
@@ -4015,7 +4015,7 @@ void __fastcall hk_Weaponry_TakeWeapon(uintptr_t instance, uint8_t slotIndex, co
     uintptr_t weaponController = 0;
     bool isLocalWeaponry = false;
     __try {
-        const uintptr_t ownerPlayer = instance ? *(uintptr_t*)(instance + 0x60) : 0;
+        const uintptr_t ownerPlayer = instance ? *(uintptr_t*)(instance + 0x58) : 0;
         isLocalWeaponry = ownerPlayer && ownerPlayer == liveHudLocalPlayer;
         weaponController = isLocalWeaponry ? *(uintptr_t*)(instance + OFFSET_WEAPONCONTROLLER) : 0;
     }
@@ -4114,11 +4114,20 @@ Vector3 __fastcall hk_GunController_Direction(uintptr_t instance, Vector3 native
     const Il2CppMethod* method)
 {
     Vector3 direction = o_GunController_Direction(instance, nativeDirection, method);
-    if (!insideLocalGunFire || !keyValidated) {
+    bool isLocalGun = false;
+    __try {
+        const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
+        const uintptr_t owner = instance ? *reinterpret_cast<uintptr_t*>(instance + 0x20) : 0;
+        isLocalGun = instance && ((currentWeapon && instance == currentWeapon) ||
+            (liveHudLocalPlayer && owner == liveHudLocalPlayer));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
+    if (!isLocalGun || !keyValidated) {
         dump1ShotDirection = direction;
         dump1ShotDirectionValid = true;
         return direction;
     }
+    activeLocalWeaponController = instance;
 
     if (aimbotEnabled || visibleAimbotEnabled) {
         InterlockedIncrement(&aimbotShots);
@@ -4326,7 +4335,7 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
 
 static void UpdateAimbotAutoFire()
 {
-    // Auto Fire is injected in GunController.wfz (native weapon command processing).
+    // Auto Fire is injected in dump1 GunController.vfl (native weapon command processing).
     // Never call private GunController.Fire from the movement loop.
 }
 
@@ -7118,6 +7127,12 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
         ImGui::Checkbox("Auto Fire", &aimbotAutoFire);
         ImGui::Text("FOV: %.0f degrees", aimbotFov);
+        ImGui::TextWrapped("Status: %s", aimbotStatus);
+        ImGui::TextDisabled("direction=%ld scanned=%ld visible=%ld applied=%ld",
+            InterlockedCompareExchange(&aimbotShots, 0, 0),
+            InterlockedCompareExchange(&aimbotTargetsScanned, 0, 0),
+            InterlockedCompareExchange(&aimbotVisibleTargets, 0, 0),
+            InterlockedCompareExchange(&aimbotApplied, 0, 0));
         ImGui::Spacing();
         ImGui::TextColored(accent, "Keybinds");
         ImGui::Separator();
