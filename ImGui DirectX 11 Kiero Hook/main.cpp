@@ -275,7 +275,8 @@ struct Matrix16 {
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0x86C0E0
 #define OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE      0x86C9A0  // AimController.riz(Vector3)
 #define OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE      0x86C9F0  // AimController.rja() -> Vector3
-#define OFFSET_AIMCONTROLLER_LATE_AIM                0x86C5A0  // AimController.qod(), post-Mecanim aim pass
+#define OFFSET_AIMCONTROLLER_LATE_AIM                0x86C5A0  // AimController.qod(), pose pass (not Unity LateUpdate)
+#define OFFSET_CAMERA_FIRE_ON_PRE_CULL                0x2EBF8F0 // Camera.FireOnPreCull(Camera), final render boundary
 #define OFFSET_AIMINGDATA_CLONE                      0x86F9C0
 #define OFFSET_TRANSFORM_GET_EULERANGLES            0x2F066B0
 #define OFFSET_TRANSFORM_SET_EULERANGLES            0x2F07020
@@ -1923,6 +1924,7 @@ uintptr_t(__fastcall* o_AimController_GetSnapshot)(uintptr_t, const Il2CppMethod
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 Vector3(__fastcall* o_AimController_GetHeadDirective)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_LateAim)(uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_Camera_FireOnPreCull)(uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_AimingData_Clone)(uintptr_t, const Il2CppMethod*) = nullptr;
 
 
@@ -3217,19 +3219,36 @@ void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
     o_AimController_LateAim(aimController, method);
-    if (aimController != silentAntiAimLatestController) return;
-    if (silentAntiAimEnabled) {
-        uintptr_t transform = 0;
-        // Do not interpret PlayerController +0x79 as a view mode: dumwp.cs
-        // declares that field as cwf, and cwf is the team enum (None/Tr/Ct/
-        // Spectator). The existing native TPS toggle is the only verified mode
-        // source in this project.
-        const bool cameraReady = thirdPersonEnabled ?
-            ReadAntiAimTpsCameraTransformUnsafe(&transform) :
-            ReadAntiAimFpsCameraTransformUnsafe(&transform);
-        if (cameraReady) RestoreAntiAimCameraTransformUnsafe(transform);
+    if (aimController == silentAntiAimLatestController)
+        InterlockedIncrement(&silentAntiAimCommandCalls);
+}
+
+void __fastcall hk_Camera_FireOnPreCull(
+    uintptr_t camera, const Il2CppMethod* method)
+{
+    // Unity invokes Camera.FireOnPreCull after Update/LateUpdate and immediately
+    // before this exact camera is culled/rendered. The supplied source's
+    // CAntiAim::lateUpdate was incorrectly mapped to AimController.qod; qod is
+    // only a Controller pose pass and later camera code can overwrite it.
+    o_Camera_FireOnPreCull(camera, method);
+    if (!silentAntiAimEnabled || !camera || !o_Component_get_transform) return;
+
+    __try {
+        const uintptr_t renderedTransform = o_Component_get_transform(camera);
+        if (!renderedTransform) return;
+
+        uintptr_t fpsTransform = 0;
+        uintptr_t tpsTransform = 0;
+        const bool isFpsCamera =
+            ReadAntiAimFpsCameraTransformUnsafe(&fpsTransform) &&
+            renderedTransform == fpsTransform;
+        const bool isTpsCamera =
+            ReadAntiAimTpsCameraTransformUnsafe(&tpsTransform) &&
+            renderedTransform == tpsTransform;
+        if (isFpsCamera || isTpsCamera)
+            RestoreAntiAimCameraTransformUnsafe(renderedTransform);
     }
-    InterlockedIncrement(&silentAntiAimCommandCalls);
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -6973,8 +6992,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Spin Speed", &silentAntiAimSpinSpeed,
                 1.0f, 1080.0f, "%.0f deg/s");
         }
-        ImGui::TextWrapped("Fake TargetAngle stays in the outgoing command. The real angle is accumulated from original input; the active FPS/TPS camera is restored only after the native qod post-Mecanim pass.");
-        ImGui::TextDisabled("build:%ld qod:%ld camera:%ld applied:%ld  %s",
+        ImGui::TextWrapped("Fake TargetAngle stays in the outgoing command. The real angle is accumulated from original input; the exact active FPS/TPS camera is restored at Unity Camera.FireOnPreCull, immediately before rendering.");
+        ImGui::TextDisabled("build:%ld pose:%ld preCull:%ld applied:%ld  %s",
             InterlockedCompareExchange(&silentAntiAimInputBuildCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimCameraRestoreCalls, 0, 0),
@@ -7591,6 +7610,14 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimLateAimCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM)) :
         antiAimLateAimCreateStatus;
+    const MH_STATUS antiAimPreCullCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_CAMERA_FIRE_ON_PRE_CULL),
+        hk_Camera_FireOnPreCull,
+        (LPVOID*)&o_Camera_FireOnPreCull);
+    const MH_STATUS antiAimPreCullEnableStatus =
+        antiAimPreCullCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_CAMERA_FIRE_ON_PRE_CULL)) :
+        antiAimPreCullCreateStatus;
     const MH_STATUS antiAimInputCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND),
         hk_KeyboardControl_BuildCommand,
@@ -7601,12 +7628,15 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimInputCreateStatus;
     silentAntiAimHookReady = antiAimLateAimCreateStatus == MH_OK &&
         antiAimLateAimEnableStatus == MH_OK &&
+        antiAimPreCullCreateStatus == MH_OK &&
+        antiAimPreCullEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
         antiAimInputEnableStatus == MH_OK;
 
-    LINDY_LOG("[anti-aim] command bbft=%d/%d; late camera qod=%d/%d; ready=%d",
+    LINDY_LOG("[anti-aim] command bbft=%d/%d; pose qod=%d/%d; render preCull=%d/%d; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
         (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
+        (int)antiAimPreCullCreateStatus, (int)antiAimPreCullEnableStatus,
         silentAntiAimHookReady ? 1 : 0);
 
     // Capture the live ArmsLodGroup directly whenever its first-person visibility is enabled.
