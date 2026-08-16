@@ -3134,18 +3134,16 @@ static void ApplySilentStaticBackwardsBonesUnsafe(uintptr_t aimController)
             *reinterpret_cast<uintptr_t*>(aimController + 0x28);
         if (!bipedMap) return;
 
-        // The generated game il2cpp.h proves Controller.bzvg is the character
-        // visual root at +0x30. Rotate that root instead of the animated Hip bone:
-        // this keeps the whole rig coherent, makes locomotion visibly play backwards,
-        // and avoids Mecanim/IK fighting the spin every frame.
-        const uintptr_t visualRoot =
-            *reinterpret_cast<uintptr_t*>(aimController + 0x30);
+        // Controller.bzvg (+0x30) is not the visible TPS model root in this
+        // runtime state. Use the confirmed rendered Hip from BipedMap (+0x88),
+        // which is applied after qod/Mecanim and visibly drives Static and Spin.
+        const uintptr_t hip = *reinterpret_cast<uintptr_t*>(bipedMap + 0x88);
         bool wrote = false;
-        if (visualRoot) {
-            Vector3 local = o_Transform_get_localEulerAngles(visualRoot);
+        if (hip) {
+            Vector3 local = o_Transform_get_localEulerAngles(hip);
             local.y = NormalizeAngle360(
                 local.y + GetSilentStaticYawOffset());
-            o_Transform_set_localEulerAngles(visualRoot, local);
+            o_Transform_set_localEulerAngles(hip, local);
             wrote = true;
         }
 
@@ -7140,8 +7138,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     1.0f, 1080.0f, "%.0f deg/s");
             }
             ImGui::TextWrapped(silentAntiAimSpin ?
-                "Spin rotates the character visual root continuously at the selected speed. Look remains absolute and camera-independent." :
-                "Static Backwards rotates the character visual root 180 degrees, so locomotion visibly plays backwards. Look is absolute and camera-independent.");
+                "Spin rotates the rendered third-person rig continuously at the selected speed. Look remains absolute and camera-independent." :
+                "Static Backwards turns the rendered third-person rig 180 degrees. Look is absolute and camera-independent.");
         } else {
             ImGui::TextWrapped("Direction Jitter keeps the existing post-Mecanim full-body jitter mode.");
         }
