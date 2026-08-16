@@ -217,6 +217,8 @@ struct Matrix16 {
 #define OFFSET_PHYSICS_RAYCAST_ALL                    0x2F54060
 #define OFFSET_RAYCASTHIT_GET_COLLIDER                0x2F57A70
 #define OFFSET_COMPONENT_GET_IN_PARENT                0x2EF29E0
+#define OFFSET_COMPONENT_GET_TAG                      0x2EF2CE0
+#define OFFSET_SURFACE_TYPE_FROM_TAG                  0x9A3D60
 #define OFFSET_COMPONENT_GET_IN_CHILDREN              0x2EF2950
 #define OFFSET_TRANSFORM_GET_PARENT                   0x2F05E10
 #define OFFSET_MATERIAL_GET_COLOR                   0x2ECEBB0
@@ -1880,6 +1882,8 @@ bool(__fastcall* o_Physics_RaycastHit)(Vector3, Vector3, RaycastHitNative*, floa
 Il2CppArray*(__fastcall* o_Physics_RaycastAll)(Vector3, Vector3, float, int, int, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_RaycastHit_get_collider)(RaycastHitNative*, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Component_GetInParent)(uintptr_t, uintptr_t, bool, const Il2CppMethod*) = nullptr;
+Il2CppString*(__fastcall* o_Component_get_tag)(uintptr_t, const Il2CppMethod*) = nullptr;
+int(__fastcall* o_SurfaceType_FromTag)(Il2CppString*, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Component_GetInChildren)(uintptr_t, uintptr_t, bool, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Transform_get_parent)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GameObject_SetActive)(uintptr_t, bool) = nullptr;
@@ -4390,84 +4394,34 @@ static bool ReadManagedArrayElementUnsafe(uintptr_t arrayAddress, size_t count,
     __except (EXCEPTION_EXECUTE_HANDLER) { *value = 0; return false; }
 }
 
-static bool ProbeAutoWallSurfaceUnsafe(Vector3 origin, Vector3 direction, float maxDistance,
-    uintptr_t hitParameters, void* targetPlayer, uintptr_t rendererType,
-    uintptr_t* renderer, int* surfaceType, int* targetDamage)
+static bool ProbeTaggedPenetrableSurfaceUnsafe(Vector3 origin, Vector3 direction, float maxDistance,
+    uintptr_t rendererType, uintptr_t* renderer, int* surfaceType,
+    bool* physicalHit, bool* typedHit)
 {
-    if (!renderer || !surfaceType || !targetDamage) return false;
-    *renderer = 0; *surfaceType = 0; *targetDamage = 0;
-    if (!o_HitCaster_Cast || !o_Physics_RaycastHit || !o_RaycastHit_get_collider ||
-        !o_Component_GetInParent || !o_Component_GetInChildren || !rendererType || !hitParameters) return false;
+    if (!renderer || !surfaceType || !physicalHit || !typedHit) return false;
+    *renderer = 0; *surfaceType = 0; *physicalHit = false; *typedHit = false;
+    if (!o_Physics_RaycastHit || !o_RaycastHit_get_collider || !o_Component_get_tag ||
+        !o_SurfaceType_FromTag || !o_Component_GetInParent || !o_Component_GetInChildren ||
+        !rendererType) return false;
     __try {
-        // cjr.cega is authoritative: if it has no cjv segment, this is not shown as penetrable.
-        const uintptr_t result = o_HitCaster_Cast(origin, direction, maxDistance, hitParameters, nullptr);
-        // Identical proof used by Auto Wall: this exact cast must own positive damage
-        // for this exact enemy. Random world rays usually have no target and therefore
-        // produce no authoritative penetration path even when aimed at a thin wall.
-        int nativeDamage = 0;
-        if (!result || !ReadNativeCastTargetDamage(result, targetPlayer, nativeDamage) || nativeDamage <= 0)
-            return false;
-        *targetDamage = nativeDamage;
-        const uintptr_t list = *reinterpret_cast<uintptr_t*>(result + 0x18);
-        const uintptr_t items = list ? *reinterpret_cast<uintptr_t*>(list + 0x10) : 0;
-        const int count = list ? *reinterpret_cast<int*>(list + 0x18) : 0;
-        if (!items || count <= 0 || count > 64) return false;
-        Vector3 entry = {};
-        int selectedType = 0;
-        float entryDistance = maxDistance + 2.0f;
-        bool selected = false;
-        for (int i = 0; i < count; ++i) {
-            const uintptr_t penetration = *reinterpret_cast<uintptr_t*>(
-                items + 0x20 + static_cast<uintptr_t>(i) * sizeof(uintptr_t));
-            if (!penetration) continue;
-            const int type = *reinterpret_cast<int*>(penetration + 0x28); // cjv.cegl / cjw
-            // cjr.cega already means HitCaster traversed this surface. cjs.wxp was
-            // previously misidentified as an Auto Wall predicate and rejected every
-            // real wall. Keep map surface classes only; never players/ragdolls/terrain.
-            const bool mapWall = (type >= 1 && type <= 12) || type == 16 || type == 17 ||
-                type == 19 || type == 22 || type == 25 || type == 26;
-            if (!mapWall) continue;
-            const Vector3 candidate = *reinterpret_cast<Vector3*>(penetration + 0x10);
-            const float dx = candidate.x - origin.x, dy = candidate.y - origin.y, dz = candidate.z - origin.z;
-            const float distance = sqrtf(dx * dx + dy * dy + dz * dz);
-            if (!isfinite(distance) || distance < 0.05f || distance > maxDistance + 1.0f || distance >= entryDistance) continue;
-            entry = candidate;
-            entryDistance = distance;
-            selectedType = type;
-            selected = true;
-        }
-        if (!selected) return false;
-        *surfaceType = selectedType;
-        // Use every collider from the original Auto Wall ray and choose the one whose
-        // hit distance matches this exact native cjv entry. Starting a new ray inside
-        // geometry created detached/empty visuals and often selected no wall at all.
-        if (!o_Physics_RaycastAll) return false;
-        Il2CppArray* allHits = o_Physics_RaycastAll(origin, direction,
-            entryDistance + 0.75f, -1, 1, nullptr);
-        const uintptr_t hitArray = reinterpret_cast<uintptr_t>(allHits);
-        const size_t hitCount = hitArray ? *reinterpret_cast<size_t*>(hitArray + 0x18) : 0;
-        if (!hitCount || hitCount > 256) return false;
-        RaycastHitNative selectedHit = {};
-        float bestDelta = 0.40f;
-        bool haveHit = false;
-        for (size_t i = 0; i < hitCount; ++i) {
-            const RaycastHitNative candidateHit = *reinterpret_cast<RaycastHitNative*>(
-                hitArray + 0x20 + i * sizeof(RaycastHitNative));
-            const float delta = fabsf(candidateHit.distance - entryDistance);
-            if (!isfinite(candidateHit.distance) || candidateHit.distance < 0.0f || delta >= bestDelta) continue;
-            selectedHit = candidateHit;
-            bestDelta = delta;
-            haveHit = true;
-        }
-        if (!haveHit) return false;
-        const uintptr_t collider = o_RaycastHit_get_collider(&selectedHit, nullptr);
+        RaycastHitNative hit = {};
+        if (!o_Physics_RaycastHit(origin, direction, &hit, maxDistance, -1, 1, nullptr)) return false;
+        *physicalHit = true;
+        const uintptr_t collider = o_RaycastHit_get_collider(&hit, nullptr);
         if (!collider) return false;
+        // HitCaster resolves cjw from the map's serialized "SurfaceType/..." tag.
+        // This path works without an enemy, a shot, or weapon-specific cjq state.
+        Il2CppString* tag = o_Component_get_tag(collider, nullptr);
+        const int type = tag ? o_SurfaceType_FromTag(tag, nullptr) : 0;
+        const bool penetrableMapMaterial = (type >= 1 && type <= 9) ||
+            type == 11 || type == 12 || type == 16 || type == 17 || type == 22 || type == 26;
+        if (!penetrableMapMaterial) return false;
+        *typedHit = true;
+        *surfaceType = type;
         uintptr_t found = o_Component_GetInParent(collider, rendererType, true, nullptr);
         if (!found) found = o_Component_GetInChildren(collider, rendererType, true, nullptr);
-        // Map collision and visible mesh are often siblings. Walk a few ancestors and
-        // search each subtree instead of assuming the Collider owns the Renderer.
         uintptr_t hierarchy = o_Component_get_transform ? o_Component_get_transform(collider) : 0;
-        for (int depth = 0; !found && hierarchy && depth < 6; ++depth) {
+        for (int depth = 0; !found && hierarchy && depth < 8; ++depth) {
             found = o_Component_GetInChildren(hierarchy, rendererType, true, nullptr);
             hierarchy = o_Transform_get_parent ? o_Transform_get_parent(hierarchy, nullptr) : 0;
         }
@@ -4476,7 +4430,8 @@ static bool ProbeAutoWallSurfaceUnsafe(Vector3 origin, Vector3 direction, float 
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        *renderer = 0; *surfaceType = 0; *targetDamage = 0; return false;
+        *renderer = 0; *surfaceType = 0; *physicalHit = false; *typedHit = false;
+        return false;
     }
 }
 
@@ -4598,7 +4553,17 @@ static bool CapturePenetrableSurfaceRenderer(uintptr_t renderer, int surfaceType
     return true;
 }
 
-static size_t penetrableSurfaceTargetCursor = 0;
+static Vector3 GetPenetrableWorldScanDirection(size_t index)
+{
+    // 512 directions is dense enough to strike ordinary wall panels at 100-250 m.
+    constexpr float count = 512.0f;
+    constexpr float goldenAngle = 2.39996322972865332f;
+    const float i = static_cast<float>(index % 512);
+    const float y = 1.0f - 2.0f * ((i + 0.5f) / count);
+    const float radius = sqrtf((std::max)(0.0f, 1.0f - y * y));
+    const float theta = goldenAngle * i;
+    return Vector3(cosf(theta) * radius, y, sinf(theta) * radius);
+}
 
 static void ApplyPenetrableSurfaceEntry(PenetrableSurfaceVisual& entry)
 {
@@ -4627,11 +4592,6 @@ static void UpdatePenetrableSurfaceVisualization()
         strcpy_s(penetrableSurfaceStatus, "Paused while dead/spectating");
         return;
     }
-    if (!aimbotLastHitParameters) {
-        if (!penetrableSurfaceVisuals.empty()) RestorePenetrableSurfaceVisualization();
-        strcpy_s(penetrableSurfaceStatus, "Fire once per launch to initialize penetration rules");
-        return;
-    }
     const ULONGLONG now = GetTickCount64();
     if (now < penetrableSurfaceNextScan) return;
     penetrableSurfaceNextScan = now + 50;
@@ -4656,40 +4616,25 @@ static void UpdatePenetrableSurfaceVisualization()
         return;
     }
     const Vector3 origin = o_Transform_get_position(transform);
-    void* players[64] = {};
-    int playerCount = 0;
-    CollectPlayers(players, 64, playerCount);
-    size_t pathsThisStep = 0;
-    int bestDamageThisStep = 0;
-    if (playerCount > 0) {
-        // Scan every enemy around the player, independent of camera/crosshair. These
-        // are the same target rays and the same damage ownership proof as Auto Wall.
-        const int probes = (std::min)(playerCount, 8);
-        for (int probe = 0; probe < probes; ++probe) {
-            const int index = static_cast<int>(penetrableSurfaceTargetCursor++ % static_cast<size_t>(playerCount));
-            void* target = players[index];
-            if (!target || target == localPlayer) continue;
-            const unsigned char team = GetPCTeam(target);
-            if (team == 0 || team == 3 || team == localTeam || GetPCHealth(target) == 0) continue;
-            Vector3 head;
-            if (!GetAimbotHead(target, head)) continue;
-            const Vector3 delta(head.x - origin.x, head.y - origin.y, head.z - origin.z);
-            const float distance = delta.Length();
-            if (!isfinite(distance) || distance < 0.5f || distance > penetrableSurfaceScanDistance) continue;
-            const Vector3 direction(delta.x / distance, delta.y / distance, delta.z / distance);
-            uintptr_t renderer = 0;
-            int surfaceType = 0;
-            int nativeDamage = 0;
-            if (ProbeAutoWallSurfaceUnsafe(origin, direction, distance + 0.35f,
-                aimbotLastHitParameters, target, reinterpret_cast<uintptr_t>(reflectionType),
-                &renderer, &surfaceType, &nativeDamage) &&
-                CapturePenetrableSurfaceRenderer(renderer, surfaceType, now)) {
-                ++pathsThisStep;
-                bestDamageThisStep = (std::max)(bestDamageThisStep, nativeDamage);
-            }
-        }
+    size_t physicalHits = 0;
+    size_t typedHits = 0;
+    size_t rendererHits = 0;
+    // 32 rays every 50 ms: one complete dense 360-degree sweep in ~0.8 seconds.
+    for (size_t ray = 0; ray < 32; ++ray) {
+        const Vector3 direction = GetPenetrableWorldScanDirection(penetrableSurfaceScanCursor++);
+        uintptr_t renderer = 0;
+        int surfaceType = 0;
+        bool physicalHit = false;
+        bool typedHit = false;
+        const bool resolved = ProbeTaggedPenetrableSurfaceUnsafe(origin, direction,
+            penetrableSurfaceScanDistance, reinterpret_cast<uintptr_t>(reflectionType),
+            &renderer, &surfaceType, &physicalHit, &typedHit);
+        if (physicalHit) ++physicalHits;
+        if (typedHit) ++typedHits;
+        if (resolved && CapturePenetrableSurfaceRenderer(renderer, surfaceType, now))
+            ++rendererHits;
     }
-    // Remove stale/destroyed objects safely. A successful Auto Wall target path refreshes lastSeen.
+    // Remove stale/destroyed objects safely. A tagged map hit refreshes lastSeen.
     for (auto it = penetrableSurfaceVisuals.begin(); it != penetrableSurfaceVisuals.end();) {
         if (!IsUnityObjectAliveUnsafe(it->renderer) || now < it->lastSeen || now - it->lastSeen > 2500) {
             RestorePenetrableSurfaceEntry(*it);
@@ -4699,11 +4644,9 @@ static void UpdatePenetrableSurfaceVisualization()
             ++it;
         }
     }
-    if (playerCount <= 1)
-        sprintf_s(penetrableSurfaceStatus, "Waiting for an enemy Auto Wall path");
-    else
-        sprintf_s(penetrableSurfaceStatus, "Auto Wall paths: %zu wall(s), %zu path(s), max %d dmg",
-            penetrableSurfaceVisuals.size(), pathsThisStep, bestDamageThisStep);
+    sprintf_s(penetrableSurfaceStatus,
+        "World scan: %zu wall(s) | physics %zu | typed %zu | renderer %zu",
+        penetrableSurfaceVisuals.size(), physicalHits, typedHits, rendererHits);
 }
 
 static uintptr_t EnsureSelectedWeaponChamsMaterial()
@@ -6936,9 +6879,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             penetrableSurfaceNextScan = 0;
         }
         if (penetrableSurfacesEnabled) {
-            ImGui::TextDisabled("360-degree Auto Wall path scan to every enemy");
+            ImGui::TextDisabled("360-degree map scan using native SurfaceType tags");
             ImGui::ColorEdit3("Penetrable Fill", penetrableSurfaceFillColor);
-            ImGui::TextDisabled("Only shows walls on a proven damaging Auto Wall path");
+            ImGui::TextDisabled("No enemy or shot required; excludes solid/character surfaces");
             ImGui::SliderFloat("Penetrable Transparency", &penetrableSurfaceAlpha, 0.05f, 0.80f, "%.2f");
             ImGui::SliderFloat("Penetrable World Radius", &penetrableSurfaceScanDistance, 10.0f, 250.0f, "%.0f m");
             ImGui::TextDisabled("%s", penetrableSurfaceStatus);
@@ -7436,6 +7379,8 @@ DWORD WINAPI HackThread(LPVOID)
     o_Physics_RaycastAll = (Il2CppArray*(__fastcall*)(Vector3, Vector3, float, int, int, const Il2CppMethod*))(base + OFFSET_PHYSICS_RAYCAST_ALL);
     o_RaycastHit_get_collider = (uintptr_t(__fastcall*)(RaycastHitNative*, const Il2CppMethod*))(base + OFFSET_RAYCASTHIT_GET_COLLIDER);
     o_Component_GetInParent = (uintptr_t(__fastcall*)(uintptr_t, uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_COMPONENT_GET_IN_PARENT);
+    o_Component_get_tag = (Il2CppString*(__fastcall*)(uintptr_t, const Il2CppMethod*))(base + OFFSET_COMPONENT_GET_TAG);
+    o_SurfaceType_FromTag = (int(__fastcall*)(Il2CppString*, const Il2CppMethod*))(base + OFFSET_SURFACE_TYPE_FROM_TAG);
     o_Component_GetInChildren = (uintptr_t(__fastcall*)(uintptr_t, uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_COMPONENT_GET_IN_CHILDREN);
     o_Transform_get_parent = (uintptr_t(__fastcall*)(uintptr_t, const Il2CppMethod*))(base + OFFSET_TRANSFORM_GET_PARENT);
     o_GameObject_get_activeInHierarchy = (bool(__fastcall*)(uintptr_t))(base + OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY);
