@@ -4390,17 +4390,25 @@ static bool ReadManagedArrayElementUnsafe(uintptr_t arrayAddress, size_t count,
     __except (EXCEPTION_EXECUTE_HANDLER) { *value = 0; return false; }
 }
 
-static bool ProbePenetrableSurfaceUnsafe(Vector3 origin, Vector3 direction, float maxDistance,
-    uintptr_t hitParameters, uintptr_t rendererType, uintptr_t* renderer, int* surfaceType)
+static bool ProbeAutoWallSurfaceUnsafe(Vector3 origin, Vector3 direction, float maxDistance,
+    uintptr_t hitParameters, void* targetPlayer, uintptr_t rendererType,
+    uintptr_t* renderer, int* surfaceType, int* targetDamage)
 {
-    if (!renderer || !surfaceType) return false;
-    *renderer = 0; *surfaceType = 0;
+    if (!renderer || !surfaceType || !targetDamage) return false;
+    *renderer = 0; *surfaceType = 0; *targetDamage = 0;
     if (!o_HitCaster_Cast || !o_Physics_RaycastHit || !o_RaycastHit_get_collider ||
         !o_Component_GetInParent || !o_Component_GetInChildren || !rendererType || !hitParameters) return false;
     __try {
         // cjr.cega is authoritative: if it has no cjv segment, this is not shown as penetrable.
         const uintptr_t result = o_HitCaster_Cast(origin, direction, maxDistance, hitParameters, nullptr);
-        const uintptr_t list = result ? *reinterpret_cast<uintptr_t*>(result + 0x18) : 0;
+        // Identical proof used by Auto Wall: this exact cast must own positive damage
+        // for this exact enemy. Random world rays usually have no target and therefore
+        // produce no authoritative penetration path even when aimed at a thin wall.
+        int nativeDamage = 0;
+        if (!result || !ReadNativeCastTargetDamage(result, targetPlayer, nativeDamage) || nativeDamage <= 0)
+            return false;
+        *targetDamage = nativeDamage;
+        const uintptr_t list = *reinterpret_cast<uintptr_t*>(result + 0x18);
         const uintptr_t items = list ? *reinterpret_cast<uintptr_t*>(list + 0x10) : 0;
         const int count = list ? *reinterpret_cast<int*>(list + 0x18) : 0;
         if (!items || count <= 0 || count > 64) return false;
@@ -4467,7 +4475,9 @@ static bool ProbePenetrableSurfaceUnsafe(Vector3 origin, Vector3 direction, floa
         *renderer = found;
         return true;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { *renderer = 0; *surfaceType = 0; return false; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        *renderer = 0; *surfaceType = 0; *targetDamage = 0; return false;
+    }
 }
 
 static const char* GetPenetrableSurfaceTypeName(int type)
@@ -4588,18 +4598,7 @@ static bool CapturePenetrableSurfaceRenderer(uintptr_t renderer, int surfaceType
     return true;
 }
 
-static Vector3 GetPenetrableWorldScanDirection(size_t index)
-{
-    // 96 near-uniform Fibonacci-sphere rays cover the complete surrounding world,
-    // not only the crosshair. Eight rays per 50 ms completes one sweep in ~0.6 s.
-    constexpr float count = 96.0f;
-    constexpr float goldenAngle = 2.39996322972865332f;
-    const float i = static_cast<float>(index % 96);
-    const float y = 1.0f - 2.0f * ((i + 0.5f) / count);
-    const float radius = sqrtf((std::max)(0.0f, 1.0f - y * y));
-    const float theta = goldenAngle * i;
-    return Vector3(cosf(theta) * radius, y, sinf(theta) * radius);
-}
+static size_t penetrableSurfaceTargetCursor = 0;
 
 static void ApplyPenetrableSurfaceEntry(PenetrableSurfaceVisual& entry)
 {
@@ -4657,20 +4656,42 @@ static void UpdatePenetrableSurfaceVisualization()
         return;
     }
     const Vector3 origin = o_Transform_get_position(transform);
-    size_t hitsThisStep = 0;
-    for (size_t ray = 0; ray < 8; ++ray) {
-        const Vector3 direction = GetPenetrableWorldScanDirection(penetrableSurfaceScanCursor++);
-        uintptr_t renderer = 0;
-        int surfaceType = 0;
-        if (ProbePenetrableSurfaceUnsafe(origin, direction, penetrableSurfaceScanDistance,
-            aimbotLastHitParameters, reinterpret_cast<uintptr_t>(reflectionType), &renderer, &surfaceType) &&
-            CapturePenetrableSurfaceRenderer(renderer, surfaceType, now))
-            ++hitsThisStep;
+    void* players[64] = {};
+    int playerCount = 0;
+    CollectPlayers(players, 64, playerCount);
+    size_t pathsThisStep = 0;
+    int bestDamageThisStep = 0;
+    if (playerCount > 0) {
+        // Scan every enemy around the player, independent of camera/crosshair. These
+        // are the same target rays and the same damage ownership proof as Auto Wall.
+        const int probes = (std::min)(playerCount, 8);
+        for (int probe = 0; probe < probes; ++probe) {
+            const int index = static_cast<int>(penetrableSurfaceTargetCursor++ % static_cast<size_t>(playerCount));
+            void* target = players[index];
+            if (!target || target == localPlayer) continue;
+            const unsigned char team = GetPCTeam(target);
+            if (team == 0 || team == 3 || team == localTeam || GetPCHealth(target) == 0) continue;
+            Vector3 head;
+            if (!GetAimbotHead(target, head)) continue;
+            const Vector3 delta(head.x - origin.x, head.y - origin.y, head.z - origin.z);
+            const float distance = delta.Length();
+            if (!isfinite(distance) || distance < 0.5f || distance > penetrableSurfaceScanDistance) continue;
+            const Vector3 direction(delta.x / distance, delta.y / distance, delta.z / distance);
+            uintptr_t renderer = 0;
+            int surfaceType = 0;
+            int nativeDamage = 0;
+            if (ProbeAutoWallSurfaceUnsafe(origin, direction, distance + 0.35f,
+                aimbotLastHitParameters, target, reinterpret_cast<uintptr_t>(reflectionType),
+                &renderer, &surfaceType, &nativeDamage) &&
+                CapturePenetrableSurfaceRenderer(renderer, surfaceType, now)) {
+                ++pathsThisStep;
+                bestDamageThisStep = (std::max)(bestDamageThisStep, nativeDamage);
+            }
+        }
     }
-    // Remove stale/destroyed objects safely. A successful ray refreshes lastSeen;
-    // 1.5 seconds spans more than two complete 96-ray world sweeps.
+    // Remove stale/destroyed objects safely. A successful Auto Wall target path refreshes lastSeen.
     for (auto it = penetrableSurfaceVisuals.begin(); it != penetrableSurfaceVisuals.end();) {
-        if (!IsUnityObjectAliveUnsafe(it->renderer) || now < it->lastSeen || now - it->lastSeen > 1500) {
+        if (!IsUnityObjectAliveUnsafe(it->renderer) || now < it->lastSeen || now - it->lastSeen > 2500) {
             RestorePenetrableSurfaceEntry(*it);
             it = penetrableSurfaceVisuals.erase(it);
         } else {
@@ -4678,8 +4699,11 @@ static void UpdatePenetrableSurfaceVisualization()
             ++it;
         }
     }
-    sprintf_s(penetrableSurfaceStatus, "HitCaster scan: %zu wall(s), %zu confirmed hit(s)",
-        penetrableSurfaceVisuals.size(), hitsThisStep);
+    if (playerCount <= 1)
+        sprintf_s(penetrableSurfaceStatus, "Waiting for an enemy Auto Wall path");
+    else
+        sprintf_s(penetrableSurfaceStatus, "Auto Wall paths: %zu wall(s), %zu path(s), max %d dmg",
+            penetrableSurfaceVisuals.size(), pathsThisStep, bestDamageThisStep);
 }
 
 static uintptr_t EnsureSelectedWeaponChamsMaterial()
@@ -6912,9 +6936,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             penetrableSurfaceNextScan = 0;
         }
         if (penetrableSurfacesEnabled) {
-            ImGui::TextDisabled("360-degree native wallbang scan around you");
+            ImGui::TextDisabled("360-degree Auto Wall path scan to every enemy");
             ImGui::ColorEdit3("Penetrable Fill", penetrableSurfaceFillColor);
-            ImGui::TextDisabled("Uses HitCaster's confirmed penetration segments");
+            ImGui::TextDisabled("Only shows walls on a proven damaging Auto Wall path");
             ImGui::SliderFloat("Penetrable Transparency", &penetrableSurfaceAlpha, 0.05f, 0.80f, "%.2f");
             ImGui::SliderFloat("Penetrable World Radius", &penetrableSurfaceScanDistance, 10.0f, 250.0f, "%.0f m");
             ImGui::TextDisabled("%s", penetrableSurfaceStatus);
