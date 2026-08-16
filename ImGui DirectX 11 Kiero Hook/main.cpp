@@ -1895,6 +1895,9 @@ HitCasterCer(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float,
 thread_local bool insideLocalGunFire = false;
 thread_local bool insideAutoFireRequest = false;
 thread_local int activeLocalHitCastDepth = 0;
+thread_local HitCasterCeq aimbotLastCeq = {};
+thread_local bool aimbotLastCeqValid = false;
+thread_local uintptr_t aimbotLastCeqGun = 0;
 void(__fastcall* o_AimView_Awake)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimView_UpdateSniperPanels)(uintptr_t, float, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Component_get_gameObject)(uintptr_t) = nullptr;
@@ -3790,38 +3793,32 @@ static bool GetAimbotHead(void* player, Vector3& headPosition)
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-static bool ReadNativeCastTargetDamage(uintptr_t castResult, void* player, int& damage)
+static bool ReadDump1NativeTargetDamage(const HitCasterCer& castResult,
+    void* player, int& damage)
 {
     damage = 0;
-    if (!castResult || !player) return false;
+    if (!castResult.hitDictionary || !player) return false;
     __try {
         const uintptr_t targetHitController = *reinterpret_cast<uintptr_t*>(
             reinterpret_cast<uintptr_t>(player) + 0xF0);
-        const uintptr_t hitDictionary = *reinterpret_cast<uintptr_t*>(castResult + 0x10);
-        const uintptr_t entries = hitDictionary ?
-            *reinterpret_cast<uintptr_t*>(hitDictionary + 0x18) : 0;
-        const int count = hitDictionary ? *reinterpret_cast<int*>(hitDictionary + 0x20) : 0;
-        if (!targetHitController || !entries || count <= 0 || count > 128) return false;
-        // Dictionary<bor,List<chs>> entry: hash +0x00, key +0x08,
-        // value +0x10, stride 0x18. chs.cdvw at +0x2C is native damage.
+        const uintptr_t dictionary = castResult.hitDictionary;
+        const uintptr_t entries = *reinterpret_cast<uintptr_t*>(dictionary + 0x18);
+        const int count = *reinterpret_cast<int*>(dictionary + 0x20);
+        if (!targetHitController || !entries || count <= 0 || count > 128)
+            return false;
+        // dump1 cer.cgta is Dictionary<bal,ccr>. Entry layout is hash/next +0x00,
+        // bal key +0x08, ccr value +0x10, stride 0x18. ccr.cgid damage is +0x2C.
         for (int i = 0; i < count; ++i) {
             const uintptr_t entry = entries + 0x20 + static_cast<uintptr_t>(i) * 0x18;
             if (*reinterpret_cast<int*>(entry + 0x00) < 0) continue;
-            if (*reinterpret_cast<uintptr_t*>(entry + 0x08) != targetHitController) continue;
-            const uintptr_t hits = *reinterpret_cast<uintptr_t*>(entry + 0x10);
-            const int hitCount = hits ? *reinterpret_cast<int*>(hits + 0x18) : 0;
-            const uintptr_t items = hits ? *reinterpret_cast<uintptr_t*>(hits + 0x10) : 0;
-            if (!items || hitCount <= 0 || hitCount > 64) return false;
-            int total = 0;
-            for (int hitIndex = 0; hitIndex < hitCount; ++hitIndex) {
-                const uintptr_t hit = *reinterpret_cast<uintptr_t*>(items + 0x20 +
-                    static_cast<uintptr_t>(hitIndex) * sizeof(uintptr_t));
-                if (!hit) continue;
-                const int hitDamage = *reinterpret_cast<int*>(hit + 0x2C);
-                if (hitDamage > 0 && hitDamage <= 500) total += hitDamage;
-            }
-            damage = total;
-            return total > 0;
+            if (*reinterpret_cast<uintptr_t*>(entry + 0x08) != targetHitController)
+                continue;
+            const uintptr_t hit = *reinterpret_cast<uintptr_t*>(entry + 0x10);
+            if (!hit) return false;
+            const int nativeDamage = *reinterpret_cast<int*>(hit + 0x2C);
+            if (nativeDamage <= 0 || nativeDamage > 500) return false;
+            damage = nativeDamage;
+            return true;
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { damage = 0; }
@@ -3899,8 +3896,8 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-static bool FindVisibleAimbotDirection(Vector3 origin, bool forceDirectVisibility,
-    Vector3& outDirection)
+static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
+    const HitCasterCeq* castParameters, Vector3& outDirection)
 {
     void* localPlayer = GetLocalPC();
     if (!localPlayer) return false;
@@ -3930,10 +3927,33 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceDirectVisibilit
         if (!isfinite(distance) || distance < 0.5f) continue;
         const Vector3 candidate(delta.x / distance, delta.y / distance, delta.z / distance);
 
-        bool reachable = !forceDirectVisibility && !aimbotVisibleCheck;
-        if (!reachable) {
-            // Auto Fire always validates the complete path. When Auto Wall is enabled,
-            // that verified path may contain one known penetrable surface.
+        bool reachable = false;
+        if (castParameters && o_HitCaster_Cast) {
+            // This is the old working algorithm ported to dump1's value ABI: let the
+            // game calculate penetration and damage, then accept only the exact target.
+            const HitCasterCer probe = o_HitCaster_Cast(
+                origin, candidate, distance + 0.35f, *castParameters, nullptr);
+            int nativeDamage = 0;
+            const bool hitExactTarget =
+                ReadDump1NativeTargetDamage(probe, player, nativeDamage);
+            int penetrationCount = 0;
+            __try {
+                penetrationCount = probe.penetrations ?
+                    *reinterpret_cast<int*>(probe.penetrations + 0x18) : 0;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) { penetrationCount = -1; }
+            const bool directShot = penetrationCount == 0;
+            const bool validWallbang = aimbotAutoWall &&
+                penetrationCount > 0 && penetrationCount <= 64 &&
+                nativeDamage >= static_cast<int>(aimbotAutoWallMinDamage);
+            reachable = hitExactTarget && (directShot || validWallbang);
+        }
+        else if (!forceValidatedPath && !aimbotVisibleCheck) {
+            reachable = true;
+        }
+        else {
+            // Before the first real ceq is observed, only a verified geometric path is
+            // accepted. An Auto Wall bootstrap is later revalidated inside HitCaster.
             reachable = ValidateAimbotRayPath(origin, candidate, distance, player,
                 aimbotAutoWall);
         }
@@ -3955,10 +3975,27 @@ HitCasterCer __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction,
 {
     bool applyVisibleSnapAfterCast = false;
     Vector3 visibleSnapDirection;
+    if (insideLocalGunFire) {
+        if (hitParameters.damageDefinition &&
+            hitParameters.damageDefinition != aimbotLastHitParameters) {
+            const uint32_t newHandle = g_il2cpp.gchandle_new ?
+                g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(
+                    hitParameters.damageDefinition), false) : 0;
+            if (newHandle || !g_il2cpp.gchandle_new) {
+                if (aimbotLastHitParametersHandle && g_il2cpp.gchandle_free)
+                    g_il2cpp.gchandle_free(aimbotLastHitParametersHandle);
+                aimbotLastHitParameters = hitParameters.damageDefinition;
+                aimbotLastHitParametersHandle = newHandle;
+            }
+        }
+        aimbotLastCeq = hitParameters;
+        aimbotLastCeqValid = hitParameters.damageDefinition != 0;
+        aimbotLastCeqGun = activeLocalWeaponController;
+    }
     if (keyValidated && insideLocalGunFire && (aimbotEnabled || visibleAimbotEnabled)) {
         InterlockedIncrement(&aimbotShots);
         Vector3 targetDirection;
-        if (FindVisibleAimbotDirection(origin, false, targetDirection)) {
+        if (FindVisibleAimbotDirection(origin, true, &hitParameters, targetDirection)) {
             direction = targetDirection;
             visibleSnapDirection = targetDirection;
             applyVisibleSnapAfterCast = visibleAimbotEnabled;
@@ -3967,6 +4004,12 @@ HitCasterCer __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction,
                 "Target locked at dump1 HitCaster" :
                 "Silent direction applied at dump1 HitCaster");
         } else {
+            if (insideAutoFireRequest) {
+                InterlockedIncrement(&aimbotAutoFireRejected);
+                strcpy_s(aimbotStatus, "Auto Fire suppressed: native cast rejected path");
+                HitCasterCer rejected = {};
+                return rejected;
+            }
             strcpy_s(aimbotStatus, "No reachable enemy; original shot kept");
         }
     }
@@ -4104,7 +4147,7 @@ static ULONGLONG GetNativeAutoFireIntervalMs(uintptr_t gun)
     __except (EXCEPTION_EXECUTE_HANDLER) { return 100; }
 }
 
-static bool HasVisibleTargetBeforeNativeFire()
+static bool HasVisibleTargetBeforeNativeFire(uintptr_t gun)
 {
     // Auto Fire always requires a verified PlayerController collider. Auto Wall may
     // additionally authorize exactly one known penetrable surface before that target.
@@ -4121,7 +4164,9 @@ static bool HasVisibleTargetBeforeNativeFire()
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
     Vector3 direction;
-    return haveOrigin && FindVisibleAimbotDirection(origin, true, direction);
+    const HitCasterCeq* cached = aimbotLastCeqValid && aimbotLastCeqGun == gun ?
+        &aimbotLastCeq : nullptr;
+    return haveOrigin && FindVisibleAimbotDirection(origin, true, cached, direction);
 }
 
 void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, float frameTime, float commandTime, const Il2CppMethod* method)
@@ -4138,7 +4183,7 @@ void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, 
         const bool wantsAutoFire = keyValidated && isLocalGun && aimbotAutoFire &&
             (aimbotEnabled || visibleAimbotEnabled);
         if (wantsAutoFire && now >= aimbotAutoFireNextDecisionAt) {
-            if (HasVisibleTargetBeforeNativeFire()) {
+            if (HasVisibleTargetBeforeNativeFire(instance)) {
                 originalPrimaryFire = *reinterpret_cast<bool*>(command + 0x10);
                 *reinterpret_cast<bool*>(command + 0x10) = true;
                 injectNativeFire = true;
@@ -7047,8 +7092,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Visible Check", &aimbotVisibleCheck);
         if (aimbotVisibleCheck) {
             ImGui::Checkbox("Auto Wall", &aimbotAutoWall);
-            if (aimbotAutoWall)
-                ImGui::TextDisabled("Aim + Auto Fire: one penetrable wall max");
+            if (aimbotAutoWall) {
+                ImGui::TextDisabled("Native penetration + exact target damage");
+                ImGui::SliderFloat("Auto Wall Min Damage", &aimbotAutoWallMinDamage,
+                    1.0f, 100.0f, "%.0f");
+            }
         }
         ImGui::Checkbox("Auto Fire", &aimbotAutoFire);
         if (aimbotAutoFire) ImGui::TextDisabled(aimbotAutoWall ? "Direct or verified wallbang" : "Direct line of sight only");
