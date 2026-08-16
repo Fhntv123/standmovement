@@ -444,6 +444,10 @@ volatile LONG silentAntiAimDirectiveApplied = 0;
 volatile LONG silentAntiAimPoseApplied = 0;
 volatile LONG silentAntiAimLateAimCalls = 0;
 volatile LONG silentAntiAimBonePasses = 0;
+uintptr_t silentAntiAimCachedController = 0;
+uintptr_t silentAntiAimCachedBiped = 0;
+uintptr_t silentAntiAimCachedHip = 0;
+uintptr_t silentAntiAimCachedUpperBones[5] = {};
 char silentAntiAimStatus[96] = "Disabled";
 bool thirdPersonEnabled = false;
 uintptr_t customizedThirdPersonPlayer = 0;
@@ -3124,58 +3128,82 @@ static bool IsLocalAimControllerUnsafe(uintptr_t aimController)
     }
 }
 
-static void ApplySilentStaticBackwardsBonesUnsafe(uintptr_t aimController)
+static bool CacheSilentStaticPoseUnsafe(uintptr_t aimController)
 {
-    if (!aimController || !o_Transform_get_localEulerAngles ||
-        !o_Transform_set_localEulerAngles)
-        return;
+    if (!aimController) return false;
     __try {
         const uintptr_t bipedMap =
             *reinterpret_cast<uintptr_t*>(aimController + 0x28);
-        if (!bipedMap) return;
-
-        // Controller.bzvg (+0x30) is not the visible TPS model root in this
-        // runtime state. Use the confirmed rendered Hip from BipedMap (+0x88),
-        // which is applied after qod/Mecanim and visibly drives Static and Spin.
-        const uintptr_t hip = *reinterpret_cast<uintptr_t*>(bipedMap + 0x88);
-        bool wrote = false;
-        if (hip) {
-            Vector3 local = o_Transform_get_localEulerAngles(hip);
-            local.y = NormalizeAngle360(
-                local.y + GetSilentStaticYawOffset());
-            o_Transform_set_localEulerAngles(hip, local);
-            wrote = true;
+        if (!bipedMap) return false;
+        if (aimController != silentAntiAimCachedController ||
+            bipedMap != silentAntiAimCachedBiped) {
+            silentAntiAimCachedController = aimController;
+            silentAntiAimCachedBiped = bipedMap;
+            silentAntiAimCachedHip =
+                *reinterpret_cast<uintptr_t*>(bipedMap + 0x88);
+            const uintptr_t upperOffsets[5] = { 0x30, 0x38, 0x40, 0x28, 0x20 };
+            for (int i = 0; i < 5; ++i)
+                silentAntiAimCachedUpperBones[i] =
+                    *reinterpret_cast<uintptr_t*>(bipedMap + upperOffsets[i]);
         }
-
-        // qod has already applied the real camera pitch to these bones. Adding a
-        // fixed value would remain camera-relative, so first cancel the real pitch
-        // and then apply the selected absolute Neutral/Down/Up target.
-        float realPitch = 0.0f;
-        if (silentAntiAimLatestInputValid) {
-            realPitch = NormalizeAngle180(silentAntiAimLatestRealAimAngle.x);
-        } else {
-            const uintptr_t liveAimingData =
-                *reinterpret_cast<uintptr_t*>(aimController + 0x88);
-            if (liveAimingData)
-                realPitch = NormalizeAngle180(
-                    reinterpret_cast<Vector3*>(liveAimingData + 0x18)->x);
-        }
-        const float absolutePitchDelta =
-            GetSilentAntiAimPitch() - realPitch;
-        const uintptr_t upperOffsets[] = { 0x30, 0x38, 0x40, 0x28, 0x20 };
-        const float upperWeights[] = { 0.04f, 0.08f, 0.14f, 0.28f, 0.46f };
-        for (int i = 0; i < 5; ++i) {
-            const uintptr_t bone =
-                *reinterpret_cast<uintptr_t*>(bipedMap + upperOffsets[i]);
-            if (!bone) continue;
-            Vector3 local = o_Transform_get_localEulerAngles(bone);
-            local.x += absolutePitchDelta * upperWeights[i];
-            o_Transform_set_localEulerAngles(bone, local);
-            wrote = true;
-        }
-        if (wrote) InterlockedIncrement(&silentAntiAimBonePasses);
+        return silentAntiAimCachedHip != 0;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        silentAntiAimCachedController = 0;
+        silentAntiAimCachedBiped = 0;
+        silentAntiAimCachedHip = 0;
+        for (int i = 0; i < 5; ++i) silentAntiAimCachedUpperBones[i] = 0;
+        return false;
+    }
+}
+
+static void ApplySilentStaticBackwardsBonesUnsafe(uintptr_t aimController)
+{
+    if (!aimController || !o_Transform_get_localEulerAngles ||
+        !o_Transform_set_localEulerAngles ||
+        !CacheSilentStaticPoseUnsafe(aimController))
+        return;
+    __try {
+        // One cached Transform get/set per frame for yaw. This removes repeated
+        // BipedMap traversal and reduces the hot path from 12 Unity calls to 2
+        // when Look is Neutral. The angle itself remains time-based and smooth.
+        Vector3 hipLocal =
+            o_Transform_get_localEulerAngles(silentAntiAimCachedHip);
+        hipLocal.y = NormalizeAngle360(
+            hipLocal.y + GetSilentStaticYawOffset());
+        o_Transform_set_localEulerAngles(silentAntiAimCachedHip, hipLocal);
+
+        if (silentAntiAimPitch != 0) {
+            float realPitch = 0.0f;
+            if (silentAntiAimLatestInputValid) {
+                realPitch = NormalizeAngle180(
+                    silentAntiAimLatestRealAimAngle.x);
+            } else {
+                const uintptr_t liveAimingData =
+                    *reinterpret_cast<uintptr_t*>(aimController + 0x88);
+                if (liveAimingData)
+                    realPitch = NormalizeAngle180(
+                        reinterpret_cast<Vector3*>(liveAimingData + 0x18)->x);
+            }
+            const float absolutePitchDelta =
+                GetSilentAntiAimPitch() - realPitch;
+            // Make Up/Down unmistakable: most of the angle is on Neck + Head.
+            const float upperWeights[5] = { 0.00f, 0.03f, 0.07f, 0.30f, 0.60f };
+            for (int i = 0; i < 5; ++i) {
+                const uintptr_t bone = silentAntiAimCachedUpperBones[i];
+                if (!bone || upperWeights[i] == 0.0f) continue;
+                Vector3 local = o_Transform_get_localEulerAngles(bone);
+                local.x += absolutePitchDelta * upperWeights[i];
+                o_Transform_set_localEulerAngles(bone, local);
+            }
+        }
+        InterlockedIncrement(&silentAntiAimBonePasses);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        silentAntiAimCachedController = 0;
+        silentAntiAimCachedBiped = 0;
+        silentAntiAimCachedHip = 0;
+    }
 }
 
 static void ApplySilentDirectionJitterBonesUnsafe(uintptr_t aimController)
@@ -7120,6 +7148,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             silentAntiAimLatestInputValid = false;
             silentAntiAimLatestFiring = false;
             silentAntiAimLatestPlayer = 0;
+            silentAntiAimCachedController = 0;
+            silentAntiAimCachedBiped = 0;
+            silentAntiAimCachedHip = 0;
+            for (int i = 0; i < 5; ++i) silentAntiAimCachedUpperBones[i] = 0;
             strcpy_s(silentAntiAimStatus, !silentAntiAimEnabled ? "Disabled" :
                 (silentAntiAimHookReady ? "Input + detached snapshot hooks installed" : "Anti-aim hooks failed to install"));
         }
@@ -7138,7 +7170,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     1.0f, 1080.0f, "%.0f deg/s");
             }
             ImGui::TextWrapped(silentAntiAimSpin ?
-                "Spin rotates the rendered third-person rig continuously at the selected speed. Look remains absolute and camera-independent." :
+                "Spin uses a cached two-call pose path for smoother rotation and lower CPU cost. Look remains absolute and camera-independent." :
                 "Static Backwards turns the rendered third-person rig 180 degrees. Look is absolute and camera-independent.");
         } else {
             ImGui::TextWrapped("Direction Jitter keeps the existing post-Mecanim full-body jitter mode.");
@@ -7787,6 +7819,12 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimApplySnapshotCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT)) :
         antiAimApplySnapshotCreateStatus;
+    if (antiAimDirectiveEnableStatus == MH_OK)
+        MH_DisableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE));
+    if (antiAimDirectiveGetEnableStatus == MH_OK)
+        MH_DisableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE));
+    if (antiAimApplySnapshotEnableStatus == MH_OK)
+        MH_DisableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT));
     const MH_STATUS antiAimSnapshotCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_AIMCONTROLLER_GET_SNAPSHOT),
         hk_AimController_GetSnapshot,
@@ -7803,14 +7841,10 @@ DWORD WINAPI HackThread(LPVOID)
     const MH_STATUS antiAimInputEnableStatus = antiAimInputCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND)) :
         antiAimInputCreateStatus;
+    // Runtime diagnostics showed riz/rja/qdq stay at zero for this local path.
+    // They remain available diagnostically, but only qod/qdr/input are required.
     silentAntiAimHookReady = antiAimLateAimCreateStatus == MH_OK &&
         antiAimLateAimEnableStatus == MH_OK &&
-        antiAimDirectiveCreateStatus == MH_OK &&
-        antiAimDirectiveEnableStatus == MH_OK &&
-        antiAimDirectiveGetCreateStatus == MH_OK &&
-        antiAimDirectiveGetEnableStatus == MH_OK &&
-        antiAimApplySnapshotCreateStatus == MH_OK &&
-        antiAimApplySnapshotEnableStatus == MH_OK &&
         antiAimSnapshotCreateStatus == MH_OK &&
         antiAimSnapshotEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
