@@ -271,8 +271,10 @@ struct Matrix16 {
 #define OFFSET_PLAYER_HIT_CONFIRMED_B                  0x87A890  // PlayerHitController.rib(boo)
 #define OFFSET_DAMAGE_RESULT_GET_HEALTH                0x880990  // boo.rfu() / dcxl
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xA6E220
+#define OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT         0x86C060  // AimController.qdq(AimSnapshot)
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0x86C0E0
 #define OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE      0x86C9A0  // AimController.riz(Vector3)
+#define OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE      0x86C9F0  // AimController.rja() -> Vector3
 #define OFFSET_AIMINGDATA_CLONE                      0x86F9C0
 #define OFFSET_TRANSFORM_GET_EULERANGLES            0x2F066B0
 #define OFFSET_TRANSFORM_SET_EULERANGLES            0x2F07020
@@ -428,6 +430,11 @@ uintptr_t silentAntiAimLatestPlayer = 0;
 Vector3 silentAntiAimLatestRealAimAngle;
 Vector3 silentAntiAimLatestRealAimEuler;
 volatile LONG silentAntiAimSnapshotCalls = 0;
+volatile LONG silentAntiAimApplySnapshotCalls = 0;
+volatile LONG silentAntiAimDirectiveSetCalls = 0;
+volatile LONG silentAntiAimDirectiveGetCalls = 0;
+volatile LONG silentAntiAimDirectiveApplied = 0;
+volatile LONG silentAntiAimPoseApplied = 0;
 char silentAntiAimStatus[96] = "Disabled";
 bool thirdPersonEnabled = false;
 uintptr_t customizedThirdPersonPlayer = 0;
@@ -1899,8 +1906,10 @@ void(__fastcall* o_HitMarkerView_Show)(uintptr_t, bool, bool, const Il2CppMethod
 void(__fastcall* o_HitMarkerView_LocalHit)(uintptr_t, void*, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_PlayerController_Command)(uintptr_t, uintptr_t, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_KeyboardControl_BuildCommand)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_AimController_ApplySnapshot)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_AimController_GetSnapshot)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
+Vector3(__fastcall* o_AimController_GetHeadDirective)(uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_AimingData_Clone)(uintptr_t, const Il2CppMethod*) = nullptr;
 
 
@@ -3067,26 +3076,96 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     return command;
 }
 
+static bool IsLocalAimControllerUnsafe(uintptr_t aimController)
+{
+    if (!aimController) return false;
+    __try {
+        const uintptr_t ownerPlayer =
+            *reinterpret_cast<uintptr_t*>(aimController + 0xD0);
+        return ownerPlayer &&
+            (ownerPlayer == liveHudLocalPlayer ||
+             ownerPlayer == silentAntiAimLatestPlayer);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 void __fastcall hk_AimController_SetHeadDirective(
     uintptr_t aimController, Vector3 angles, const Il2CppMethod* method)
 {
-    if (silentAntiAimEnabled && aimController && silentAntiAimLatestInputValid &&
-        !silentAntiAimLatestFiring) {
-        bool isLocalAimController = false;
-        __try {
-            const uintptr_t ownerPlayer =
-                *reinterpret_cast<uintptr_t*>(aimController + 0xD0);
-            isLocalAimController = ownerPlayer &&
-                ownerPlayer == silentAntiAimLatestPlayer;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            isLocalAimController = false;
-        }
-        if (isLocalAimController)
-            angles = GetSilentDirectionJitterAngles(
-                silentAntiAimLatestRealAimAngle);
+    InterlockedIncrement(&silentAntiAimDirectiveSetCalls);
+    if (silentAntiAimEnabled && IsLocalAimControllerUnsafe(aimController)) {
+        angles = GetSilentDirectionJitterAngles(angles);
+        InterlockedIncrement(&silentAntiAimDirectiveApplied);
     }
     o_AimController_SetHeadDirective(aimController, angles, method);
+}
+
+Vector3 __fastcall hk_AimController_GetHeadDirective(
+    uintptr_t aimController, const Il2CppMethod* method)
+{
+    InterlockedIncrement(&silentAntiAimDirectiveGetCalls);
+    Vector3 angles = o_AimController_GetHeadDirective(aimController, method);
+    if (silentAntiAimEnabled && IsLocalAimControllerUnsafe(aimController)) {
+        angles = GetSilentDirectionJitterAngles(angles);
+        InterlockedIncrement(&silentAntiAimDirectiveApplied);
+    }
+    return angles;
+}
+
+static bool PrepareSilentApplySnapshotUnsafe(
+    uintptr_t snapshot, uintptr_t* originalAimingData)
+{
+    if (!snapshot || !originalAimingData || !o_AimingData_Clone) return false;
+    *originalAimingData = 0;
+    __try {
+        const uintptr_t sourceAimingData =
+            *reinterpret_cast<uintptr_t*>(snapshot + 0x18);
+        if (!sourceAimingData) return false;
+        const uintptr_t detachedAimingData =
+            o_AimingData_Clone(sourceAimingData, nullptr);
+        if (!detachedAimingData || detachedAimingData == sourceAimingData)
+            return false;
+        Vector3 angle = *reinterpret_cast<Vector3*>(detachedAimingData + 0x18);
+        Vector3 euler = *reinterpret_cast<Vector3*>(detachedAimingData + 0x24);
+        angle = GetSilentDirectionJitterAngles(angle);
+        euler = GetSilentDirectionJitterAngles(euler);
+        *reinterpret_cast<Vector3*>(detachedAimingData + 0x18) = angle;
+        *reinterpret_cast<Vector3*>(detachedAimingData + 0x24) = euler;
+        *originalAimingData = sourceAimingData;
+        *reinterpret_cast<uintptr_t*>(snapshot + 0x18) = detachedAimingData;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        *originalAimingData = 0;
+        return false;
+    }
+}
+
+static void RestoreSilentApplySnapshotUnsafe(
+    uintptr_t snapshot, uintptr_t originalAimingData)
+{
+    if (!snapshot || !originalAimingData) return;
+    __try {
+        *reinterpret_cast<uintptr_t*>(snapshot + 0x18) = originalAimingData;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+void __fastcall hk_AimController_ApplySnapshot(
+    uintptr_t aimController, uintptr_t snapshot, const Il2CppMethod* method)
+{
+    InterlockedIncrement(&silentAntiAimApplySnapshotCalls);
+    uintptr_t originalAimingData = 0;
+    const bool changed = silentAntiAimEnabled &&
+        IsLocalAimControllerUnsafe(aimController) &&
+        PrepareSilentApplySnapshotUnsafe(snapshot, &originalAimingData);
+    o_AimController_ApplySnapshot(aimController, snapshot, method);
+    if (changed) {
+        RestoreSilentApplySnapshotUnsafe(snapshot, originalAimingData);
+        InterlockedIncrement(&silentAntiAimDirectiveApplied);
+    }
 }
 
 uintptr_t __fastcall hk_AimController_GetSnapshot(
@@ -3216,6 +3295,30 @@ static void CancelVisibleAimbotCamera()
     visibleAimbotAimingData = 0;
 }
 
+static void ApplySilentDirectionJitterPoseUnsafe()
+{
+    if (!silentAntiAimEnabled || !liveHudLocalPlayer ||
+        !o_Transform_set_eulerAngles)
+        return;
+    __try {
+        const uintptr_t aimController =
+            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
+        if (!aimController) return;
+        // AimController.spineDirector (+0x68) is the rendered TPS aim pivot.
+        // FPSCamera (+0x70) and live AimingData (+0x88) are not touched.
+        const uintptr_t spineDirector =
+            *reinterpret_cast<uintptr_t*>(aimController + 0x68);
+        if (!spineDirector) return;
+        const Vector3 realAim = silentAntiAimLatestInputValid ?
+            silentAntiAimLatestRealAimAngle :
+            *reinterpret_cast<Vector3*>(aimController + 0xC0);
+        o_Transform_set_eulerAngles(
+            spineDirector, GetSilentDirectionJitterAngles(realAim));
+        InterlockedIncrement(&silentAntiAimPoseApplied);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 static bool SendPendingPixelSurfChatMessageUnsafe()
 {
     if (!o_GameChatHud_SendMessage || !g_il2cpp.string_new) return false;
@@ -3245,6 +3348,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
+    ApplySilentDirectionJitterPoseUnsafe();
     if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
         SendPendingPixelSurfChatMessageUnsafe();
     UpdateFrozenCorpses();
@@ -6857,6 +6961,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&silentAntiAimCommandCalls, 0);
             InterlockedExchange(&silentAntiAimAppliedCalls, 0);
             InterlockedExchange(&silentAntiAimSnapshotCalls, 0);
+            InterlockedExchange(&silentAntiAimApplySnapshotCalls, 0);
+            InterlockedExchange(&silentAntiAimDirectiveSetCalls, 0);
+            InterlockedExchange(&silentAntiAimDirectiveGetCalls, 0);
+            InterlockedExchange(&silentAntiAimDirectiveApplied, 0);
+            InterlockedExchange(&silentAntiAimPoseApplied, 0);
             silentAntiAimLatestInputValid = false;
             silentAntiAimLatestFiring = false;
             silentAntiAimLatestPlayer = 0;
@@ -6864,7 +6973,14 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 (silentAntiAimHookReady ? "Input + detached snapshot hooks installed" : "Anti-aim hooks failed to install"));
         }
         ImGui::Spacing();
-        ImGui::TextWrapped("The native head-directive setter and detached snapshot cycle right, back, left and forward while live AimingData, camera and movement stay untouched.");
+        ImGui::TextWrapped("Native head-directive set/get and detached snapshots cycle right, back, left and forward. Camera AimingData is never modified.");
+        ImGui::TextDisabled("pose:%ld set:%ld get:%ld apply:%ld changed:%ld out:%ld",
+            InterlockedCompareExchange(&silentAntiAimPoseApplied, 0, 0),
+            InterlockedCompareExchange(&silentAntiAimDirectiveSetCalls, 0, 0),
+            InterlockedCompareExchange(&silentAntiAimDirectiveGetCalls, 0, 0),
+            InterlockedCompareExchange(&silentAntiAimApplySnapshotCalls, 0, 0),
+            InterlockedCompareExchange(&silentAntiAimDirectiveApplied, 0, 0),
+            InterlockedCompareExchange(&silentAntiAimAppliedCalls, 0, 0));
         ImGui::EndChild();
     }
     else if (currentTab == 2) { // VISUALS
@@ -7476,6 +7592,22 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimDirectiveCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE)) :
         antiAimDirectiveCreateStatus;
+    const MH_STATUS antiAimDirectiveGetCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE),
+        hk_AimController_GetHeadDirective,
+        (LPVOID*)&o_AimController_GetHeadDirective);
+    const MH_STATUS antiAimDirectiveGetEnableStatus =
+        antiAimDirectiveGetCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE)) :
+        antiAimDirectiveGetCreateStatus;
+    const MH_STATUS antiAimApplySnapshotCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT),
+        hk_AimController_ApplySnapshot,
+        (LPVOID*)&o_AimController_ApplySnapshot);
+    const MH_STATUS antiAimApplySnapshotEnableStatus =
+        antiAimApplySnapshotCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT)) :
+        antiAimApplySnapshotCreateStatus;
     const MH_STATUS antiAimSnapshotCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_AIMCONTROLLER_GET_SNAPSHOT),
         hk_AimController_GetSnapshot,
@@ -7494,6 +7626,10 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimInputCreateStatus;
     silentAntiAimHookReady = antiAimDirectiveCreateStatus == MH_OK &&
         antiAimDirectiveEnableStatus == MH_OK &&
+        antiAimDirectiveGetCreateStatus == MH_OK &&
+        antiAimDirectiveGetEnableStatus == MH_OK &&
+        antiAimApplySnapshotCreateStatus == MH_OK &&
+        antiAimApplySnapshotEnableStatus == MH_OK &&
         antiAimSnapshotCreateStatus == MH_OK &&
         antiAimSnapshotEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
@@ -7507,8 +7643,10 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimFallbackCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_PLAYERCONTROLLER_COMMAND)) :
         antiAimFallbackCreateStatus;
-    LINDY_LOG("[anti-aim] AimController.riz create=%d enable=%d; qdr create=%d enable=%d; KeyboardControl.bbft create=%d enable=%d ready=%d; qhq diagnostic create=%d enable=%d",
+    LINDY_LOG("[anti-aim] AimController.riz create=%d enable=%d; rja create=%d enable=%d; qdq create=%d enable=%d; qdr create=%d enable=%d; KeyboardControl.bbft create=%d enable=%d ready=%d; qhq diagnostic create=%d enable=%d",
         (int)antiAimDirectiveCreateStatus, (int)antiAimDirectiveEnableStatus,
+        (int)antiAimDirectiveGetCreateStatus, (int)antiAimDirectiveGetEnableStatus,
+        (int)antiAimApplySnapshotCreateStatus, (int)antiAimApplySnapshotEnableStatus,
         (int)antiAimSnapshotCreateStatus, (int)antiAimSnapshotEnableStatus,
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
         silentAntiAimHookReady ? 1 : 0,
