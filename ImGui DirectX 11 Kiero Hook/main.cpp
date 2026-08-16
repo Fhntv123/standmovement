@@ -425,6 +425,8 @@ float cameraFov = 90.0f;
 bool silentAntiAimEnabled = false;
 int silentAntiAimMode = 0; // 0 = Direction Jitter, 1 = Static Backwards
 int silentAntiAimPitch = 0; // 0 = Neutral, 1 = Down, 2 = Up
+bool silentAntiAimSpin = false;
+float silentAntiAimSpinSpeed = 180.0f; // degrees per second
 bool silentAntiAimHookReady = false;
 volatile LONG silentAntiAimInputBuildCalls = 0;
 volatile LONG silentAntiAimCommandCalls = 0;
@@ -1470,7 +1472,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(airJump); SAVE_BOOL(edgeBugEnabled); SAVE_FLOAT(edgeBugPullForce);
     SAVE_BOOL(velocityLimiterEnabled); SAVE_FLOAT(velocityLimit);
     SAVE_BOOL(aimbotEnabled); SAVE_BOOL(visibleAimbotEnabled); SAVE_BOOL(aimbotVisibleCheck); SAVE_BOOL(aimbotAutoWall); SAVE_FLOAT(aimbotAutoWallMinDamage); SAVE_BOOL(aimbotAutoFire);
-    SAVE_BOOL(silentAntiAimEnabled); SAVE_INT(silentAntiAimMode); SAVE_INT(silentAntiAimPitch); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(freezeCorpsesFadeEnabled); SAVE_FLOAT(freezeCorpsesFadeDuration); SAVE_INT(freezeCorpsesChamsMode); SAVE_FLOAT(freezeCorpsesChamsAlpha); SAVE_FLOAT(freezeCorpsesMetallic); SAVE_FLOAT(freezeCorpsesSmoothness); SAVE_FLOAT(freezeCorpsesAnimationSpeed); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
+    SAVE_BOOL(silentAntiAimEnabled); SAVE_INT(silentAntiAimMode); SAVE_INT(silentAntiAimPitch); SAVE_BOOL(silentAntiAimSpin); SAVE_FLOAT(silentAntiAimSpinSpeed); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(freezeCorpsesFadeEnabled); SAVE_FLOAT(freezeCorpsesFadeDuration); SAVE_INT(freezeCorpsesChamsMode); SAVE_FLOAT(freezeCorpsesChamsAlpha); SAVE_FLOAT(freezeCorpsesMetallic); SAVE_FLOAT(freezeCorpsesSmoothness); SAVE_FLOAT(freezeCorpsesAnimationSpeed); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
     SAVE_BOOL(espShowName); SAVE_BOOL(espShowHealth); SAVE_BOOL(espShowWeapon); SAVE_BOOL(espGradient);
     SAVE_BOOL(worldColorEnabled); SAVE_INT(worldColorMode); SAVE_FLOAT(worldColorStrength); SAVE_FLOAT(worldColorAlpha);
     SAVE_BOOL(penetrableSurfacesEnabled); SAVE_FLOAT(penetrableSurfaceAlpha); SAVE_FLOAT(penetrableSurfaceScanDistance);
@@ -1540,7 +1542,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(airJump); LOAD_BOOL(edgeBugEnabled); LOAD_FLOAT(edgeBugPullForce);
     LOAD_BOOL(velocityLimiterEnabled); LOAD_FLOAT(velocityLimit);
     LOAD_BOOL(aimbotEnabled); LOAD_BOOL(visibleAimbotEnabled); LOAD_BOOL(aimbotVisibleCheck); LOAD_BOOL(aimbotAutoWall); LOAD_FLOAT(aimbotAutoWallMinDamage); LOAD_BOOL(aimbotAutoFire);
-    LOAD_BOOL(silentAntiAimEnabled); LOAD_INT(silentAntiAimMode); LOAD_INT(silentAntiAimPitch); if (silentAntiAimMode < 0 || silentAntiAimMode > 1) silentAntiAimMode = 0; if (silentAntiAimPitch < 0 || silentAntiAimPitch > 2) silentAntiAimPitch = 0; LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(freezeCorpsesFadeEnabled); LOAD_FLOAT(freezeCorpsesFadeDuration); LOAD_INT(freezeCorpsesChamsMode); LOAD_FLOAT(freezeCorpsesChamsAlpha); LOAD_FLOAT(freezeCorpsesMetallic); LOAD_FLOAT(freezeCorpsesSmoothness); LOAD_FLOAT(freezeCorpsesAnimationSpeed); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
+    LOAD_BOOL(silentAntiAimEnabled); LOAD_INT(silentAntiAimMode); LOAD_INT(silentAntiAimPitch); if (silentAntiAimMode < 0 || silentAntiAimMode > 1) silentAntiAimMode = 0; if (silentAntiAimPitch < 0 || silentAntiAimPitch > 2) silentAntiAimPitch = 0; LOAD_BOOL(silentAntiAimSpin); LOAD_FLOAT(silentAntiAimSpinSpeed); if (silentAntiAimSpinSpeed < 1.0f) silentAntiAimSpinSpeed = 1.0f; if (silentAntiAimSpinSpeed > 1080.0f) silentAntiAimSpinSpeed = 1080.0f; LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(freezeCorpsesFadeEnabled); LOAD_FLOAT(freezeCorpsesFadeDuration); LOAD_INT(freezeCorpsesChamsMode); LOAD_FLOAT(freezeCorpsesChamsAlpha); LOAD_FLOAT(freezeCorpsesMetallic); LOAD_FLOAT(freezeCorpsesSmoothness); LOAD_FLOAT(freezeCorpsesAnimationSpeed); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
     LOAD_BOOL(espShowName); LOAD_BOOL(espShowHealth); LOAD_BOOL(espShowWeapon); LOAD_BOOL(espGradient);
     LOAD_BOOL(worldColorEnabled); LOAD_INT(worldColorMode); LOAD_FLOAT(worldColorStrength); LOAD_FLOAT(worldColorAlpha);
     LOAD_BOOL(penetrableSurfacesEnabled); LOAD_FLOAT(penetrableSurfaceAlpha); LOAD_FLOAT(penetrableSurfaceScanDistance);
@@ -2946,12 +2948,20 @@ static float GetSilentAntiAimPitch()
     return 0.0f;                                // Neutral
 }
 
+static float GetSilentStaticYawOffset()
+{
+    if (!silentAntiAimSpin) return 180.0f;
+    const double seconds = static_cast<double>(GetTickCount64()) / 1000.0;
+    return NormalizeAngle360(static_cast<float>(
+        seconds * static_cast<double>(silentAntiAimSpinSpeed)));
+}
+
 static Vector3 GetSilentDirectionJitterAngles(const Vector3& realAim)
 {
     if (silentAntiAimMode == 1) {
         return Vector3(
             GetSilentAntiAimPitch(),
-            NormalizeAngle360(realAim.y + 180.0f),
+            NormalizeAngle360(realAim.y + GetSilentStaticYawOffset()),
             realAim.z);
     }
     static const float yawOffsets[] = { 90.0f, 180.0f, 270.0f, 0.0f };
@@ -3125,12 +3135,12 @@ static void ApplySilentStaticBackwardsBonesUnsafe(uintptr_t aimController)
         if (!bipedMap) return;
 
         // Hip is the common parent of the rendered body and both leg chains.
-        // A fixed 180-degree local yaw turns the complete TPS model backwards.
+        // Static uses 180 degrees; Spin uses the same time-based yaw as snapshots.
         const uintptr_t hip = *reinterpret_cast<uintptr_t*>(bipedMap + 0x88);
         bool wrote = false;
         if (hip) {
             Vector3 local = o_Transform_get_localEulerAngles(hip);
-            local.y = NormalizeAngle360(local.y + 180.0f);
+            local.y = NormalizeAngle360(local.y + GetSilentStaticYawOffset());
             o_Transform_set_localEulerAngles(hip, local);
             wrote = true;
         }
@@ -3372,8 +3382,10 @@ uintptr_t __fastcall hk_AimController_GetSnapshot(
         InterlockedIncrement(&silentAntiAimAppliedCalls);
         strcpy_s(silentAntiAimStatus, silentAntiAimLatestFiring ?
             "Detached snapshot: real aim while firing" :
-            (silentAntiAimMode == 1 ? "Detached snapshot: static backwards" :
-             "Detached snapshot: four-way direction jitter"));
+            (silentAntiAimMode == 1 ?
+                (silentAntiAimSpin ? "Detached snapshot: static spin" :
+                 "Detached snapshot: static backwards") :
+                "Detached snapshot: four-way direction jitter"));
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         strcpy_s(silentAntiAimStatus, "Snapshot called; detached mutation failed");
@@ -7117,7 +7129,15 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             const char* pitchModes[] = { "Neutral", "Down", "Up" };
             ImGui::SetNextItemWidth(190.0f);
             ImGui::Combo("Look", &silentAntiAimPitch, pitchModes, 3);
-            ImGui::TextWrapped("Static Backwards turns the complete third-person model 180 degrees. Look is absolute: Neutral, Down or Up no longer follows camera pitch.");
+            ImGui::Checkbox("Spin", &silentAntiAimSpin);
+            if (silentAntiAimSpin) {
+                ImGui::SetNextItemWidth(190.0f);
+                ImGui::SliderFloat("Spin Speed", &silentAntiAimSpinSpeed,
+                    1.0f, 1080.0f, "%.0f deg/s");
+            }
+            ImGui::TextWrapped(silentAntiAimSpin ?
+                "Spin rotates the complete third-person model continuously at the selected speed. Look remains absolute and camera-independent." :
+                "Static Backwards turns the complete third-person model 180 degrees. Look is absolute and camera-independent.");
         } else {
             ImGui::TextWrapped("Direction Jitter keeps the existing post-Mecanim full-body jitter mode.");
         }
