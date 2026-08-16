@@ -447,11 +447,9 @@ volatile LONG silentAntiAimBonePasses = 0;
 uintptr_t silentAntiAimCachedController = 0;
 uintptr_t silentAntiAimCachedBiped = 0;
 uintptr_t silentAntiAimCachedHip = 0;
-uintptr_t silentAntiAimCachedUpperBones[5] = {};
 volatile LONG silentAntiAimPoseGeneration = 0;
 LONG silentAntiAimRenderedGeneration = -1;
 float silentAntiAimRenderedYaw = 0.0f;
-int silentAntiAimRenderedPitchMode = -1;
 ULONGLONG silentAntiAimLastSpinRenderMs = 0;
 char silentAntiAimStatus[96] = "Disabled";
 bool thirdPersonEnabled = false;
@@ -3120,13 +3118,16 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
 
 static bool IsLocalAimControllerUnsafe(uintptr_t aimController)
 {
-    if (!aimController) return false;
+    if (!aimController || !silentAntiAimLatestInputValid ||
+        !silentAntiAimLatestPlayer)
+        return false;
     __try {
+        // AimController.catd (+0xD0) must match the exact PlayerController passed
+        // to the local KeyboardControl.bbft hook. HUD pointers can be stale while
+        // spectating/respawning, so they are intentionally not accepted here.
         const uintptr_t ownerPlayer =
             *reinterpret_cast<uintptr_t*>(aimController + 0xD0);
-        return ownerPlayer &&
-            (ownerPlayer == liveHudLocalPlayer ||
-             ownerPlayer == silentAntiAimLatestPlayer);
+        return ownerPlayer == silentAntiAimLatestPlayer;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -3146,15 +3147,8 @@ static bool CacheSilentStaticPoseUnsafe(uintptr_t aimController)
             silentAntiAimCachedBiped = bipedMap;
             silentAntiAimCachedHip =
                 *reinterpret_cast<uintptr_t*>(bipedMap + 0x88);
-            silentAntiAimCachedUpperBones[0] =
-                *reinterpret_cast<uintptr_t*>(bipedMap + 0x28); // Neck
-            silentAntiAimCachedUpperBones[1] =
-                *reinterpret_cast<uintptr_t*>(bipedMap + 0x20); // Head
-            for (int i = 2; i < 5; ++i)
-                silentAntiAimCachedUpperBones[i] = 0;
             silentAntiAimRenderedGeneration = -1;
             silentAntiAimRenderedYaw = 0.0f;
-            silentAntiAimRenderedPitchMode = -1;
         }
         return silentAntiAimCachedHip != 0;
     }
@@ -3162,7 +3156,6 @@ static bool CacheSilentStaticPoseUnsafe(uintptr_t aimController)
         silentAntiAimCachedController = 0;
         silentAntiAimCachedBiped = 0;
         silentAntiAimCachedHip = 0;
-        for (int i = 0; i < 5; ++i) silentAntiAimCachedUpperBones[i] = 0;
         return false;
     }
 }
@@ -3178,13 +3171,10 @@ static void ApplySilentStaticPoseForRenderUnsafe()
     const ULONGLONG nowMs = GetTickCount64();
     const LONG generation =
         InterlockedCompareExchange(&silentAntiAimPoseGeneration, 0, 0);
-    const bool freshGamePose = generation != silentAntiAimRenderedGeneration;
-    const bool pitchChanged =
-        silentAntiAimPitch != silentAntiAimRenderedPitchMode;
-    if (!freshGamePose && !pitchChanged) {
+    const bool freshGamePose =
+        generation != silentAntiAimRenderedGeneration;
+    if (!freshGamePose) {
         if (!silentAntiAimSpin) return;
-        // qod updates the animation at a low cadence. Spin is rendered separately
-        // at up to 250 Hz, while this cheap gate runs inside Present.
         if (nowMs - silentAntiAimLastSpinRenderMs < 4ULL) return;
     }
 
@@ -3192,9 +3182,7 @@ static void ApplySilentStaticPoseForRenderUnsafe()
         if (freshGamePose) {
             silentAntiAimRenderedGeneration = generation;
             silentAntiAimRenderedYaw = 0.0f;
-            silentAntiAimRenderedPitchMode = -1;
         }
-
         const float targetYaw = GetSilentStaticYawOffset();
         Vector3 hipLocal =
             o_Transform_get_localEulerAngles(silentAntiAimCachedHip);
@@ -3203,21 +3191,6 @@ static void ApplySilentStaticPoseForRenderUnsafe()
         o_Transform_set_localEulerAngles(silentAntiAimCachedHip, hipLocal);
         silentAntiAimRenderedYaw = targetYaw;
         silentAntiAimLastSpinRenderMs = nowMs;
-
-        // Apply absolute Up/Down only once per new game pose and only to
-        // Neck + Head. Arms, shoulders and hands are never written by Static.
-        if (freshGamePose || pitchChanged) {
-            const float targetPitch = GetSilentAntiAimPitch();
-            const float weights[2] = { 0.25f, 0.75f };
-            for (int i = 0; i < 2; ++i) {
-                const uintptr_t bone = silentAntiAimCachedUpperBones[i];
-                if (!bone) continue;
-                Vector3 local = o_Transform_get_localEulerAngles(bone);
-                local.x += targetPitch * weights[i];
-                o_Transform_set_localEulerAngles(bone, local);
-            }
-            silentAntiAimRenderedPitchMode = silentAntiAimPitch;
-        }
         InterlockedIncrement(&silentAntiAimBonePasses);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -3301,22 +3274,60 @@ static void ApplySilentDirectionJitterBonesUnsafe(uintptr_t aimController)
 void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
-    InterlockedIncrement(&silentAntiAimLateAimCalls);
+    const bool isLocal = silentAntiAimEnabled &&
+        IsLocalAimControllerUnsafe(aimController);
+    uintptr_t liveAimingData = 0;
+    Vector3 savedAimAngle;
+    Vector3 savedAimEuler;
+    bool replacedStaticPitch = false;
+
+    if (isLocal && silentAntiAimMode == 1) {
+        __try {
+            // dump.cs: AimController.aimingData +0x88; AimingData aimAngle
+            // +0x18 and aimEuler +0x24. Feed qod an absolute pitch only for its
+            // own pose calculation, then restore immediately. Mecanim, walking
+            // and IK keep running; camera/live aim never retains the fake value.
+            liveAimingData =
+                *reinterpret_cast<uintptr_t*>(aimController + 0x88);
+            if (liveAimingData) {
+                savedAimAngle =
+                    *reinterpret_cast<Vector3*>(liveAimingData + 0x18);
+                savedAimEuler =
+                    *reinterpret_cast<Vector3*>(liveAimingData + 0x24);
+                Vector3 poseAimAngle = savedAimAngle;
+                Vector3 poseAimEuler = savedAimEuler;
+                poseAimAngle.x = GetSilentAntiAimPitch();
+                poseAimEuler.x = GetSilentAntiAimPitch();
+                *reinterpret_cast<Vector3*>(liveAimingData + 0x18) =
+                    poseAimAngle;
+                *reinterpret_cast<Vector3*>(liveAimingData + 0x24) =
+                    poseAimEuler;
+                replacedStaticPitch = true;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            liveAimingData = 0;
+            replacedStaticPitch = false;
+        }
+    }
+
     o_AimController_LateAim(aimController, method);
 
-    const bool isLocal = silentAntiAimEnabled &&
-        (aimController == silentAntiAimCachedController ||
-         IsLocalAimControllerUnsafe(aimController));
-    if (isLocal) {
-        if (silentAntiAimMode == 1) {
-            // Never disable BipedMap.IkEnabled: it gates the animated rig and
-            // freezes the model. Let qod/Mecanim finish normally, then render the
-            // cached Hip/Neck/Head delta without touching arms or locomotion.
-            if (CacheSilentStaticPoseUnsafe(aimController))
-                InterlockedIncrement(&silentAntiAimPoseGeneration);
-        } else {
-            ApplySilentDirectionJitterBonesUnsafe(aimController);
+    if (replacedStaticPitch && liveAimingData) {
+        __try {
+            *reinterpret_cast<Vector3*>(liveAimingData + 0x18) = savedAimAngle;
+            *reinterpret_cast<Vector3*>(liveAimingData + 0x24) = savedAimEuler;
         }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
+    if (!isLocal) return;
+    InterlockedIncrement(&silentAntiAimLateAimCalls);
+    if (silentAntiAimMode == 1) {
+        if (CacheSilentStaticPoseUnsafe(aimController))
+            InterlockedIncrement(&silentAntiAimPoseGeneration);
+    } else {
+        ApplySilentDirectionJitterBonesUnsafe(aimController);
     }
 }
 
@@ -7182,11 +7193,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             silentAntiAimCachedController = 0;
             silentAntiAimCachedBiped = 0;
             silentAntiAimCachedHip = 0;
-            for (int i = 0; i < 5; ++i) silentAntiAimCachedUpperBones[i] = 0;
             InterlockedExchange(&silentAntiAimPoseGeneration, 0);
             silentAntiAimRenderedGeneration = -1;
             silentAntiAimRenderedYaw = 0.0f;
-            silentAntiAimRenderedPitchMode = -1;
             silentAntiAimLastSpinRenderMs = 0;
             strcpy_s(silentAntiAimStatus, !silentAntiAimEnabled ? "Disabled" :
                 (silentAntiAimHookReady ? "Input + detached snapshot hooks installed" : "Anti-aim hooks failed to install"));
@@ -7206,8 +7215,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     1.0f, 1080.0f, "%.0f deg/s");
             }
             ImGui::TextWrapped(silentAntiAimSpin ?
-                "Spin is render-synchronized up to 250 Hz. Animation and IK stay enabled; Static writes only Hip, Neck and Head." :
-                "Static Backwards turns the rendered third-person rig 180 degrees. Look is absolute and camera-independent.");
+                "Spin is render-synchronized up to 250 Hz. qod receives the selected absolute Look only while building the pose; camera aim is restored immediately." :
+                "Static Backwards turns the rendered rig 180 degrees. Neutral/Down/Up are absolute qod pose inputs; walking and IK remain active.");
         } else {
             ImGui::TextWrapped("Direction Jitter keeps the existing post-Mecanim full-body jitter mode.");
         }
