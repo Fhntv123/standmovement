@@ -239,6 +239,7 @@ struct Matrix16 {
 #define OFFSET_GLOVES_SET_ARMS                    0x966490
 #define OFFSET_ARMSLOD_SET_VISIBLE                 0xBCCFA0
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0xBFA0C0
+#define OFFSET_GUNCONTROLLER_DIRECTION             0xA20CE0  // GunController.vzy(Vector3)
 #define OFFSET_GUNCONTROLLER_FIRE                  0xA21040
 #define OFFSET_GUNCONTROLLER_COMMAND               0xA1E030
 #define OFFSET_HITCASTER_CAST                      0x0
@@ -1241,7 +1242,7 @@ static const char* GetPCWeaponName(void* pc) {
     if (!pc) return "Unarmed";
     __try {
         const uintptr_t weaponry = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pc) + 0xD0);
-        const uintptr_t weapon = weaponry ? *reinterpret_cast<uintptr_t*>(weaponry + 0xA0) : 0;
+        const uintptr_t weapon = weaponry ? *reinterpret_cast<uintptr_t*>(weaponry + OFFSET_WEAPONCONTROLLER) : 0;
         if (!weapon) return "Unarmed";
         using GetWeaponIdFn = unsigned char(__fastcall*)(uintptr_t, const Il2CppMethod*);
         static GetWeaponIdFn getWeaponId = nullptr;
@@ -1868,11 +1869,15 @@ void(__fastcall* o_Gloves_SetArms)(uintptr_t, uintptr_t, const Il2CppMethod*) = 
 void(__fastcall* o_ArmsLod_SetVisible)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_Weaponry_TakeWeapon)(uintptr_t, uint8_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
+Vector3(__fastcall* o_GunController_Direction)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Command)(uintptr_t, uintptr_t, float, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float, uintptr_t, const Il2CppMethod*) = nullptr;
 thread_local bool insideLocalGunFire = false;
 thread_local bool insideAutoFireRequest = false;
 thread_local int activeLocalHitCastDepth = 0;
+thread_local Vector3 dump1ShotDirection;
+thread_local bool dump1ShotDirectionValid = false;
+thread_local bool dump1VisibleSnapPending = false;
 void(__fastcall* o_AimView_Awake)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimView_UpdateSniperPanels)(uintptr_t, float, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Component_get_gameObject)(uintptr_t) = nullptr;
@@ -3806,10 +3811,10 @@ static bool ReadNativeCastTargetDamage(uintptr_t castResult, void* player, int& 
     return false;
 }
 
-static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t hitParameters, Vector3& outDirection)
+static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t, Vector3& outDirection)
 {
     void* localPlayer = GetLocalPC();
-    if (!localPlayer || !o_HitCaster_Cast) return false;
+    if (!localPlayer) return false;
     const unsigned char localTeam = GetPCTeam(localPlayer);
     if (localTeam == 0 || localTeam == 3) return false;
 
@@ -3832,39 +3837,23 @@ static bool FindVisibleAimbotDirection(Vector3 origin, uintptr_t hitParameters, 
         if (!GetAimbotHead(player, head)) continue;
         const Vector3 delta(head.x - origin.x, head.y - origin.y, head.z - origin.z);
         const float distance = delta.Length();
-        if (distance < 0.5f) continue;
+        if (!isfinite(distance) || distance < 0.5f) continue;
         const Vector3 candidate(delta.x / distance, delta.y / distance, delta.z / distance);
 
-        bool visible = !aimbotVisibleCheck;
-        if (aimbotVisibleCheck) {
+        bool visible = !aimbotVisibleCheck || aimbotAutoWall;
+        if (!visible && o_Physics_RaycastHit) {
             __try {
-                // Native HitCaster decides whether the shot actually reaches the
-                // target. cjr.cega (+0x18) contains penetration segments: without
-                // Auto Wall only a direct cast is accepted; with Auto Wall a cast
-                // that reaches the head after one or more real penetrations is valid.
-                const uintptr_t probe = o_HitCaster_Cast(origin, candidate, distance + 0.35f, hitParameters, nullptr);
-                if (probe) {
-                    const uintptr_t penetrationList = *reinterpret_cast<uintptr_t*>(probe + 0x18);
-                    const int penetrationCount = penetrationList ?
-                        *reinterpret_cast<int*>(penetrationList + 0x18) : 0;
-                    int nativeDamage = 0;
-                    const bool hitExactTarget =
-                        ReadNativeCastTargetDamage(probe, player, nativeDamage);
-                    const bool directShot = penetrationCount == 0;
-                    const bool validWallbang = aimbotAutoWall &&
-                        penetrationCount > 0 && penetrationCount <= 64 &&
-                        nativeDamage >= static_cast<int>(aimbotAutoWallMinDamage);
-                    // For penetrations, cjr.cegd is not guaranteed to be the player
-                    // point; target ownership lives in cjr.cefz, keyed by that
-                    // player's HitController. This is the authoritative wallbang test.
-                    visible = hitExactTarget && (directShot || validWallbang);
-                }
+                RaycastHitNative hit = {};
+                const bool blocked = o_Physics_RaycastHit(origin, candidate, &hit,
+                    distance + 0.35f, -1, 1, nullptr);
+                // A clear ray is visible. If Unity reports a collider, accept only when
+                // its contact is at the target head rather than an intervening wall.
+                visible = !blocked || hit.point.Distance(head) <= 1.75f;
             }
             __except (EXCEPTION_EXECUTE_HANDLER) { visible = false; }
         }
         if (!visible) continue;
         ++visibleCount;
-        // 360-degree FOV: select the nearest enemy reachable by a direct shot or enabled Auto Wall.
         if (distance < bestDistance) {
             bestDistance = distance;
             bestDirection = candidate;
@@ -4121,6 +4110,117 @@ void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, 
     }
 }
 
+Vector3 __fastcall hk_GunController_Direction(uintptr_t instance, Vector3 nativeDirection,
+    const Il2CppMethod* method)
+{
+    Vector3 direction = o_GunController_Direction(instance, nativeDirection, method);
+    if (!insideLocalGunFire || !keyValidated) {
+        dump1ShotDirection = direction;
+        dump1ShotDirectionValid = true;
+        return direction;
+    }
+
+    if (aimbotEnabled || visibleAimbotEnabled) {
+        InterlockedIncrement(&aimbotShots);
+        Vector3 origin;
+        bool haveOrigin = false;
+        __try {
+            const uintptr_t camera = GetCamera();
+            const uintptr_t transform = camera && o_Component_get_transform ?
+                o_Component_get_transform(camera) : 0;
+            if (transform && o_Transform_get_position) {
+                origin = o_Transform_get_position(transform);
+                haveOrigin = true;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
+        Vector3 targetDirection;
+        if (haveOrigin && FindVisibleAimbotDirection(origin, 0, targetDirection)) {
+            direction = targetDirection;
+            dump1VisibleSnapPending = visibleAimbotEnabled;
+            InterlockedIncrement(&aimbotApplied);
+            strcpy_s(aimbotStatus, visibleAimbotEnabled ?
+                "Target locked at GunController.vzy" :
+                "Silent direction applied at GunController.vzy");
+        } else {
+            strcpy_s(aimbotStatus, "No reachable enemy; original shot kept");
+        }
+    }
+    else if (noSpreadEnabled) {
+        __try {
+            const uintptr_t camera = GetCamera();
+            const uintptr_t transform = camera && o_Component_get_transform ?
+                o_Component_get_transform(camera) : 0;
+            if (transform && o_Transform_get_forward)
+                direction = o_Transform_get_forward(transform);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
+    dump1ShotDirection = direction;
+    dump1ShotDirectionValid = true;
+    return direction;
+}
+
+static bool CaptureDump1GunCastResult(uintptr_t gun, const Vector3& shotDirection)
+{
+    if (!gun) return false;
+    __try {
+        // dump1 GunController.cgvf is an inline cer value at +0x1A0 (size 0x30):
+        // start +0x00, end +0x0C, hit dictionary +0x18, penetration List<cew> +0x20.
+        const uintptr_t result = gun + 0x1A0;
+        const Vector3 actualStart = *reinterpret_cast<Vector3*>(result + 0x00);
+        const Vector3 actualEnd = *reinterpret_cast<Vector3*>(result + 0x0C);
+        const float castLength = actualStart.Distance(actualEnd);
+        if (!isfinite(actualStart.x) || !isfinite(actualStart.y) || !isfinite(actualStart.z) ||
+            !isfinite(actualEnd.x) || !isfinite(actualEnd.y) || !isfinite(actualEnd.z) ||
+            !isfinite(castLength) || castLength < 0.01f || castLength > 400.0f)
+            return false;
+
+        const ULONGLONG now = GetTickCount64();
+        if (bulletImpactsEnabled) {
+            const uintptr_t penetrationList = *reinterpret_cast<uintptr_t*>(result + 0x20);
+            const int penetrationCount = penetrationList ?
+                *reinterpret_cast<int*>(penetrationList + 0x18) : 0;
+            const uintptr_t penetrationItems = penetrationList ?
+                *reinterpret_cast<uintptr_t*>(penetrationList + 0x10) : 0;
+            // List<cew> stores value-type elements inline. cew: entry +0x00,
+            // exit +0x0C, surface enum +0x18; stride 0x1C.
+            if (penetrationItems && penetrationCount > 0 && penetrationCount <= 64) {
+                for (int i = 0; i < penetrationCount; ++i) {
+                    const uintptr_t penetration = penetrationItems + 0x20 +
+                        static_cast<uintptr_t>(i) * 0x1C;
+                    const Vector3 entry = *reinterpret_cast<Vector3*>(penetration + 0x00);
+                    const Vector3 exit = *reinterpret_cast<Vector3*>(penetration + 0x0C);
+                    if (IsPointOnBulletCast(entry, actualStart, shotDirection, 400.0f))
+                        AddBulletImpact(entry, false);
+                    if (IsPointOnBulletCast(exit, actualStart, shotDirection, 400.0f))
+                        AddBulletImpact(exit, false);
+                }
+            }
+            AddBulletImpact(actualEnd, false);
+        }
+        if (hitMarkerEnabled || hitLogEnabled) {
+            AcquireSRWLockExclusive(&hitMarkerLock);
+            latestHitMarkerCastStart = actualStart;
+            latestHitMarkerCastEnd = actualEnd;
+            latestHitMarkerCastAt = now;
+            latestHitMarkerCastValid = true;
+            ReleaseSRWLockExclusive(&hitMarkerLock);
+        }
+        if (bulletTracerEnabled) {
+            AcquireSRWLockExclusive(&bulletTracerLock);
+            bulletTracers.push_back({ actualStart, actualEnd, now });
+            if (bulletTracers.size() > 128)
+                bulletTracers.erase(bulletTracers.begin(),
+                    bulletTracers.begin() + (bulletTracers.size() - 128));
+            ReleaseSRWLockExclusive(&bulletTracerLock);
+        }
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
 void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, const Il2CppMethod* method)
 {
     // Fire must remain latency-free: never create materials, inspect renderers,
@@ -4135,6 +4235,9 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
     if (isLocalGun) activeLocalWeaponController = instance;
+    dump1ShotDirection = playSound;
+    dump1ShotDirectionValid = false;
+    dump1VisibleSnapPending = false;
     if (isLocalGun && infinityAmmo) InterlockedIncrement(&infinityAmmoFireCalls);
     short ammoBeforeShot = -1;
     if (isLocalGun && (infinityAmmo || doubleTapEnabled)) {
@@ -4173,11 +4276,15 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { capturedDoubleTapRecoil = false; }
     }
+    if (isLocalGun && hitLogEnabled) ++activeLocalHitCastDepth;
     o_GunController_Fire(instance, playSound, method);
+    if (isLocalGun && hitLogEnabled) --activeLocalHitCastDepth;
     if (fireSecondShot) {
         // Keep the real second cast/damage/ammo path, then restore only the native
         // recoil accumulator. Never lock or rewrite camera aim after the shot.
+        if (isLocalGun && hitLogEnabled) ++activeLocalHitCastDepth;
         o_GunController_Fire(instance, playSound, method);
+        if (isLocalGun && hitLogEnabled) --activeLocalHitCastDepth;
         if (capturedDoubleTapRecoil) {
             __try {
                 memcpy(reinterpret_cast<void*>(doubleTapRecoilController + 0x10),
@@ -4187,6 +4294,15 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
             __except (EXCEPTION_EXECUTE_HANDLER) {}
         }
         InterlockedIncrement(&doubleTapExtraShots);
+    }
+    if (isLocalGun) {
+        const Vector3 finalDirection = dump1ShotDirectionValid ? dump1ShotDirection : playSound;
+        const bool capturedCast = CaptureDump1GunCastResult(instance, finalDirection);
+        if (insideAutoFireRequest && capturedCast) InterlockedIncrement(&aimbotAutoFired);
+        if (dump1VisibleSnapPending) {
+            BeginVisibleAimbotCameraSnap(finalDirection);
+            strcpy_s(aimbotStatus, "Shot fired; visible camera snap applied");
+        }
     }
     insideLocalGunFire = false;
     insideAutoFireRequest = false;
@@ -7732,20 +7848,15 @@ DWORD WINAPI HackThread(LPVOID)
     // Fire remains a fallback for guns injected after the equip event.
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_COMMAND), hk_GunController_Command, (LPVOID*)&o_GunController_Command);
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_COMMAND));
+    MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_DIRECTION), hk_GunController_Direction, (LPVOID*)&o_GunController_Direction);
+    MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_DIRECTION));
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE));
-    // dump1 changed HitCaster.vxe to a generic method returning cer by value.
-    // The legacy uintptr_t-return hook has an incompatible x64 ABI, so it is not
-    // installed until the generic sret wrapper is ported.
+    // dump1 HitCaster.vxe<ceq> returns the inline cer struct by value. Do not install
+    // the obsolete pointer-return hook. Silent/visible aim now hooks the verified
+    // GunController.vzy(Vector3) direction transform, while tracer/impact read cgvf (+0x1A0).
     o_HitCaster_Cast = nullptr;
-    aimbotEnabled = false;
-    visibleAimbotEnabled = false;
-    noSpreadEnabled = false;
-    aimbotAutoFire = false;
-    bulletTracerEnabled = false;
-    bulletImpactsEnabled = false;
-    hitLogEnabled = false;
-    strcpy_s(aimbotStatus, "dump1 HitCaster ABI changed; shot features disabled safely");
+    strcpy_s(aimbotStatus, "dump1 Fire/cgvf shot path ready");
 
     MH_CreateHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE), hk_RagdollActivate, (LPVOID*)&o_RagdollActivate);
     MH_EnableHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE));
