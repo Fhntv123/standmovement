@@ -31,6 +31,7 @@ def stream_build(q: "queue.Queue"):
     """Run build.bat, push each output line into q as {type,line} dicts.
     GUARANTEE: always emits {'type':'done',...} exactly once at the end."""
     done_sent = {"v": False}
+    
     def emit_done(code):
         if not done_sent["v"]:
             q.put({"type": "done", "code": code})
@@ -38,6 +39,7 @@ def stream_build(q: "queue.Queue"):
 
     try:
         q.put({"type": "status", "line": "starting build..."})
+        
         if not os.path.exists(BAT_PATH):
             q.put({"type": "error", "line": f"build.bat not found at {BAT_PATH}"})
             emit_done(-1)
@@ -55,7 +57,7 @@ def stream_build(q: "queue.Queue"):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 bufsize=1,
-                universal_newlines=False,  # read raw bytes, decode ourselves
+                universal_newlines=False,
                 creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
             )
         except Exception as e:
@@ -64,7 +66,6 @@ def stream_build(q: "queue.Queue"):
             return
 
         # Read stdout byte-by-byte with os.read to defeat any buffering in child.
-        # MSBuild + cmd like to buffer huge chunks when stdout isn't a TTY.
         import os as _os
         _fd = proc.stdout.fileno()
         _partial = bytearray()
@@ -92,8 +93,6 @@ def stream_build(q: "queue.Queue"):
                     yield line_bytes
 
         for raw in _iter_lines():
-            if False:
-                break
             # build.bat now runs with chcp 65001 (UTF-8). Try UTF-8 first, fall back to cp866.
             try:
                 line = raw.decode("utf-8").rstrip("\r\n")
@@ -102,25 +101,38 @@ def stream_build(q: "queue.Queue"):
                     line = raw.decode("cp866", errors="replace").rstrip("\r\n")
                 except Exception:
                     line = repr(raw)
+            
             # Skip empty pause prompts
             low = line.lower().strip()
-            if low.startswith("press any key") or low.startswith("нажмите"):
-                # build.bat has pause at end — send Enter automatically
+            if any(x in low for x in ["press any key", "нажмите", "для продолжения", "pause"]):
+                # Send Enter automatically
                 try:
-                    proc.stdin and proc.stdin.write(b"\r\n") and proc.stdin.flush()
+                    if proc.stdin:
+                        proc.stdin.write(b"\r\n")
+                        proc.stdin.flush()
                 except Exception:
                     pass
                 continue
+            
             q.put({"type": "log", "line": line})
 
         proc.stdout.close()
         code = proc.wait()
+        
+        # Check if DLL was actually created
+        dll_path = os.path.join(REPO_DIR, "x64", "Release", "ImGui DirectX 11 Kiero Hook.dll")
+        if code == 0 and not os.path.exists(dll_path):
+            q.put({"type": "error", "line": f"[ERROR] DLL not found at: {dll_path}"})
+            q.put({"type": "error", "line": "Check build configuration or output path"})
+            code = 1
+        
         q.put({"type": "status", "line": "-" * 60})
         if code == 0:
             q.put({"type": "success", "line": f"build succeeded (exit {code})"})
         else:
             q.put({"type": "error", "line": f"build failed (exit {code})"})
         emit_done(code)
+        
     except Exception as e:
         q.put({"type": "error", "line": f"internal error: {e}"})
         emit_done(-2)
@@ -410,6 +422,7 @@ function setStatus(txt, cls){
   stEl.textContent = txt;
   stEl.className = 'status ' + (cls||'');
 }
+
 function addLine(text, kind){
   if(empty){ logsEl.innerHTML=''; empty=false; }
   const d = document.createElement('div');
@@ -422,7 +435,6 @@ function addLine(text, kind){
   d.textContent = text || ' ';
   logsEl.appendChild(d);
   if(autoScroll){
-    // smooth scroll to bottom
     requestAnimationFrame(() => {
       logsEl.scrollTo({top: logsEl.scrollHeight, behavior: 'smooth'});
     });
@@ -436,31 +448,68 @@ logsEl.addEventListener('scroll', () => {
 });
 
 btn.onclick = () => {
-  if(es){ return; }
-  logsEl.innerHTML=''; empty=true; autoScroll=true;
+  // Close existing connection if any
+  if(es){ 
+    es.close(); 
+    es = null; 
+  }
+  
+  logsEl.innerHTML=''; 
+  empty=true; 
+  autoScroll=true;
   btn.disabled = true;
   setStatus('running', 'running');
-  es = new EventSource('/build');
-  es.onmessage = ev => {
-    let m; try{ m = JSON.parse(ev.data); } catch(e){ return; }
-    if(m.type === 'done'){
-      es.close(); es = null;
+  
+  let timeoutId = setTimeout(() => {
+    if(es && !es._closed){
+      es.close();
+      es = null;
       btn.disabled = false;
-      setStatus(m.code === 0 ? 'success' : 'failed ('+m.code+')', m.code===0?'ok':'err');
+      setStatus('timeout', 'err');
+      addLine('⏱️ Build timeout (2 minutes)', 'error');
+      addLine('⚠️ Server might be stuck. Try refreshing the page.', 'error');
+    }
+  }, 120000); // 2 minutes timeout
+  
+  es = new EventSource('/build');
+  
+  es.onmessage = ev => {
+    let m; 
+    try{ m = JSON.parse(ev.data); } catch(e){ return; }
+    
+    if(m.type === 'done'){
+      clearTimeout(timeoutId);
+      es.close(); 
+      es = null;
+      btn.disabled = false;
+      setStatus(m.code === 0 ? 'success ✓' : 'failed ✗ ('+m.code+')', m.code===0?'ok':'err');
       return;
     }
     addLine(m.line, m.type);
   };
-  es.onerror = () => {
-    if(es){ es.close(); es = null; }
+  
+  es.onerror = (e) => {
+    clearTimeout(timeoutId);
+    if(es){ 
+      es.close(); 
+      es = null; 
+    }
     btn.disabled = false;
     setStatus('connection lost', 'err');
+    addLine('⚠️ Connection lost. Click Build again to retry.', 'error');
   };
 };
 
 clr.onclick = () => {
+  // Clear logs and reset state
+  if(es){ 
+    es.close(); 
+    es = null; 
+  }
   logsEl.innerHTML='<div class="empty"><span class="icon">◈</span>cleared</div>';
-  empty=true; autoScroll=true;
+  empty=true; 
+  autoScroll=true;
+  btn.disabled = false;
   setStatus('idle','');
 };
 </script>
