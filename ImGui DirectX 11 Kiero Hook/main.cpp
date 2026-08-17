@@ -494,6 +494,7 @@ float silentAntiAimRenderYaw = 0.0f;
 uintptr_t silentAntiAimPoseController = 0;
 uintptr_t silentAntiAimPoseBiped = 0;
 uintptr_t silentAntiAimPoseBones[6] = {};
+uint32_t silentAntiAimPoseBoneHandles[6] = {};
 Quaternion silentAntiAimPoseBase[6] = {};
 bool silentAntiAimPoseApplied = false;
 bool thirdPersonEnabled = false;
@@ -3234,15 +3235,48 @@ static Quaternion NormalizeQuaternionSafe(const Quaternion& value)
              value.z * inverseLength, value.w * inverseLength };
 }
 
+static bool IsRotationAntiAimTransformAliveUnsafe(uintptr_t transform)
+{
+    if (!transform || !o_Object_IsAlive) return false;
+    __try { return o_Object_IsAlive(transform, nullptr); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
 static void ClearRotationAntiAimPoseStateUnsafe()
 {
+    if (g_il2cpp.gchandle_free) {
+        for (int i = 0; i < 6; ++i)
+            if (silentAntiAimPoseBoneHandles[i])
+                g_il2cpp.gchandle_free(silentAntiAimPoseBoneHandles[i]);
+    }
     silentAntiAimPoseController = 0;
     silentAntiAimPoseBiped = 0;
     for (int i = 0; i < 6; ++i) {
         silentAntiAimPoseBones[i] = 0;
+        silentAntiAimPoseBoneHandles[i] = 0;
         silentAntiAimPoseBase[i] = {};
     }
     silentAntiAimPoseApplied = false;
+}
+
+static bool PinRotationAntiAimPoseUnsafe(uintptr_t aimController,
+    uintptr_t bipedMap, const uintptr_t bones[6])
+{
+    if (!g_il2cpp.gchandle_new || !g_il2cpp.gchandle_free) return false;
+    ClearRotationAntiAimPoseStateUnsafe();
+    silentAntiAimPoseController = aimController;
+    silentAntiAimPoseBiped = bipedMap;
+    for (int i = 0; i < 6; ++i) {
+        silentAntiAimPoseBones[i] = bones[i];
+        if (!bones[i]) continue;
+        silentAntiAimPoseBoneHandles[i] = g_il2cpp.gchandle_new(
+            reinterpret_cast<Il2CppObject*>(bones[i]), false);
+        if (!silentAntiAimPoseBoneHandles[i]) {
+            ClearRotationAntiAimPoseStateUnsafe();
+            return false;
+        }
+    }
+    return true;
 }
 
 static void RestoreRotationAntiAimPoseBeforeNativeUnsafe(uintptr_t aimController)
@@ -3277,7 +3311,9 @@ static void RestoreRotationAntiAimPoseBeforeNativeUnsafe(uintptr_t aimController
         // During model replacement the AimController may survive while its rig is
         // destroyed. Validate every pointer against the currently owned BipedMap.
         for (int i = 0; i < 6; ++i) {
-            if (currentBones[i] != silentAntiAimPoseBones[i]) {
+            if (currentBones[i] != silentAntiAimPoseBones[i] ||
+                (currentBones[i] &&
+                 !IsRotationAntiAimTransformAliveUnsafe(currentBones[i]))) {
                 ClearRotationAntiAimPoseStateUnsafe();
                 return;
             }
@@ -3328,6 +3364,18 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(uintptr_t aimController)
             *reinterpret_cast<uintptr_t*>(bipedMap + 0x20)
         };
         if (!bones[0] || !bones[5]) return false;
+        for (int i = 0; i < 6; ++i)
+            if (bones[i] && !IsRotationAntiAimTransformAliveUnsafe(bones[i]))
+                return false;
+
+        bool samePinnedRig = silentAntiAimPoseController == aimController &&
+            silentAntiAimPoseBiped == bipedMap;
+        for (int i = 0; samePinnedRig && i < 6; ++i)
+            samePinnedRig = silentAntiAimPoseBones[i] == bones[i] &&
+                (!bones[i] || silentAntiAimPoseBoneHandles[i] != 0);
+        if (!samePinnedRig &&
+            !PinRotationAntiAimPoseUnsafe(aimController, bipedMap, bones))
+            return false;
 
         Quaternion bases[6] = {};
         // Capture Hip in world space. Its local Y axis is tilted by the animation,
@@ -3341,16 +3389,16 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(uintptr_t aimController)
             if (!IsFiniteQuaternion(bases[i])) return false;
             bases[i] = NormalizeQuaternionSafe(bases[i]);
         }
-        silentAntiAimPoseController = aimController;
-        silentAntiAimPoseBiped = bipedMap;
-        for (int i = 0; i < 6; ++i) {
-            silentAntiAimPoseBones[i] = bones[i];
+        for (int i = 0; i < 6; ++i)
             silentAntiAimPoseBase[i] = bases[i];
-        }
 
-        const float yawOffset = NormalizeAngle180(
-            silentAntiAimLatestRealAimAngle.y -
-            silentAntiAimLatestFakeAngles.y);
+        // Static/Jitter/Spin are configured as offsets from real view. Edge Yaw is
+        // an absolute world heading, so its visual delta has the opposite sign.
+        const float yawOffset = silentAntiAimMode == 3 ?
+            NormalizeAngle180(silentAntiAimLatestFakeAngles.y -
+                              silentAntiAimLatestRealAimAngle.y) :
+            NormalizeAngle180(silentAntiAimLatestRealAimAngle.y -
+                              silentAntiAimLatestFakeAngles.y);
         const Quaternion yaw = QuaternionFromAxisAngle(
             0.0f, 1.0f, 0.0f, yawOffset);
         // Pre-multiply in world space: rotate around global vertical without
@@ -7880,7 +7928,8 @@ DWORD WINAPI HackThread(LPVOID)
         o_Transform_get_rotation_Injected &&
         o_Transform_set_rotation_Injected &&
         o_Transform_get_localRotation_Injected &&
-        o_Transform_set_localRotation_Injected;
+        o_Transform_set_localRotation_Injected &&
+        o_Object_IsAlive && g_il2cpp.gchandle_new && g_il2cpp.gchandle_free;
 
     LINDY_LOG("[anti-aim] rotation input=%d/%d; nhi=%d/%d; quaternion=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
