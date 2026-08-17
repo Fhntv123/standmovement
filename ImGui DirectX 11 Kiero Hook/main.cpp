@@ -301,6 +301,7 @@ struct Matrix16 {
 #define OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE      0xC19DD0  // AimController.oci() -> Vector3
 #define OFFSET_CAMERA_FIRE_ON_PRE_CULL                0x3441780 // Camera.FireOnPreCull(Camera), final render boundary
 #define OFFSET_AIMINGDATA_CLONE                      0xC1D170
+#define OFFSET_AIMINGDATA_SERIALIZE                  0xC1CC50  // AimingData.neu(gfh), outgoing writer
 #define OFFSET_TRANSFORM_GET_EULERANGLES            0x348B3C0
 #define OFFSET_TRANSFORM_SET_EULERANGLES            0x348BD30
 #define OFFSET_TRANSFORM_GET_LOCALEULERANGLES       0x348B5A0
@@ -461,6 +462,7 @@ bool silentAntiAimLatestFiring = false;
 uintptr_t silentAntiAimLatestPlayer = 0;
 uintptr_t silentAntiAimLatestController = 0;
 uintptr_t silentAntiAimLatestAimingData = 0;
+ULONGLONG silentAntiAimLatestCommandTick = 0;
 uintptr_t silentAntiAimCameraTransform = 0;
 Vector3 silentAntiAimLatestRealAimAngle;
 Vector3 silentAntiAimLatestRealAimEuler;
@@ -1926,6 +1928,7 @@ void(__fastcall* o_PlayerControls_Update)(uintptr_t, const Il2CppMethod*) = null
 void(__fastcall* o_CameraMovementController_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CameraMovementController_FixedUpdate)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_AimingData_Serialize)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 Vector3(__fastcall* o_AimController_GetHeadDirective)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_Camera_FireOnPreCull)(uintptr_t, const Il2CppMethod*) = nullptr;
 
@@ -3029,6 +3032,7 @@ static bool CaptureCommandAntiAimInput(uintptr_t player, uintptr_t command)
         silentAntiAimLatestPlayer = player;
         silentAntiAimLatestController = aimController;
         silentAntiAimLatestAimingData = aimingData;
+        silentAntiAimLatestCommandTick = GetTickCount64();
         silentAntiAimCameraTransform = cameraTransform;
         silentAntiAimRealCameraValid = true;
         silentAntiAimLatestInputValid = true;
@@ -3039,6 +3043,7 @@ static bool CaptureCommandAntiAimInput(uintptr_t player, uintptr_t command)
         silentAntiAimLatestInputValid = false;
         silentAntiAimRealCameraValid = false;
         silentAntiAimLatestAimingData = 0;
+        silentAntiAimLatestCommandTick = 0;
         silentAntiAimCameraTransform = 0;
         return false;
     }
@@ -3080,32 +3085,25 @@ static void ApplyCommandAntiAim(uintptr_t player, uintptr_t command)
 
     __try {
         const float realYaw = silentAntiAimLatestRealAimAngle.y;
-        Vector3 anglesToWrite = silentAntiAimLatestRealAimAngle;
-        if (!silentAntiAimLatestFiring) {
-            const float yawOffset = GetCommandAntiAimYawOffset();
-            anglesToWrite = Vector3(
-                GetCommandAntiAimPitch(),
-                NormalizeAngle360(realYaw - yawOffset),
-                0.0f);
-            FixAntiAimMovement(command, realYaw, anglesToWrite.y);
+        if (silentAntiAimLatestFiring) {
+            silentAntiAimLatestFakeAngles = silentAntiAimLatestRealAimAngle;
+            strcpy_s(silentAntiAimStatus, "Real angles while firing");
+            return;
         }
-
-        // This is the authoritative state consumed by the game's command and
-        // networking pipeline. The visual camera is restored later in HUD.Update.
-        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x18) =
-            anglesToWrite;
-        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x24) =
-            anglesToWrite;
-        silentAntiAimLatestFakeAngles = anglesToWrite;
+        const float yawOffset = GetCommandAntiAimYawOffset();
+        silentAntiAimLatestFakeAngles = Vector3(
+            GetCommandAntiAimPitch(),
+            NormalizeAngle360(realYaw - yawOffset),
+            0.0f);
         InterlockedIncrement(&silentAntiAimAppliedCalls);
-        strcpy_s(silentAntiAimStatus, silentAntiAimLatestFiring ?
-            "Real angles while firing" :
-            (silentAntiAimMode == 0 ? "Active: Static" :
-             (silentAntiAimMode == 1 ? "Active: Jitter" : "Active: Spin")));
+        strcpy_s(silentAntiAimStatus,
+            silentAntiAimMode == 0 ? "Serializer anti-aim: Static" :
+            (silentAntiAimMode == 1 ? "Serializer anti-aim: Jitter" :
+                                      "Serializer anti-aim: Spin"));
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         silentAntiAimLatestInputValid = false;
-        strcpy_s(silentAntiAimStatus, "Anti-aim write failed safely");
+        strcpy_s(silentAntiAimStatus, "Anti-aim calculation failed safely");
     }
 }
 
@@ -3170,6 +3168,57 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     if (keyValidated && silentAntiAimEnabled && player && command)
         ApplyCommandAntiAim(player, command);
     return command;
+}
+
+void __fastcall hk_AimingData_Serialize(
+    uintptr_t aimingData, uintptr_t writer, const Il2CppMethod* method)
+{
+    if (!o_AimingData_Serialize) return;
+    const ULONGLONG now = GetTickCount64();
+    // AimController.mwq() builds AimSnapshot.aimingData and may clone the live
+    // AimController.aimingData object. Therefore pointer equality with the live
+    // object is not a valid local-player test. AimingData.neu(gfh) is the writer
+    // direction; accept only serialization immediately following our local
+    // KeyboardControl.BuildCommand tick.
+    const bool recentLocalCommand = silentAntiAimLatestCommandTick &&
+        now >= silentAntiAimLatestCommandTick &&
+        now - silentAntiAimLatestCommandTick <= 250;
+    if (!aimingData || !writer || !keyValidated || !silentAntiAimEnabled ||
+        !silentAntiAimLatestInputValid || silentAntiAimLatestFiring ||
+        !recentLocalCommand) {
+        o_AimingData_Serialize(aimingData, writer, method);
+        return;
+    }
+
+    Vector3 savedAim;
+    Vector3 savedEuler;
+    bool patched = false;
+    __try {
+        savedAim = *reinterpret_cast<Vector3*>(aimingData + 0x18);
+        savedEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
+        *reinterpret_cast<Vector3*>(aimingData + 0x18) =
+            silentAntiAimLatestFakeAngles;
+        *reinterpret_cast<Vector3*>(aimingData + 0x24) =
+            silentAntiAimLatestFakeAngles;
+        patched = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        patched = false;
+    }
+
+    // The fake state exists only while outgoing bytes are written by neu(gfh).
+    o_AimingData_Serialize(aimingData, writer, method);
+
+    if (patched) {
+        __try {
+            *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAim;
+            *reinterpret_cast<Vector3*>(aimingData + 0x24) = savedEuler;
+            InterlockedIncrement(&silentAntiAimCommandCalls);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            silentAntiAimLatestInputValid = false;
+        }
+    }
 }
 
 static bool ReadAntiAimFpsCameraTransformUnsafe(uintptr_t* transform)
@@ -3324,9 +3373,6 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
-    // CAntiAim::lateUpdate equivalent: authoritative AimingData stays fake,
-    // while only the local visual camera returns to the captured real angles.
-    RestoreAntiAimCameraTransformUnsafe(silentAntiAimCameraTransform);
     if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
         SendPendingPixelSurfChatMessageUnsafe();
     UpdateFrozenCorpses();
@@ -7020,6 +7066,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             silentAntiAimLatestPlayer = 0;
             silentAntiAimLatestController = 0;
             silentAntiAimLatestAimingData = 0;
+            silentAntiAimLatestCommandTick = 0;
             silentAntiAimCameraTransform = 0;
             silentAntiAimRealCameraValid = false;
             silentAntiAimLastSpinTick = 0;
@@ -7654,6 +7701,14 @@ DWORD WINAPI HackThread(LPVOID)
         MH_EnableHook((LPVOID)(base + OFFSET_HITMARKERVIEW_LOCAL_HIT)) : hitLogCreateStatus;
     if (hitLogCreateStatus != MH_OK || hitLogEnableStatus != MH_OK)
         hitLogEnabled = false;
+    const MH_STATUS antiAimSerializeCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_AIMINGDATA_SERIALIZE),
+        hk_AimingData_Serialize,
+        (LPVOID*)&o_AimingData_Serialize);
+    const MH_STATUS antiAimSerializeEnableStatus =
+        antiAimSerializeCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_AIMINGDATA_SERIALIZE)) :
+        antiAimSerializeCreateStatus;
     const MH_STATUS antiAimInputCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND),
         hk_KeyboardControl_BuildCommand,
@@ -7664,11 +7719,14 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimInputCreateStatus;
     silentAntiAimHookReady = antiAimInputCreateStatus == MH_OK &&
         antiAimInputEnableStatus == MH_OK &&
-        o_Transform_get_eulerAngles && o_Transform_set_eulerAngles;
+        antiAimSerializeCreateStatus == MH_OK &&
+        antiAimSerializeEnableStatus == MH_OK &&
+        o_Transform_get_eulerAngles;
 
-    LINDY_LOG("[anti-aim] input=%d/%d; camera_get=%p; camera_set=%p; ready=%d",
+    LINDY_LOG("[anti-aim] input=%d/%d; serialize=%d/%d; camera_get=%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
-        (void*)o_Transform_get_eulerAngles, (void*)o_Transform_set_eulerAngles,
+        (int)antiAimSerializeCreateStatus, (int)antiAimSerializeEnableStatus,
+        (void*)o_Transform_get_eulerAngles,
         silentAntiAimHookReady ? 1 : 0);
 
     // Capture the live ArmsLodGroup directly whenever its first-person visibility is enabled.
