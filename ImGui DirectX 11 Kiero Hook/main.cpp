@@ -507,6 +507,7 @@ volatile LONG silentAntiAimBonePasses = 0;
 float silentAntiAimRenderYaw = 0.0f;
 bool thirdPersonEnabled = false;
 uintptr_t customizedThirdPersonPlayer = 0;
+uintptr_t originalTpsOffsetsGameController = 0;
 Vector3 originalDefaultTpsOffset;
 Vector3 originalCrouchingTpsOffset;
 bool originalTpsOffsetsCaptured = false;
@@ -2277,15 +2278,39 @@ static bool ApplyCustomizedThirdPersonOffsets()
         return !thirdPersonEnabled;
     }
     __try {
-        if (customizedThirdPersonPlayer != player) {
-            customizedThirdPersonPlayer = player;
+        const uintptr_t gameController = GetActiveGameController();
+        if (originalTpsOffsetsGameController && gameController &&
+            originalTpsOffsetsGameController != gameController) {
+            // A real scene change may legitimately load different camera tuning.
+            // A death only replaces PlayerController, so keep the stable baseline.
             originalTpsOffsetsCaptured = false;
+            originalTpsOffsetsGameController = 0;
         }
+        if (customizedThirdPersonPlayer != player)
+            customizedThirdPersonPlayer = player;
         if (!originalTpsOffsetsCaptured) {
+            // Do not capture the temporary death/spectator camera offsets. The game
+            // lowers those values during the transition and they otherwise become the
+            // new permanent TPS baseline after respawn.
+            void* localPlayer = GetLocalPC();
+            const int localHealth = GetPCHealth(localPlayer);
+            if (!gameController || !localPlayer || localHealth <= 0) {
+                if (thirdPersonEnabled)
+                    strcpy_s(thirdPersonStatus, "Waiting for live TPS camera baseline");
+                return false;
+            }
             // PlayerController._defaultTpsOffset (+0x48) and _crouchingTpsOffset
             // (+0x54) are complete native Vector3 camera offsets.
             originalDefaultTpsOffset = *reinterpret_cast<Vector3*>(player + 0x48);
             originalCrouchingTpsOffset = *reinterpret_cast<Vector3*>(player + 0x54);
+            if (!isfinite(originalDefaultTpsOffset.x) ||
+                !isfinite(originalDefaultTpsOffset.y) ||
+                !isfinite(originalDefaultTpsOffset.z) ||
+                !isfinite(originalCrouchingTpsOffset.x) ||
+                !isfinite(originalCrouchingTpsOffset.y) ||
+                !isfinite(originalCrouchingTpsOffset.z))
+                return false;
+            originalTpsOffsetsGameController = gameController;
             originalTpsOffsetsCaptured = true;
         }
         if (thirdPersonEnabled) {
@@ -2329,8 +2354,11 @@ static bool ApplyNativeThirdPersonState()
     }
     __try {
         o_CheatRuntime_SetThirdPerson(runtime, thirdPersonEnabled, nullptr);
+        // The native transition can rewrite camera tuning during death/respawn.
+        // Apply the scene-stable offsets after it, not only before it.
+        if (!ApplyCustomizedThirdPersonOffsets()) return false;
         strcpy_s(thirdPersonStatus, thirdPersonEnabled ?
-            "Active; custom built-in TPS camera" : "Disabled; original offsets restored");
+            "Active; death-safe custom TPS camera" : "Disabled; original offsets restored");
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -6209,7 +6237,8 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         // without attempting Restore* on stale objects and rediscover everything.
         chamsObservedLocalPlayer = currentLocalPlayer;
         customizedThirdPersonPlayer = 0;
-        originalTpsOffsetsCaptured = false;
+        // Keep the scene-stable TPS baseline across death/respawn. Recapturing the
+        // replacement PlayerController here could preserve the temporary low camera.
         weaponChamsRenderers.clear();
         armChamsRenderers.clear();
         gloveChamsRenderers.clear();
