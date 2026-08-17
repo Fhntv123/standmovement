@@ -463,7 +463,7 @@ float silentAntiAimJitterRange = 45.0f;
 float silentAntiAimSpinSpeed = 180.0f; // degrees per second
 float silentAntiAimEdgeDistance = 3.0f;
 float silentAntiAimEdgeOffset = 0.0f;
-ULONGLONG silentAntiAimNextEdgeScan = 0;
+ULONGLONG silentAntiAimEdgeScanFrame = 0;
 float silentAntiAimEdgeYaw = 0.0f;
 bool silentAntiAimEdgeFound = false;
 bool silentAntiAimHookReady = false;
@@ -3011,74 +3011,87 @@ static float GetRotationAntiAimYawOffset()
     return silentAntiAimSpinYaw;
 }
 
+static bool IsRotationAntiAimTransformAliveUnsafe(uintptr_t transform);
+
 static bool ResolveRotationAntiAimEdgeYawUnsafe(uintptr_t player,
     float* outYaw)
 {
-    if (!player || !outYaw || !o_Physics_RaycastAll ||
+    if (!player || !outYaw || !o_Physics_RaycastHit ||
         !o_RaycastHit_get_collider || !o_Component_GetInParent ||
         !g_PlayerControllerReflectionType)
         return false;
 
-    const ULONGLONG now = GetTickCount64();
-    if (now < silentAntiAimNextEdgeScan) {
+    // Re-scan on every game update. Cache only duplicate calls within the exact same
+    // millisecond (BuildCommand + nhi); there is no human-visible hold or smoothing.
+    const ULONGLONG frameMs = GetTickCount64();
+    if (silentAntiAimEdgeScanFrame == frameMs) {
         if (silentAntiAimEdgeFound) *outYaw = silentAntiAimEdgeYaw;
         return silentAntiAimEdgeFound;
     }
-    silentAntiAimNextEdgeScan = now + 100ULL;
+    silentAntiAimEdgeScanFrame = frameMs;
     silentAntiAimEdgeFound = false;
 
     Vector3 origin;
-    if (!GetPCPosition(reinterpret_cast<void*>(player), origin)) return false;
-    origin.y += 0.85f;
+    bool haveOrigin = false;
+    __try {
+        const uintptr_t bipedMap = *reinterpret_cast<uintptr_t*>(player + 0x118);
+        const uintptr_t head = bipedMap ?
+            *reinterpret_cast<uintptr_t*>(bipedMap + 0x20) : 0;
+        if (head && IsRotationAntiAimTransformAliveUnsafe(head) &&
+            o_Transform_get_position) {
+            origin = o_Transform_get_position(head);
+            // Probe from the upper torso rather than above the character's head.
+            origin.y -= 0.25f;
+            haveOrigin = true;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
+    if (!haveOrigin)
+        haveOrigin = GetPCPosition(reinterpret_cast<void*>(player), origin);
+    if (!haveOrigin) return false;
     float nearestDistance = silentAntiAimEdgeDistance + 0.001f;
     float nearestYaw = 0.0f;
 
     __try {
-        // A dense horizontal sweep finds the closest map face. RaycastAll lets us
-        // reject the local player's own collider instead of mistaking it for an edge.
-        constexpr int rayCount = 24;
+        // A dense non-allocating horizontal sweep finds the closest map face.
+        // Player colliders are rejected instead of being mistaken for an edge.
+        constexpr int rayCount = 36;
         constexpr float radiansPerRay = 6.2831853071795864769f / rayCount;
         for (int ray = 0; ray < rayCount; ++ray) {
             const float radians = static_cast<float>(ray) * radiansPerRay;
             const Vector3 direction(sinf(radians), 0.0f, cosf(radians));
-            Il2CppArray* hits = o_Physics_RaycastAll(origin, direction,
-                silentAntiAimEdgeDistance, -1, 1, nullptr);
-            const uintptr_t array = reinterpret_cast<uintptr_t>(hits);
-            const size_t count = array ?
-                *reinterpret_cast<size_t*>(array + 0x18) : 0;
-            if (!array || count == 0 || count > 128) continue;
-            for (size_t i = 0; i < count; ++i) {
-                RaycastHitNative* hit = reinterpret_cast<RaycastHitNative*>(
-                    array + 0x20 + i * sizeof(RaycastHitNative));
-                if (!isfinite(hit->distance) || hit->distance < 0.08f ||
-                    hit->distance >= nearestDistance)
-                    continue;
-                const uintptr_t collider =
-                    o_RaycastHit_get_collider(hit, nullptr);
-                if (!collider) continue;
-                const uintptr_t hitPlayer = o_Component_GetInParent(collider,
-                    reinterpret_cast<uintptr_t>(g_PlayerControllerReflectionType),
-                    true, nullptr);
-                if (hitPlayer) continue;
+            RaycastHitNative hit = {};
+            if (!o_Physics_RaycastHit(origin, direction, &hit,
+                silentAntiAimEdgeDistance, -1, 1, nullptr))
+                continue;
+            if (!isfinite(hit.distance) || hit.distance < 0.08f ||
+                hit.distance >= nearestDistance)
+                continue;
+            const uintptr_t collider =
+                o_RaycastHit_get_collider(&hit, nullptr);
+            if (!collider) continue;
+            const uintptr_t hitPlayer = o_Component_GetInParent(collider,
+                reinterpret_cast<uintptr_t>(g_PlayerControllerReflectionType),
+                true, nullptr);
+            if (hitPlayer) continue;
 
-                // Unity's surface normal points out of the wall. Reverse it so fake
-                // yaw points into the nearest edge; Edge Offset can rotate that result.
-                const float normalLengthSquared =
-                    hit->normal.x * hit->normal.x +
-                    hit->normal.z * hit->normal.z;
-                float wallYaw = 0.0f;
-                if (isfinite(normalLengthSquared) &&
-                    normalLengthSquared > 0.001f) {
-                    wallYaw = atan2f(-hit->normal.x, -hit->normal.z) *
-                        57.29577951308232f;
-                } else {
-                    wallYaw = atan2f(direction.x, direction.z) *
-                        57.29577951308232f;
-                }
-                nearestDistance = hit->distance;
-                nearestYaw = NormalizeAngle360(
-                    wallYaw + silentAntiAimEdgeOffset);
+            // Unity's surface normal points out of the wall. Reverse it so fake
+            // yaw points into the nearest edge; Edge Offset can rotate that result.
+            const float normalLengthSquared =
+                hit.normal.x * hit.normal.x +
+                hit.normal.z * hit.normal.z;
+            float wallYaw = 0.0f;
+            if (isfinite(normalLengthSquared) &&
+                normalLengthSquared > 0.001f) {
+                wallYaw = atan2f(-hit.normal.x, -hit.normal.z) *
+                    57.29577951308232f;
+            } else {
+                wallYaw = atan2f(direction.x, direction.z) *
+                    57.29577951308232f;
             }
+            nearestDistance = hit.distance;
+            nearestYaw = NormalizeAngle360(
+                wallYaw + silentAntiAimEdgeOffset);
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -3392,13 +3405,24 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(uintptr_t aimController)
         for (int i = 0; i < 6; ++i)
             silentAntiAimPoseBase[i] = bases[i];
 
-        // Static/Jitter/Spin are configured as offsets from real view. Edge Yaw is
-        // an absolute world heading, so its visual delta has the opposite sign.
-        const float yawOffset = silentAntiAimMode == 3 ?
-            NormalizeAngle180(silentAntiAimLatestFakeAngles.y -
-                              silentAntiAimLatestRealAimAngle.y) :
-            NormalizeAngle180(silentAntiAimLatestRealAimAngle.y -
-                              silentAntiAimLatestFakeAngles.y);
+        // Static/Jitter/Spin are offsets from camera yaw. Edge Yaw is an absolute
+        // world heading: compare it to the live Hip forward vector, not camera yaw.
+        // This removes the model-specific heading bias visible near a wall.
+        float yawOffset = NormalizeAngle180(
+            silentAntiAimLatestRealAimAngle.y -
+            silentAntiAimLatestFakeAngles.y);
+        if (silentAntiAimMode == 3 && o_Transform_get_forward) {
+            const Vector3 hipForward = o_Transform_get_forward(bones[0]);
+            const float horizontalLengthSquared =
+                hipForward.x * hipForward.x + hipForward.z * hipForward.z;
+            if (isfinite(horizontalLengthSquared) &&
+                horizontalLengthSquared > 0.0001f) {
+                const float liveHipYaw = atan2f(
+                    hipForward.x, hipForward.z) * 57.29577951308232f;
+                yawOffset = NormalizeAngle180(
+                    silentAntiAimLatestFakeAngles.y - liveHipYaw);
+            }
+        }
         const Quaternion yaw = QuaternionFromAxisAngle(
             0.0f, 1.0f, 0.0f, yawOffset);
         // Pre-multiply in world space: rotate around global vertical without
@@ -7254,7 +7278,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             silentAntiAimSpinEpoch = 0;
             silentAntiAimSpinYaw = 0.0f;
             silentAntiAimLastJitterTick = 0;
-            silentAntiAimNextEdgeScan = 0;
+            silentAntiAimEdgeScanFrame = 0;
             silentAntiAimEdgeFound = false;
             InterlockedExchange(&silentAntiAimLateAimCalls, 0);
             InterlockedExchange(&silentAntiAimBonePasses, 0);
