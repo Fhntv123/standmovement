@@ -139,6 +139,11 @@ struct Vector4 {
 
 };
 
+struct Quaternion {
+    float x, y, z, w;
+};
+static_assert(sizeof(Quaternion) == 0x10, "Unity Quaternion layout changed");
+
 
 
 struct RaycastHitNative {
@@ -305,6 +310,10 @@ struct Matrix16 {
 #define OFFSET_TRANSFORM_SET_EULERANGLES            0x348BD30
 #define OFFSET_TRANSFORM_GET_LOCALEULERANGLES       0x348B5A0
 #define OFFSET_TRANSFORM_SET_LOCALEULERANGLES       0x348BE10
+#define OFFSET_TRANSFORM_GET_ROTATION_INJECTED       0x348BB10
+#define OFFSET_TRANSFORM_SET_ROTATION_INJECTED       0x348C1E0
+#define OFFSET_TRANSFORM_GET_LOCALROTATION_INJECTED  0x348B710
+#define OFFSET_TRANSFORM_SET_LOCALROTATION_INJECTED  0x348BF40
 #define OFFSET_COMPONENT_GET_GAMEOBJECT             0x3474720
 #define OFFSET_OBJECT_INSTANTIATE                    0x347BAC0
 #define OFFSET_OBJECT_DESTROY                        0x347B060
@@ -1734,6 +1743,10 @@ Vector3(__fastcall* o_Transform_get_eulerAngles)(uintptr_t) = nullptr;
 void(__fastcall* o_Transform_set_eulerAngles)(uintptr_t, Vector3) = nullptr;
 Vector3(__fastcall* o_Transform_get_localEulerAngles)(uintptr_t) = nullptr;
 void(__fastcall* o_Transform_set_localEulerAngles)(uintptr_t, Vector3) = nullptr;
+void(__fastcall* o_Transform_get_rotation_Injected)(uintptr_t, Quaternion*) = nullptr;
+void(__fastcall* o_Transform_set_rotation_Injected)(uintptr_t, Quaternion*) = nullptr;
+void(__fastcall* o_Transform_get_localRotation_Injected)(uintptr_t, Quaternion*) = nullptr;
+void(__fastcall* o_Transform_set_localRotation_Injected)(uintptr_t, Quaternion*) = nullptr;
 
 uintptr_t(__fastcall* o_Component_get_transform)(uintptr_t) = nullptr;
 
@@ -3168,59 +3181,118 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     return command;
 }
 
+static Quaternion QuaternionFromAxisAngle(float axisX, float axisY,
+    float axisZ, float degrees)
+{
+    const float halfRadians = degrees * 0.008726646259971648f;
+    const float sine = sinf(halfRadians);
+    Quaternion result = { axisX * sine, axisY * sine, axisZ * sine,
+                          cosf(halfRadians) };
+    return result;
+}
+
+static Quaternion MultiplyQuaternion(const Quaternion& left,
+    const Quaternion& right)
+{
+    Quaternion result = {
+        left.w * right.x + left.x * right.w + left.y * right.z - left.z * right.y,
+        left.w * right.y - left.x * right.z + left.y * right.w + left.z * right.x,
+        left.w * right.z + left.x * right.y - left.y * right.x + left.z * right.w,
+        left.w * right.w - left.x * right.x - left.y * right.y - left.z * right.z
+    };
+    return result;
+}
+
+static bool IsFiniteQuaternion(const Quaternion& value)
+{
+    return isfinite(value.x) && isfinite(value.y) &&
+        isfinite(value.z) && isfinite(value.w);
+}
+
+static bool RotateBipedBoneLocalUnsafe(uintptr_t bone, float pitchDegrees,
+    float yawDegrees, float rollDegrees)
+{
+    if (!bone || !o_Transform_get_localRotation_Injected ||
+        !o_Transform_set_localRotation_Injected)
+        return false;
+
+    Quaternion current = {};
+    o_Transform_get_localRotation_Injected(bone, &current);
+    if (!IsFiniteQuaternion(current)) return false;
+
+    const Quaternion pitch = QuaternionFromAxisAngle(1.0f, 0.0f, 0.0f,
+        pitchDegrees);
+    const Quaternion yaw = QuaternionFromAxisAngle(0.0f, 1.0f, 0.0f,
+        yawDegrees);
+    const Quaternion roll = QuaternionFromAxisAngle(0.0f, 0.0f, 1.0f,
+        rollDegrees);
+    Quaternion rotated = MultiplyQuaternion(current,
+        MultiplyQuaternion(yaw, MultiplyQuaternion(pitch, roll)));
+    o_Transform_set_localRotation_Injected(bone, &rotated);
+    return true;
+}
+
 static bool ApplyBipedMapAntiAimUnsafe()
 {
     if (!keyValidated || !silentAntiAimEnabled ||
         !silentAntiAimLatestInputValid || !silentAntiAimLatestPlayer ||
-        !o_Component_get_transform || !o_Transform_get_eulerAngles ||
-        !o_Transform_set_eulerAngles ||
-        !o_Transform_get_localEulerAngles ||
-        !o_Transform_set_localEulerAngles)
+        !o_Transform_get_rotation_Injected ||
+        !o_Transform_set_rotation_Injected ||
+        !o_Transform_get_localRotation_Injected ||
+        !o_Transform_set_localRotation_Injected)
         return false;
 
     __try {
         const uintptr_t player = silentAntiAimLatestPlayer;
         if (liveHudLocalPlayer && player != liveHudLocalPlayer) return false;
 
-        // dump1 PlayerController._characterBiped +0x30 is the rendered TPS rig.
-        // The backing BipedMap at +0x118 is the same character skeleton on builds
-        // where the private field is not populated yet, so use it as a fallback.
+        // Both fields are BipedMap in dump1. +0x30 is the rendered character rig;
+        // +0x118 is its PlayerController backing field fallback.
         uintptr_t bipedMap = *reinterpret_cast<uintptr_t*>(player + 0x30);
         if (!bipedMap)
             bipedMap = *reinterpret_cast<uintptr_t*>(player + 0x118);
         if (!bipedMap) return false;
 
-        const uintptr_t modelRoot = o_Component_get_transform(bipedMap);
         const uintptr_t head = *reinterpret_cast<uintptr_t*>(bipedMap + 0x20);
         const uintptr_t neck = *reinterpret_cast<uintptr_t*>(bipedMap + 0x28);
+        const uintptr_t spine = *reinterpret_cast<uintptr_t*>(bipedMap + 0x30);
+        const uintptr_t spine1 = *reinterpret_cast<uintptr_t*>(bipedMap + 0x38);
         const uintptr_t spine2 = *reinterpret_cast<uintptr_t*>(bipedMap + 0x40);
-        if (!modelRoot || !head) return false;
+        const uintptr_t hip = *reinterpret_cast<uintptr_t*>(bipedMap + 0x88);
+        if (!hip || !head) return false;
 
-        // Apply an absolute world yaw to the rendered model. This cannot feed the
-        // FPS/TPS camera because camera transforms are outside BipedMap.
-        Vector3 rootEuler = o_Transform_get_eulerAngles(modelRoot);
-        rootEuler.y = silentAntiAimLatestFakeAngles.y;
-        o_Transform_set_eulerAngles(modelRoot, rootEuler);
+        // Rotate the rendered Hip directly with Transform.rotation_Injected.
+        // This is the path that owns the complete visible rig; the old component
+        // root Euler setter was not the animated skeleton rotation.
+        Quaternion hipRotation = {};
+        o_Transform_get_rotation_Injected(hip, &hipRotation);
+        if (!IsFiniteQuaternion(hipRotation)) return false;
+        const float yawDelta = NormalizeAngle180(
+            silentAntiAimLatestFakeAngles.y -
+            silentAntiAimLatestRealAimAngle.y);
+        const Quaternion worldYaw = QuaternionFromAxisAngle(
+            0.0f, 1.0f, 0.0f, yawDelta);
+        Quaternion rotatedHip = MultiplyQuaternion(worldYaw, hipRotation);
+        o_Transform_set_rotation_Injected(hip, &rotatedHip);
 
-        // The animation pass has already produced a fresh pose this frame. Add the
-        // selected pitch across the upper chain, strongest at Head.
+        // Apply pitch through localRotation quaternions, not Euler wrappers.
+        // The game has just produced a fresh animated pose in HUD.Update, so these
+        // are one-frame deltas and do not modify camera, aim data or movement.
         const float pitch = silentAntiAimLatestFakeAngles.x;
-        if (spine2) {
-            Vector3 local = o_Transform_get_localEulerAngles(spine2);
-            local.x += pitch * 0.15f;
-            o_Transform_set_localEulerAngles(spine2, local);
-        }
-        if (neck) {
-            Vector3 local = o_Transform_get_localEulerAngles(neck);
-            local.x += pitch * 0.30f;
-            o_Transform_set_localEulerAngles(neck, local);
-        }
-        Vector3 headLocal = o_Transform_get_localEulerAngles(head);
-        headLocal.x += pitch * 0.55f;
-        o_Transform_set_localEulerAngles(head, headLocal);
+        bool wroteUpper = false;
+        if (spine) wroteUpper |= RotateBipedBoneLocalUnsafe(spine,
+            pitch * 0.08f, 0.0f, 0.0f);
+        if (spine1) wroteUpper |= RotateBipedBoneLocalUnsafe(spine1,
+            pitch * 0.12f, 0.0f, 0.0f);
+        if (spine2) wroteUpper |= RotateBipedBoneLocalUnsafe(spine2,
+            pitch * 0.18f, 0.0f, 0.0f);
+        if (neck) wroteUpper |= RotateBipedBoneLocalUnsafe(neck,
+            pitch * 0.24f, 0.0f, 0.0f);
+        wroteUpper |= RotateBipedBoneLocalUnsafe(head,
+            pitch * 0.38f, 0.0f, 0.0f);
 
         InterlockedIncrement(&silentAntiAimCommandCalls);
-        return true;
+        return wroteUpper;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -3382,9 +3454,9 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     if (silentAntiAimEnabled) {
         if (ApplyBipedMapAntiAimUnsafe())
             strcpy_s(silentAntiAimStatus,
-                silentAntiAimMode == 0 ? "BipedMap anti-aim: Static" :
-                (silentAntiAimMode == 1 ? "BipedMap anti-aim: Jitter" :
-                                          "BipedMap anti-aim: Spin"));
+                silentAntiAimMode == 0 ? "BipedMap rotation: Static" :
+                (silentAntiAimMode == 1 ? "BipedMap rotation: Jitter" :
+                                          "BipedMap rotation: Spin"));
         else
             strcpy_s(silentAntiAimStatus, "Waiting for rendered BipedMap");
     }
@@ -7071,7 +7143,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::TextColored(accent, "Anti-Aim");
         ImGui::Separator();
         ImGui::Spacing();
-        if (ImGui::Checkbox("BipedMap Anti-Aim", &silentAntiAimEnabled)) {
+        if (ImGui::Checkbox("BipedMap Rotation Anti-Aim", &silentAntiAimEnabled)) {
             InterlockedExchange(&silentAntiAimInputBuildCalls, 0);
             InterlockedExchange(&silentAntiAimCommandCalls, 0);
             InterlockedExchange(&silentAntiAimAppliedCalls, 0);
@@ -7087,7 +7159,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             silentAntiAimLastSpinTick = 0;
             silentAntiAimSpinYaw = 0.0f;
             strcpy_s(silentAntiAimStatus, !silentAntiAimEnabled ? "Disabled" :
-                (silentAntiAimHookReady ? "BipedMap hook active" :
+                (silentAntiAimHookReady ? "BipedMap rotation hook active" :
                                          "BipedMap anti-aim hook failed"));
         }
         ImGui::Spacing();
@@ -7594,6 +7666,10 @@ DWORD WINAPI HackThread(LPVOID)
     o_Transform_set_eulerAngles = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_EULERANGLES);
     o_Transform_get_localEulerAngles = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_LOCALEULERANGLES);
     o_Transform_set_localEulerAngles = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_LOCALEULERANGLES);
+    o_Transform_get_rotation_Injected = (void(__fastcall*)(uintptr_t, Quaternion*))(base + OFFSET_TRANSFORM_GET_ROTATION_INJECTED);
+    o_Transform_set_rotation_Injected = (void(__fastcall*)(uintptr_t, Quaternion*))(base + OFFSET_TRANSFORM_SET_ROTATION_INJECTED);
+    o_Transform_get_localRotation_Injected = (void(__fastcall*)(uintptr_t, Quaternion*))(base + OFFSET_TRANSFORM_GET_LOCALROTATION_INJECTED);
+    o_Transform_set_localRotation_Injected = (void(__fastcall*)(uintptr_t, Quaternion*))(base + OFFSET_TRANSFORM_SET_LOCALROTATION_INJECTED);
 
     o_Component_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_TRANSFORM);
 
@@ -7726,14 +7802,15 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimInputCreateStatus;
     silentAntiAimHookReady = antiAimInputCreateStatus == MH_OK &&
         antiAimInputEnableStatus == MH_OK &&
-        o_Component_get_transform && o_Transform_get_eulerAngles &&
-        o_Transform_set_eulerAngles && o_Transform_get_localEulerAngles &&
-        o_Transform_set_localEulerAngles;
+        o_Transform_get_rotation_Injected &&
+        o_Transform_set_rotation_Injected &&
+        o_Transform_get_localRotation_Injected &&
+        o_Transform_set_localRotation_Injected;
 
-    LINDY_LOG("[anti-aim] BipedMap input=%d/%d; transform=%p/%p; ready=%d",
+    LINDY_LOG("[anti-aim] BipedMap quaternion input=%d/%d; rotation=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
-        (void*)o_Transform_get_eulerAngles,
-        (void*)o_Transform_set_eulerAngles,
+        (void*)o_Transform_get_rotation_Injected,
+        (void*)o_Transform_set_rotation_Injected,
         silentAntiAimHookReady ? 1 : 0);
 
     // Capture the live ArmsLodGroup directly whenever its first-person visibility is enabled.
