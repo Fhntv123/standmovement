@@ -3390,6 +3390,65 @@ static void UpdateRotationAntiAimTarget(uintptr_t player, bool jumpProfile)
     }
 }
 
+static bool ApplyAimbotCounterStrafeUnsafe(uintptr_t player, uintptr_t command)
+{
+    if (!player || !command || !o_CC_get_isGrounded || !o_CC_get_velocity)
+        return false;
+
+    __try {
+        // Resolve the controller from this exact local PlayerController instead of
+        // reusing lastCharacterController, which can be stale across respawn.
+        const uintptr_t movement =
+            *reinterpret_cast<uintptr_t*>(player + 0xE0);
+        const uintptr_t controller = movement ?
+            *reinterpret_cast<uintptr_t*>(movement + 0xD0) : 0;
+        if (!controller || !o_CC_get_isGrounded(controller)) return false;
+
+        const Vector3 velocity = o_CC_get_velocity(controller);
+        const float horizontalSpeed = sqrtf(
+            velocity.x * velocity.x + velocity.z * velocity.z);
+        if (!isfinite(horizontalSpeed)) return false;
+
+        float& strafeInput = *reinterpret_cast<float*>(command + 0x10);
+        float& forwardInput = *reinterpret_cast<float*>(command + 0x14);
+        constexpr float stopSpeed = 0.15f;
+        if (horizontalSpeed <= stopSpeed) {
+            strafeInput = 0.0f;
+            forwardInput = 0.0f;
+            return true;
+        }
+
+        const uintptr_t aimController =
+            *reinterpret_cast<uintptr_t*>(player + 0xC8);
+        const uintptr_t aimingData = aimController ?
+            *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
+        if (!aimingData) return false;
+        const float viewYaw =
+            reinterpret_cast<Vector3*>(aimingData + 0x18)->y;
+        if (!isfinite(viewYaw)) return false;
+
+        const float yawRadians = viewYaw * 0.01745329251994329577f;
+        const float yawSin = sinf(yawRadians);
+        const float yawCos = cosf(yawRadians);
+        const float forwardSpeed = velocity.x * yawSin + velocity.z * yawCos;
+        const float strafeSpeed = velocity.x * yawCos - velocity.z * yawSin;
+
+        // Counter the current world velocity in view-relative command space. Scale
+        // both axes together so diagonal braking never exceeds native [-1, 1] input.
+        const float largestComponent = fmaxf(
+            fabsf(forwardSpeed), fabsf(strafeSpeed));
+        if (!isfinite(largestComponent) || largestComponent <= 0.0001f)
+            return false;
+        const float inverseLargest = 1.0f / largestComponent;
+        forwardInput = fmaxf(-1.0f, fminf(1.0f,
+            -forwardSpeed * inverseLargest));
+        strafeInput = fmaxf(-1.0f, fminf(1.0f,
+            -strafeSpeed * inverseLargest));
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
 uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     uintptr_t keyboardControl, uintptr_t player, const Il2CppMethod* method)
 {
@@ -3448,8 +3507,9 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
 
-    if (keyValidated && aimbotAutoStop && (aimbotEnabled || visibleAimbotEnabled) &&
-        player && command && liveHudLocalPlayer && player == liveHudLocalPlayer) {
+    if (keyValidated && aimbotAutoStop && !jbActive &&
+        (aimbotEnabled || visibleAimbotEnabled) && player && command &&
+        liveHudLocalPlayer && player == liveHudLocalPlayer) {
         __try {
             const uintptr_t gun = GetCurrentLocalWeaponController();
             const ULONGLONG now = GetTickCount64();
@@ -3461,15 +3521,11 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
             else if (gun != aimbotAutoStopLastGun || now >= aimbotAutoStopNextScanAt) {
                 aimbotAutoStopHasTarget = HasVisibleTargetBeforeNativeFire(gun);
                 aimbotAutoStopLastGun = gun;
-                aimbotAutoStopNextScanAt = now + 16ULL;
+                aimbotAutoStopNextScanAt = now + 32ULL;
             }
-            if (aimbotAutoStopHasTarget) {
-                // dump1 xl.caxa/caxb: strafe +0x10, forward +0x14. Suppress only
-                // horizontal input; jump, crouch, fire and camera fields stay native.
-                *reinterpret_cast<float*>(command + 0x10) = 0.0f;
-                *reinterpret_cast<float*>(command + 0x14) = 0.0f;
+            if (aimbotAutoStopHasTarget &&
+                ApplyAimbotCounterStrafeUnsafe(player, command))
                 InterlockedIncrement(&aimbotAutoStopApplications);
-            }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
             aimbotAutoStopHasTarget = false;
