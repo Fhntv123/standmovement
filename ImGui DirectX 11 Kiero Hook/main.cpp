@@ -523,6 +523,7 @@ uintptr_t worldColorMaterials[7] = {};
 uint32_t worldColorMaterialHandles[7] = {};
 volatile LONG pendingWorldColorCommand = 0;
 ULONGLONG worldColorNextRetryTick = 0;
+uintptr_t worldColorObservedGameController = 0;
 int worldColorRetryCount = 0;
 const int worldColorMaxRetries = 12;
 char worldColorStatus[128] = "Disabled";
@@ -1983,11 +1984,14 @@ static void SetRendererMaterialPair(uintptr_t renderer, uintptr_t first, uintptr
 
 static uintptr_t GetCurrentLocalWeaponController();
 static uintptr_t GetCurrentLocalCharacterLodGroup();
+static bool IsUnityObjectAliveUnsafe(uintptr_t object);
 
 static void RestoreWorldColorUnsafe()
 {
-    for (const WorldColorRenderer& entry : worldColorRenderers)
-        SetRendererMaterialArray(entry.renderer, entry.originalMaterials);
+    for (const WorldColorRenderer& entry : worldColorRenderers) {
+        if (entry.renderer && IsUnityObjectAliveUnsafe(entry.renderer))
+            SetRendererMaterialArray(entry.renderer, entry.originalMaterials);
+    }
     worldColorRenderers.clear();
     worldColorTintMaterials.clear();
     strcpy_s(worldColorStatus, "Disabled; original map materials restored");
@@ -2066,7 +2070,8 @@ static void ApplyWorldColorToCache()
         for (const WorldColorTintMaterial& entry : worldColorTintMaterials)
             if (entry.material) o_Material_set_color(entry.material, GetWorldTintColor(entry.originalColor));
         for (const WorldColorRenderer& entry : worldColorRenderers)
-            SetRendererMaterialArray(entry.renderer, entry.tintedMaterials);
+            if (entry.renderer && IsUnityObjectAliveUnsafe(entry.renderer))
+                SetRendererMaterialArray(entry.renderer, entry.tintedMaterials);
         sprintf_s(worldColorStatus, "Textured tint: %zu map renderer(s)", worldColorRenderers.size());
         return;
     }
@@ -2079,6 +2084,7 @@ static void ApplyWorldColorToCache()
     }
     o_Material_set_color(replacement, GetWorldAnimatedColor());
     for (const WorldColorRenderer& entry : worldColorRenderers) {
+        if (!entry.renderer || !IsUnityObjectAliveUnsafe(entry.renderer)) continue;
         std::vector<uintptr_t> replacements(entry.originalMaterials.size(), replacement);
         SetRendererMaterialArray(entry.renderer, replacements);
     }
@@ -5980,11 +5986,6 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         if (localPlayerChamsEnabled) InterlockedExchange(&pendingLocalPlayerChamsRefresh, 1);
         if (enemyChamsEnabled) InterlockedExchange(&pendingEnemyChamsRefresh, 1);
         InterlockedExchange(&pendingThirdPersonCommand, 1);
-        worldColorRenderers.clear();
-        worldColorTintMaterials.clear();
-        worldColorRetryCount = 0;
-        worldColorNextRetryTick = GetTickCount64() + 1500;
-        if (worldColorEnabled) strcpy_s(worldColorStatus, "Waiting for new map to stabilize...");
     }
 
     const bool weaponRefreshRequested = InterlockedExchange(&pendingWeaponChamsRefresh, 0) != 0;
@@ -6017,6 +6018,25 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     UpdateAimbotAutoFire();
 
     if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
+
+    // A PlayerController changes on every death, but the map and its renderers do
+    // not. Rebuild World Color only when the actual GameController/scene changes.
+    const uintptr_t activeGameController = GetActiveGameController();
+    if (activeGameController &&
+        activeGameController != worldColorObservedGameController) {
+        const bool hadObservedScene = worldColorObservedGameController != 0;
+        worldColorObservedGameController = activeGameController;
+        if (hadObservedScene) {
+            // The previous scene may already have destroyed its renderers. Abandon
+            // stale wrappers without restoring them, then capture the new map once.
+            worldColorRenderers.clear();
+            worldColorTintMaterials.clear();
+            worldColorRetryCount = 0;
+            worldColorNextRetryTick = worldColorEnabled ? chamsNow + 1500 : 0;
+            if (worldColorEnabled)
+                strcpy_s(worldColorStatus, "Waiting for new map to stabilize...");
+        }
+    }
 
     const LONG worldColorCommand = InterlockedExchange(&pendingWorldColorCommand, 0);
     if (worldColorCommand == 2) {
