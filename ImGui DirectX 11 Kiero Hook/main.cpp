@@ -295,7 +295,6 @@ struct Matrix16 {
 #define OFFSET_PLAYER_HEALTH_APPLY_D                   0x8E48D0  // bdl.pbp(...)
 #define OFFSET_PLAYER_HIT_CONFIRMED_A                  0xC2AB10  // PlayerHitController.obl(bai)
 #define OFFSET_PLAYER_HIT_CONFIRMED_B                  0xC2ACD0  // PlayerHitController.obm(bai)
-#define OFFSET_DAMAGE_RESULT_GET_HEALTH                0xC2C440  // bai.nzh() / dhsx
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xB4A790
 #define OFFSET_PLAYERCONTROLS_UPDATE                 0xB4CFB0
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_UPDATE       0xB5C790
@@ -734,6 +733,8 @@ std::vector<HitLogEntry> hitLogEntries;
 SRWLOCK hitLogLock = SRWLOCK_INIT;
 uintptr_t hitLogLastResult = 0;
 ULONGLONG hitLogLastResultAt = 0;
+uintptr_t espHealthLastShotData = 0;
+ULONGLONG espHealthLastShotAt = 0;
 bool bulletTracerEnabled = false;
 bool bulletImpactsEnabled = false;
 float bulletImpactsDuration = 4.0f;
@@ -950,7 +951,6 @@ SRWLOCK g_LivePlayerRegistryLock = SRWLOCK_INIT;
 std::unordered_map<uintptr_t, int> g_LiveHealthByState;
 std::unordered_map<uintptr_t, int> g_LiveHealthByPlayer;
 std::unordered_map<uintptr_t, int> g_ConfirmedHealthByPlayer;
-std::unordered_map<uintptr_t, ULONGLONG> g_ProcessedConfirmedResults;
 SRWLOCK g_LiveHealthLock = SRWLOCK_INIT;
 volatile LONG boxEspHealthUpdates = 0;
 volatile LONG boxEspHealthPlayerMatches = 0;
@@ -981,8 +981,6 @@ static void ForgetCachedHealthForPlayer(void* player) {
     if (healthState) g_LiveHealthByState.erase(healthState);
     g_LiveHealthByPlayer.erase(reinterpret_cast<uintptr_t>(player));
     g_ConfirmedHealthByPlayer.erase(reinterpret_cast<uintptr_t>(player));
-    if (g_ProcessedConfirmedResults.size() > 256)
-        g_ProcessedConfirmedResults.clear();
     ReleaseSRWLockExclusive(&g_LiveHealthLock);
 }
 
@@ -1120,70 +1118,13 @@ static void* FindPlayerByActor(uintptr_t actor) {
 }
 
 static void CacheConfirmedDamageResult(uintptr_t hitController, uintptr_t result) {
-    if (!hitController || !result || !base) return;
-    __try {
-        // dump1 bai : bak:
-        //   bak.cbqt (+0x10) = one actor, bai.cbqk (+0x38) = the other actor.
-        //   bai.dhsx / nzh() is the total confirmed damage for this hit result.
-        // Remote bdl instances are not replicated after every hit, so their pbq()
-        // remains 100. The local confirmed bai is the authoritative damage stream.
-        using GetDamageFn = int(__fastcall*)(uintptr_t, const Il2CppMethod*);
-        static GetDamageFn getDamage = nullptr;
-        if (!getDamage)
-            getDamage = reinterpret_cast<GetDamageFn>(
-                base + OFFSET_DAMAGE_RESULT_GET_HEALTH);
-        const int damage = getDamage(result, nullptr);
-        if (damage <= 0 || damage > 100) return;
-
-        const uintptr_t actorA = *reinterpret_cast<uintptr_t*>(result + 0x10);
-        const uintptr_t actorB = *reinterpret_cast<uintptr_t*>(result + 0x38);
-        void* localPlayer = GetLocalPC();
-        void* playerA = FindPlayerByActor(actorA);
-        void* playerB = FindPlayerByActor(actorB);
-        void* target = nullptr;
-        // Prefer bai's derived actor (+0x38), but reject the local shooter. The
-        // fallback handles reversed actor order without relying on obfuscated names.
-        if (playerB && playerB != localPlayer) target = playerB;
-        else if (playerA && playerA != localPlayer) target = playerA;
-        if (!target) return;
-
-        const ULONGLONG now = GetTickCount64();
-        const uintptr_t targetKey = reinterpret_cast<uintptr_t>(target);
-        AcquireSRWLockExclusive(&g_LiveHealthLock);
-        const auto processed = g_ProcessedConfirmedResults.find(result);
-        if (processed != g_ProcessedConfirmedResults.end() &&
-            now >= processed->second && now - processed->second < 20ULL) {
-            ReleaseSRWLockExclusive(&g_LiveHealthLock);
-            return;
-        }
-        g_ProcessedConfirmedResults[result] = now;
-        if (g_ProcessedConfirmedResults.size() > 256) {
-            for (auto it = g_ProcessedConfirmedResults.begin();
-                it != g_ProcessedConfirmedResults.end();) {
-                if (now < it->second || now - it->second > 5000ULL)
-                    it = g_ProcessedConfirmedResults.erase(it);
-                else ++it;
-            }
-        }
-
-        int previousHp = 100;
-        const auto previous = g_ConfirmedHealthByPlayer.find(targetKey);
-        if (previous != g_ConfirmedHealthByPlayer.end())
-            previousHp = previous->second;
-        const int confirmedHp = (std::max)(0, previousHp - damage);
-        g_ConfirmedHealthByPlayer[targetKey] = confirmedHp;
-        ReleaseSRWLockExclusive(&g_LiveHealthLock);
-
-        InterlockedExchange(&boxEspConfirmedHealth, confirmedHp);
-        InterlockedExchange(&boxEspConfirmedFieldA,
-            static_cast<LONG>(actorA != 0));
-        InterlockedExchange(&boxEspConfirmedFieldB,
-            static_cast<LONG>(actorB != 0));
-        InterlockedExchange(&boxEspConfirmedFieldC, damage);
-        InterlockedIncrement(&boxEspConfirmedHits);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    // bai.nzh/dhsx is a hit count (confirmed in-game: USP changed HP by exactly 1).
+    // Never use it as damage. Real damage is read from ccv -> ccr.cgid in the local
+    // HitMarkerView callback below, which also supplies the exact victim directly.
+    if (!hitController || !result) return;
+    InterlockedIncrement(&boxEspConfirmedHits);
 }
+
 void __fastcall hk_PlayerHitConfirmedA(uintptr_t hitController, uintptr_t result, const Il2CppMethod* method) {
     o_PlayerHitConfirmedA(hitController, result, method);
     CacheConfirmedDamageResult(hitController, result);
@@ -4026,6 +3967,39 @@ static void ReadLocalHitPayload(uintptr_t shotData, int& damage, char* hitbox, s
     }
 }
 
+static void UpdateEspHealthFromLocalHit(void* victim, uintptr_t shotData)
+{
+    if (!victim || !shotData) return;
+    const ULONGLONG now = GetTickCount64();
+    // The same ccv can pass through more than one HUD callback in the same frame.
+    // Keep the window narrow so a pooled object reused by the next shot is accepted.
+    if (shotData == espHealthLastShotData && now >= espHealthLastShotAt &&
+        now - espHealthLastShotAt < 20ULL)
+        return;
+
+    int damage = -1;
+    char hitbox[16] = {};
+    ReadLocalHitPayload(shotData, damage, hitbox, sizeof(hitbox));
+    if (damage <= 0 || damage > 500) return;
+
+    const uintptr_t playerKey = reinterpret_cast<uintptr_t>(victim);
+    AcquireSRWLockExclusive(&g_LiveHealthLock);
+    int previousHp = 100;
+    const auto previous = g_ConfirmedHealthByPlayer.find(playerKey);
+    if (previous != g_ConfirmedHealthByPlayer.end())
+        previousHp = previous->second;
+    const int confirmedHp = (std::max)(0, previousHp - damage);
+    g_ConfirmedHealthByPlayer[playerKey] = confirmedHp;
+    ReleaseSRWLockExclusive(&g_LiveHealthLock);
+
+    espHealthLastShotData = shotData;
+    espHealthLastShotAt = now;
+    InterlockedExchange(&boxEspConfirmedHealth, confirmedHp);
+    InterlockedExchange(&boxEspConfirmedFieldA, damage);
+    InterlockedExchange(&boxEspConfirmedFieldB, previousHp);
+    InterlockedExchange(&boxEspConfirmedFieldC, confirmedHp);
+}
+
 static bool IsPointOnBulletCast(const Vector3& point, const Vector3& start,
     const Vector3& direction, float maxDistance)
 {
@@ -4074,7 +4048,12 @@ static void AddBulletImpact(const Vector3& position, bool serverConfirmed)
 void __fastcall hk_HitMarkerView_LocalHit(uintptr_t instance, void* victim,
     uintptr_t shotData, const Il2CppMethod* method)
 {
-    // bbcz supplies the victim PlayerController directly. Accept it only when it is on
+    // bbru supplies the exact victim PlayerController and ccv payload. ccv.cgjc (+0x2C)
+    // and its ccr[] (+0x38, each ccr.cgid +0x2C) are real calculated weapon damage.
+    if (keyValidated && instance && instance == liveHitMarkerView && victim && shotData)
+        UpdateEspHealthFromLocalHit(victim, shotData);
+
+    // bbru supplies the victim PlayerController directly. Accept it only when it is on
     // the active local HUD and follows an actual local GunController -> HitCaster cast.
     if (keyValidated && bulletImpactsEnabled && instance && instance == liveHitMarkerView && victim && shotData && activeLocalHitCastDepth > 0) {
         Vector3 confirmedImpact, castEndFallback;
