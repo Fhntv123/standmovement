@@ -481,6 +481,7 @@ volatile LONG silentAntiAimCameraRestoreCalls = 0;
 ULONGLONG silentAntiAimLastSpinTick = 0;
 float silentAntiAimSpinYaw = 0.0f;
 bool silentAntiAimJitterFlip = false;
+ULONGLONG silentAntiAimLastJitterTick = 0;
 char silentAntiAimStatus[96] = "Disabled";
 volatile LONG silentAntiAimLateAimCalls = 0;
 volatile LONG silentAntiAimBonePasses = 0;
