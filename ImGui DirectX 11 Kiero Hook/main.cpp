@@ -950,6 +950,7 @@ SRWLOCK g_LivePlayerRegistryLock = SRWLOCK_INIT;
 std::unordered_map<uintptr_t, int> g_LiveHealthByState;
 std::unordered_map<uintptr_t, int> g_LiveHealthByPlayer;
 std::unordered_map<uintptr_t, int> g_ConfirmedHealthByPlayer;
+std::unordered_map<uintptr_t, ULONGLONG> g_ProcessedConfirmedResults;
 SRWLOCK g_LiveHealthLock = SRWLOCK_INIT;
 volatile LONG boxEspHealthUpdates = 0;
 volatile LONG boxEspHealthPlayerMatches = 0;
@@ -980,6 +981,8 @@ static void ForgetCachedHealthForPlayer(void* player) {
     if (healthState) g_LiveHealthByState.erase(healthState);
     g_LiveHealthByPlayer.erase(reinterpret_cast<uintptr_t>(player));
     g_ConfirmedHealthByPlayer.erase(reinterpret_cast<uintptr_t>(player));
+    if (g_ProcessedConfirmedResults.size() > 256)
+        g_ProcessedConfirmedResults.clear();
     ReleaseSRWLockExclusive(&g_LiveHealthLock);
 }
 
@@ -1117,10 +1120,69 @@ static void* FindPlayerByActor(uintptr_t actor) {
 }
 
 static void CacheConfirmedDamageResult(uintptr_t hitController, uintptr_t result) {
-    // dump1 changed the damage-result hierarchy/layout (boo/boq -> bai/bak).
-    // Keep hook counters only; do not dereference the old result fields.
-    if (!hitController || !result) return;
-    InterlockedIncrement(&boxEspConfirmedHits);
+    if (!hitController || !result || !base) return;
+    __try {
+        // dump1 bai : bak:
+        //   bak.cbqt (+0x10) = one actor, bai.cbqk (+0x38) = the other actor.
+        //   bai.dhsx / nzh() is the total confirmed damage for this hit result.
+        // Remote bdl instances are not replicated after every hit, so their pbq()
+        // remains 100. The local confirmed bai is the authoritative damage stream.
+        using GetDamageFn = int(__fastcall*)(uintptr_t, const Il2CppMethod*);
+        static GetDamageFn getDamage = nullptr;
+        if (!getDamage)
+            getDamage = reinterpret_cast<GetDamageFn>(
+                base + OFFSET_DAMAGE_RESULT_GET_HEALTH);
+        const int damage = getDamage(result, nullptr);
+        if (damage <= 0 || damage > 100) return;
+
+        const uintptr_t actorA = *reinterpret_cast<uintptr_t*>(result + 0x10);
+        const uintptr_t actorB = *reinterpret_cast<uintptr_t*>(result + 0x38);
+        void* localPlayer = GetLocalPC();
+        void* playerA = FindPlayerByActor(actorA);
+        void* playerB = FindPlayerByActor(actorB);
+        void* target = nullptr;
+        // Prefer bai's derived actor (+0x38), but reject the local shooter. The
+        // fallback handles reversed actor order without relying on obfuscated names.
+        if (playerB && playerB != localPlayer) target = playerB;
+        else if (playerA && playerA != localPlayer) target = playerA;
+        if (!target) return;
+
+        const ULONGLONG now = GetTickCount64();
+        const uintptr_t targetKey = reinterpret_cast<uintptr_t>(target);
+        AcquireSRWLockExclusive(&g_LiveHealthLock);
+        const auto processed = g_ProcessedConfirmedResults.find(result);
+        if (processed != g_ProcessedConfirmedResults.end() &&
+            now >= processed->second && now - processed->second < 20ULL) {
+            ReleaseSRWLockExclusive(&g_LiveHealthLock);
+            return;
+        }
+        g_ProcessedConfirmedResults[result] = now;
+        if (g_ProcessedConfirmedResults.size() > 256) {
+            for (auto it = g_ProcessedConfirmedResults.begin();
+                it != g_ProcessedConfirmedResults.end();) {
+                if (now < it->second || now - it->second > 5000ULL)
+                    it = g_ProcessedConfirmedResults.erase(it);
+                else ++it;
+            }
+        }
+
+        int previousHp = 100;
+        const auto previous = g_ConfirmedHealthByPlayer.find(targetKey);
+        if (previous != g_ConfirmedHealthByPlayer.end())
+            previousHp = previous->second;
+        const int confirmedHp = (std::max)(0, previousHp - damage);
+        g_ConfirmedHealthByPlayer[targetKey] = confirmedHp;
+        ReleaseSRWLockExclusive(&g_LiveHealthLock);
+
+        InterlockedExchange(&boxEspConfirmedHealth, confirmedHp);
+        InterlockedExchange(&boxEspConfirmedFieldA,
+            static_cast<LONG>(actorA != 0));
+        InterlockedExchange(&boxEspConfirmedFieldB,
+            static_cast<LONG>(actorB != 0));
+        InterlockedExchange(&boxEspConfirmedFieldC, damage);
+        InterlockedIncrement(&boxEspConfirmedHits);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 void __fastcall hk_PlayerHitConfirmedA(uintptr_t hitController, uintptr_t result, const Il2CppMethod* method) {
     o_PlayerHitConfirmedA(hitController, result, method);
@@ -1308,11 +1370,19 @@ static int GetPCHealth(void* pc) {
     // pbq can remain at its spawn default (100) until the next replication read.
     const int directHp = ReadHealthStateNow(state);
     int liveHp = -1;
+    int confirmedHp = -1;
     AcquireSRWLockShared(&g_LiveHealthLock);
     const auto liveIt = g_LiveHealthByState.find(state);
     if (liveIt != g_LiveHealthByState.end()) liveHp = liveIt->second;
+    const auto confirmedIt = g_ConfirmedHealthByPlayer.find(
+        reinterpret_cast<uintptr_t>(pc));
+    if (confirmedIt != g_ConfirmedHealthByPlayer.end())
+        confirmedHp = confirmedIt->second;
     ReleaseSRWLockShared(&g_LiveHealthLock);
-    const int hp = liveHp >= 0 && liveHp <= 100 ? liveHp : directHp;
+    // A locally confirmed bai result is newer than the remote bdl value, which can
+    // legally remain at its spawn default of 100 for the entire remote lifetime.
+    const int hp = confirmedHp >= 0 && confirmedHp <= 100 ? confirmedHp :
+        (liveHp >= 0 && liveHp <= 100 ? liveHp : directHp);
     if (hp >= 0 && hp <= 100)
         InterlockedExchange(&boxEspHealthLastRead, hp);
     return hp >= 0 && hp <= 100 ? hp : -1;
