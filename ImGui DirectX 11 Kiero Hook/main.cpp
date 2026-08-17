@@ -304,7 +304,7 @@ struct Matrix16 {
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0xC194C0
 #define OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE      0xC19D80  // AimController.och(Vector3)
 #define OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE      0xC19DD0  // AimController.oci() -> Vector3
-#define OFFSET_CAMERA_FIRE_ON_PRE_CULL                0x3441780 // Camera.FireOnPreCull(Camera), final render boundary
+#define OFFSET_AIMCONTROLLER_LATE_AIM               0xC19980  // AimController.nhi(), slot 27 post-aim pose pass
 #define OFFSET_AIMINGDATA_CLONE                      0xC1D170
 #define OFFSET_TRANSFORM_GET_EULERANGLES            0x348B3C0
 #define OFFSET_TRANSFORM_SET_EULERANGLES            0x348BD30
@@ -482,14 +482,9 @@ ULONGLONG silentAntiAimLastSpinTick = 0;
 float silentAntiAimSpinYaw = 0.0f;
 bool silentAntiAimJitterFlip = false;
 char silentAntiAimStatus[96] = "Disabled";
-uintptr_t silentAntiAimPoseBiped = 0;
-uintptr_t silentAntiAimPoseBones[6] = {};
-Quaternion silentAntiAimPoseBase[6] = {};
-bool silentAntiAimPoseCaptured = false;
-bool silentAntiAimPoseApplied = false;
-ULONGLONG silentAntiAimLastJitterTick = 0;
+volatile LONG silentAntiAimLateAimCalls = 0;
+volatile LONG silentAntiAimBonePasses = 0;
 float silentAntiAimRenderYaw = 0.0f;
-volatile LONG silentAntiAimRenderCalls = 0;
 bool thirdPersonEnabled = false;
 uintptr_t customizedThirdPersonPlayer = 0;
 Vector3 originalDefaultTpsOffset;
@@ -1949,7 +1944,7 @@ void(__fastcall* o_CameraMovementController_Update)(uintptr_t, const Il2CppMetho
 void(__fastcall* o_CameraMovementController_FixedUpdate)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 Vector3(__fastcall* o_AimController_GetHeadDirective)(uintptr_t, const Il2CppMethod*) = nullptr;
-void(__fastcall* o_Camera_FireOnPreCull)(uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_AimController_LateAim)(uintptr_t, const Il2CppMethod*) = nullptr;
 
 
 
@@ -2998,57 +2993,28 @@ static float GetRotationAntiAimYawOffset()
     return silentAntiAimSpinYaw;
 }
 
-static bool ReadAntiAimCameraAnglesUnsafe(
-    uintptr_t player, uintptr_t aimController,
-    uintptr_t* transform, Vector3* angles)
-{
-    if (!player || !aimController || !transform || !angles ||
-        !o_Transform_get_eulerAngles)
-        return false;
-    *transform = 0;
-    __try {
-        if (!thirdPersonEnabled)
-            *transform = *reinterpret_cast<uintptr_t*>(aimController + 0x68);
-        else {
-            const uintptr_t mainCamera =
-                *reinterpret_cast<uintptr_t*>(player + 0x80);
-            *transform = mainCamera ?
-                *reinterpret_cast<uintptr_t*>(mainCamera + 0x38) : 0;
-        }
-        if (!*transform) return false;
-        *angles = o_Transform_get_eulerAngles(*transform);
-        return isfinite(angles->x) && isfinite(angles->y) &&
-            isfinite(angles->z);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        *transform = 0;
-        return false;
-    }
-}
-
 static void UpdateRotationAntiAimTarget(uintptr_t player)
 {
     if (!silentAntiAimEnabled || !player) return;
     __try {
         const uintptr_t aimController =
             *reinterpret_cast<uintptr_t*>(player + 0xC8);
-        if (!aimController) return;
+        const uintptr_t aimingData = aimController ?
+            *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
+        if (!aimController || !aimingData) return;
 
-        uintptr_t cameraTransform = 0;
-        Vector3 cameraAngles;
-        if (!ReadAntiAimCameraAnglesUnsafe(
-                player, aimController, &cameraTransform, &cameraAngles))
-            return;
-
-        cameraAngles.x = NormalizeAngle180(cameraAngles.x);
-        cameraAngles.y = NormalizeAngle360(cameraAngles.y);
-        cameraAngles.z = 0.0f;
+        Vector3 realAngles = *reinterpret_cast<Vector3*>(aimingData + 0x18);
+        if (!isfinite(realAngles.x) || !isfinite(realAngles.y)) return;
+        realAngles.x = NormalizeAngle180(realAngles.x);
+        realAngles.y = NormalizeAngle360(realAngles.y);
+        realAngles.z = 0.0f;
         silentAntiAimLatestPlayer = player;
         silentAntiAimLatestController = aimController;
-        silentAntiAimLatestRealAimAngle = cameraAngles;
+        silentAntiAimLatestAimingData = aimingData;
+        silentAntiAimLatestRealAimAngle = realAngles;
         silentAntiAimLatestFakeAngles = Vector3(
             GetRotationAntiAimPitch(),
-            NormalizeAngle360(cameraAngles.y - GetRotationAntiAimYawOffset()),
+            NormalizeAngle360(realAngles.y - GetRotationAntiAimYawOffset()),
             0.0f);
         silentAntiAimLatestCommandTick = GetTickCount64();
         silentAntiAimLatestInputValid = true;
@@ -3151,138 +3117,91 @@ static bool IsFiniteQuaternion(const Quaternion& value)
         isfinite(value.z) && isfinite(value.w);
 }
 
-static void ClearRotationAntiAimPoseUnsafe()
+static bool IsLocalRotationAimControllerUnsafe(uintptr_t aimController)
 {
-    silentAntiAimPoseBiped = 0;
-    for (int i = 0; i < 6; ++i) {
-        silentAntiAimPoseBones[i] = 0;
-        silentAntiAimPoseBase[i] = {};
-    }
-    silentAntiAimPoseCaptured = false;
-    silentAntiAimPoseApplied = false;
-}
-
-static void RestoreRotationAntiAimPoseUnsafe()
-{
-    if (!silentAntiAimPoseApplied || !silentAntiAimPoseCaptured ||
-        !o_Transform_set_rotation_Injected ||
-        !o_Transform_set_localRotation_Injected)
-        return;
+    if (!aimController || !silentAntiAimLatestPlayer) return false;
     __try {
-        if (silentAntiAimPoseBones[0])
-            o_Transform_set_rotation_Injected(
-                silentAntiAimPoseBones[0], &silentAntiAimPoseBase[0]);
-        for (int i = 1; i < 6; ++i)
-            if (silentAntiAimPoseBones[i])
-                o_Transform_set_localRotation_Injected(
-                    silentAntiAimPoseBones[i], &silentAntiAimPoseBase[i]);
+        // dump1 AimController.cbsi owns PlayerController at +0xC8.
+        return *reinterpret_cast<uintptr_t*>(aimController + 0xC8) ==
+            silentAntiAimLatestPlayer;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-    silentAntiAimPoseApplied = false;
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-static bool CaptureRotationAntiAimPoseUnsafe(uintptr_t player)
+static bool ApplyRotationAntiAimAfterAimPassUnsafe(uintptr_t aimController)
 {
-    if (!player || !o_Transform_get_rotation_Injected ||
-        !o_Transform_get_localRotation_Injected)
+    if (!silentAntiAimEnabled || !IsLocalRotationAimControllerUnsafe(aimController) ||
+        !o_Transform_get_localRotation_Injected ||
+        !o_Transform_set_localRotation_Injected)
         return false;
     __try {
-        uintptr_t bipedMap = *reinterpret_cast<uintptr_t*>(player + 0x30);
-        if (!bipedMap)
-            bipedMap = *reinterpret_cast<uintptr_t*>(player + 0x118);
+        // Controller.caug is the exact BipedMap controlled by this AimController.
+        const uintptr_t bipedMap =
+            *reinterpret_cast<uintptr_t*>(aimController + 0x28);
         if (!bipedMap) return false;
-
-        uintptr_t bones[6] = {
-            *reinterpret_cast<uintptr_t*>(bipedMap + 0x88), // Hip: world rotation
-            *reinterpret_cast<uintptr_t*>(bipedMap + 0x30), // Spine
-            *reinterpret_cast<uintptr_t*>(bipedMap + 0x38), // Spine1
-            *reinterpret_cast<uintptr_t*>(bipedMap + 0x40), // Spine2
-            *reinterpret_cast<uintptr_t*>(bipedMap + 0x28), // Neck
-            *reinterpret_cast<uintptr_t*>(bipedMap + 0x20)  // Head
+        const uintptr_t hip = *reinterpret_cast<uintptr_t*>(bipedMap + 0x88);
+        const uintptr_t upper[5] = {
+            *reinterpret_cast<uintptr_t*>(bipedMap + 0x30),
+            *reinterpret_cast<uintptr_t*>(bipedMap + 0x38),
+            *reinterpret_cast<uintptr_t*>(bipedMap + 0x40),
+            *reinterpret_cast<uintptr_t*>(bipedMap + 0x28),
+            *reinterpret_cast<uintptr_t*>(bipedMap + 0x20)
         };
-        if (!bones[0] || !bones[5]) return false;
+        if (!hip || !upper[4]) return false;
 
-        Quaternion bases[6] = {};
-        o_Transform_get_rotation_Injected(bones[0], &bases[0]);
-        if (!IsFiniteQuaternion(bases[0])) return false;
-        for (int i = 1; i < 6; ++i) {
-            if (!bones[i]) continue;
-            o_Transform_get_localRotation_Injected(bones[i], &bases[i]);
-            if (!IsFiniteQuaternion(bases[i])) return false;
+        // nhi() has just finished the native aim/Mecanim pose. Add yaw directly
+        // to Hip.localRotation, matching the last repository path that visibly
+        // drove the character rig, but using dump1 quaternion APIs.
+        Quaternion hipBase = {};
+        o_Transform_get_localRotation_Injected(hip, &hipBase);
+        if (!IsFiniteQuaternion(hipBase)) return false;
+        const float yawOffset = NormalizeAngle180(
+            silentAntiAimLatestRealAimAngle.y -
+            silentAntiAimLatestFakeAngles.y);
+        const Quaternion yaw = QuaternionFromAxisAngle(
+            0.0f, 1.0f, 0.0f, yawOffset);
+        Quaternion hipTarget = MultiplyQuaternion(hipBase, yaw);
+        o_Transform_set_localRotation_Injected(hip, &hipTarget);
+
+        // Native aiming has already put the real camera pitch into the chain.
+        // Cancel it first, then apply the selected absolute Neutral/Down/Up.
+        const float pitchDelta = GetRotationAntiAimPitch() -
+            NormalizeAngle180(silentAntiAimLatestRealAimAngle.x);
+        const float weights[5] = { 0.12f, 0.18f, 0.25f, 0.20f, 0.25f };
+        for (int i = 0; i < 5; ++i) {
+            if (!upper[i]) continue;
+            Quaternion baseRotation = {};
+            o_Transform_get_localRotation_Injected(upper[i], &baseRotation);
+            if (!IsFiniteQuaternion(baseRotation)) continue;
+            const Quaternion pitch = QuaternionFromAxisAngle(
+                1.0f, 0.0f, 0.0f, pitchDelta * weights[i]);
+            Quaternion target = MultiplyQuaternion(baseRotation, pitch);
+            o_Transform_set_localRotation_Injected(upper[i], &target);
         }
-        silentAntiAimPoseBiped = bipedMap;
-        for (int i = 0; i < 6; ++i) {
-            silentAntiAimPoseBones[i] = bones[i];
-            silentAntiAimPoseBase[i] = bases[i];
-        }
-        silentAntiAimPoseCaptured = true;
+        silentAntiAimRenderYaw = yawOffset;
+        InterlockedIncrement(&silentAntiAimBonePasses);
         return true;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        ClearRotationAntiAimPoseUnsafe();
-        return false;
-    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-static bool ApplyRotationAntiAimAtRenderBoundaryUnsafe()
+void __fastcall hk_AimController_LateAim(
+    uintptr_t aimController, const Il2CppMethod* method)
 {
-    if (!keyValidated || !silentAntiAimEnabled ||
-        !silentAntiAimLatestInputValid || !silentAntiAimPoseCaptured ||
-        !o_Transform_set_rotation_Injected ||
-        !o_Transform_set_localRotation_Injected)
-        return false;
-    __try {
-        const float yawDelta = NormalizeAngle180(
-            silentAntiAimLatestFakeAngles.y -
-            silentAntiAimLatestRealAimAngle.y);
-        const Quaternion worldYaw = QuaternionFromAxisAngle(
-            0.0f, 1.0f, 0.0f, yawDelta);
-        Quaternion hip = MultiplyQuaternion(worldYaw,
-            silentAntiAimPoseBase[0]);
-        o_Transform_set_rotation_Injected(silentAntiAimPoseBones[0], &hip);
+    o_AimController_LateAim(aimController, method);
+    InterlockedIncrement(&silentAntiAimLateAimCalls);
+    if (!silentAntiAimEnabled) return;
 
-        const float pitch = silentAntiAimLatestFakeAngles.x;
-        const float weights[5] = { 0.08f, 0.12f, 0.18f, 0.24f, 0.38f };
-        for (int i = 1; i < 6; ++i) {
-            if (!silentAntiAimPoseBones[i]) continue;
-            const Quaternion pitchDelta = QuaternionFromAxisAngle(
-                1.0f, 0.0f, 0.0f, pitch * weights[i - 1]);
-            Quaternion upper = MultiplyQuaternion(
-                silentAntiAimPoseBase[i], pitchDelta);
-            o_Transform_set_localRotation_Injected(
-                silentAntiAimPoseBones[i], &upper);
-        }
-        silentAntiAimRenderYaw = yawDelta;
-        silentAntiAimPoseApplied = true;
-        InterlockedIncrement(&silentAntiAimRenderCalls);
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        ClearRotationAntiAimPoseUnsafe();
-        return false;
-    }
-}
-
-void __fastcall hk_Camera_FireOnPreCull(
-    uintptr_t camera, const Il2CppMethod* method)
-{
-    o_Camera_FireOnPreCull(camera, method);
-    if (!silentAntiAimEnabled || !camera) return;
-    __try {
-        const uintptr_t mainCamera = o_Camera_get_main ? o_Camera_get_main() : 0;
-        if (mainCamera && camera != mainCamera) return;
-        UpdateRotationAntiAimTarget(
-            liveHudLocalPlayer ? liveHudLocalPlayer :
-            reinterpret_cast<uintptr_t>(GetLocalPC()));
-        if (ApplyRotationAntiAimAtRenderBoundaryUnsafe())
-            strcpy_s(silentAntiAimStatus,
-                silentAntiAimMode == 0 ? "Rotation active: Static" :
-                (silentAntiAimMode == 1 ? "Rotation active: Jitter" :
-                                          "Rotation active: Spin"));
-        else
-            strcpy_s(silentAntiAimStatus, "Waiting for rendered BipedMap pose");
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    UpdateRotationAntiAimTarget(
+        liveHudLocalPlayer ? liveHudLocalPlayer :
+        reinterpret_cast<uintptr_t>(GetLocalPC()));
+    if (ApplyRotationAntiAimAfterAimPassUnsafe(aimController))
+        strcpy_s(silentAntiAimStatus,
+            silentAntiAimMode == 0 ? "Working: Static rotation" :
+            (silentAntiAimMode == 1 ? "Working: Jitter rotation" :
+                                      "Working: Spin rotation"));
+    else if (IsLocalRotationAimControllerUnsafe(aimController))
+        strcpy_s(silentAntiAimStatus, "Local AimController found; BipedMap unavailable");
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -3380,12 +3299,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
         sniperSightObject = liveAimView ? *(uintptr_t*)(liveAimView + 0x50) : 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
-    if (silentAntiAimPoseApplied) RestoreRotationAntiAimPoseUnsafe();
     o_HUDView_Update(instance, method);
-    if (silentAntiAimEnabled && liveHudLocalPlayer)
-        CaptureRotationAntiAimPoseUnsafe(liveHudLocalPlayer);
-    else if (!silentAntiAimEnabled)
-        ClearRotationAntiAimPoseUnsafe();
     if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
         SendPendingPixelSurfChatMessageUnsafe();
     UpdateFrozenCorpses();
@@ -7085,9 +6999,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             silentAntiAimLastSpinTick = 0;
             silentAntiAimSpinYaw = 0.0f;
             silentAntiAimLastJitterTick = 0;
-            InterlockedExchange(&silentAntiAimRenderCalls, 0);
-            RestoreRotationAntiAimPoseUnsafe();
-            ClearRotationAntiAimPoseUnsafe();
+            InterlockedExchange(&silentAntiAimLateAimCalls, 0);
+            InterlockedExchange(&silentAntiAimBonePasses, 0);
             strcpy_s(silentAntiAimStatus, !silentAntiAimEnabled ? "Disabled" :
                 (silentAntiAimHookReady ? "Rotation hook active" :
                                          "Rotation anti-aim hook failed"));
@@ -7115,8 +7028,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 1.0f, 1080.0f, "%.0f deg/s");
         }
         ImGui::TextWrapped("Status: %s", silentAntiAimStatus);
-        ImGui::TextDisabled("render:%ld yaw:%.1f",
-            InterlockedCompareExchange(&silentAntiAimRenderCalls, 0, 0),
+        ImGui::TextDisabled("late:%ld bones:%ld yaw:%.1f",
+            InterlockedCompareExchange(&silentAntiAimLateAimCalls, 0, 0),
+            InterlockedCompareExchange(&silentAntiAimBonePasses, 0, 0),
             silentAntiAimRenderYaw);
 
         ImGui::EndChild();
@@ -7726,14 +7640,14 @@ DWORD WINAPI HackThread(LPVOID)
         MH_EnableHook((LPVOID)(base + OFFSET_HITMARKERVIEW_LOCAL_HIT)) : hitLogCreateStatus;
     if (hitLogCreateStatus != MH_OK || hitLogEnableStatus != MH_OK)
         hitLogEnabled = false;
-    const MH_STATUS antiAimPreCullCreateStatus = MH_CreateHook(
-        (LPVOID)(base + OFFSET_CAMERA_FIRE_ON_PRE_CULL),
-        hk_Camera_FireOnPreCull,
-        (LPVOID*)&o_Camera_FireOnPreCull);
-    const MH_STATUS antiAimPreCullEnableStatus =
-        antiAimPreCullCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_CAMERA_FIRE_ON_PRE_CULL)) :
-        antiAimPreCullCreateStatus;
+    const MH_STATUS antiAimLateAimCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM),
+        hk_AimController_LateAim,
+        (LPVOID*)&o_AimController_LateAim);
+    const MH_STATUS antiAimLateAimEnableStatus =
+        antiAimLateAimCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM)) :
+        antiAimLateAimCreateStatus;
     const MH_STATUS antiAimInputCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND),
         hk_KeyboardControl_BuildCommand,
@@ -7742,8 +7656,8 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimInputCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND)) :
         antiAimInputCreateStatus;
-    silentAntiAimHookReady = antiAimPreCullCreateStatus == MH_OK &&
-        antiAimPreCullEnableStatus == MH_OK &&
+    silentAntiAimHookReady = antiAimLateAimCreateStatus == MH_OK &&
+        antiAimLateAimEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
         antiAimInputEnableStatus == MH_OK &&
         o_Transform_get_rotation_Injected &&
@@ -7751,9 +7665,9 @@ DWORD WINAPI HackThread(LPVOID)
         o_Transform_get_localRotation_Injected &&
         o_Transform_set_localRotation_Injected;
 
-    LINDY_LOG("[anti-aim] rotation input=%d/%d; preCull=%d/%d; quaternion=%p/%p; ready=%d",
+    LINDY_LOG("[anti-aim] rotation input=%d/%d; nhi=%d/%d; quaternion=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
-        (int)antiAimPreCullCreateStatus, (int)antiAimPreCullEnableStatus,
+        (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
         (void*)o_Transform_get_rotation_Injected,
         (void*)o_Transform_set_rotation_Injected,
         silentAntiAimHookReady ? 1 : 0);
