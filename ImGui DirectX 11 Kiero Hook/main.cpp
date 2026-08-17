@@ -3188,7 +3188,7 @@ void __fastcall hk_PlayerController_Command(
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
-static bool ReadAntiAimFpsCameraTransformUnsafe(uintptr_t* transform)static bool ReadAntiAimFpsCameraTransformUnsafe(uintptr_t* transform)
+static bool ReadAntiAimFpsCameraTransformUnsafe(uintptr_t* transform)
 {
     if (!transform) return false;
     *transform = 0;
@@ -3244,7 +3244,7 @@ static void RestoreAntiAimCameraTransformUnsafe(uintptr_t transform)
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
-static uintptr_t GetAuthoritativeLocalWeaponController();static uintptr_t GetAuthoritativeLocalWeaponController();
+static uintptr_t GetAuthoritativeLocalWeaponController();
 static uintptr_t GetCurrentLocalWeaponController();
 static void UpdateWeaponChams(uintptr_t knownWeaponController = 0);
 static void UpdateArmChams(uintptr_t knownArmsLodGroup = 0);
