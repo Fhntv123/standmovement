@@ -2175,7 +2175,7 @@ static void CaptureWorldColorMaterialsUnsafe()
     const uintptr_t localWeapon = GetCurrentLocalWeaponController();
     if (localWeapon) {
         const uintptr_t lodGroup = *reinterpret_cast<uintptr_t*>(localWeapon + 0x80);
-        const uintptr_t localRenderers = lodGroup ? *reinterpret_cast<uintptr_t*>(lodGroup + 0x40) : 0;
+        const uintptr_t localRenderers = lodGroup ? *reinterpret_cast<uintptr_t*>(lodGroup + 0x48) : 0;
         const size_t localCount = localRenderers ? *reinterpret_cast<size_t*>(localRenderers + 0x18) : 0;
         if (localCount <= 64) for (size_t i = 0; i < localCount; ++i) {
             const uintptr_t renderer = *reinterpret_cast<uintptr_t*>(localRenderers + 0x20 + i * sizeof(uintptr_t));
@@ -6115,8 +6115,11 @@ static void CaptureWeaponChamsRenderers(uintptr_t weaponController)
         return;
     }
     __try {
+        // dump1 WeaponController::<cgkv> WeaponLodGroup is +0x80.
+        // WeaponLodGroup::_meshRenderers moved to +0x48; +0x40 is now the
+        // single MeshFilter _activeLod and cannot be parsed as an Il2CppArray.
         const uintptr_t lodGroup = *(uintptr_t*)(weaponController + 0x80);
-        const uintptr_t renderers = lodGroup ? *(uintptr_t*)(lodGroup + 0x40) : 0;
+        const uintptr_t renderers = lodGroup ? *(uintptr_t*)(lodGroup + 0x48) : 0;
         if (!lodGroup) { strcpy_s(weaponChamsStatus, "WeaponLodGroup not found"); return; }
         if (!renderers) { strcpy_s(weaponChamsStatus, "Weapon renderer array not found"); return; }
         const size_t count = *(size_t*)(renderers + 0x18);
