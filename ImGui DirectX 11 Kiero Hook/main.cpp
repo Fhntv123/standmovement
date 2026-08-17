@@ -456,11 +456,16 @@ bool showTrail = false;
 bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool silentAntiAimEnabled = false;
-int silentAntiAimMode = 0; // 0 = Static, 1 = Jitter, 2 = Spin
+int silentAntiAimMode = 0; // 0 = Static, 1 = Jitter, 2 = Spin, 3 = Edge Yaw
 int silentAntiAimPitch = 0; // 0 = Neutral, 1 = Down, 2 = Up
 float silentAntiAimYaw = 180.0f;
 float silentAntiAimJitterRange = 45.0f;
 float silentAntiAimSpinSpeed = 180.0f; // degrees per second
+float silentAntiAimEdgeDistance = 3.0f;
+float silentAntiAimEdgeOffset = 0.0f;
+ULONGLONG silentAntiAimNextEdgeScan = 0;
+float silentAntiAimEdgeYaw = 0.0f;
+bool silentAntiAimEdgeFound = false;
 bool silentAntiAimHookReady = false;
 volatile LONG silentAntiAimInputBuildCalls = 0;
 volatile LONG silentAntiAimCommandCalls = 0;
@@ -3005,6 +3010,88 @@ static float GetRotationAntiAimYawOffset()
     return silentAntiAimSpinYaw;
 }
 
+static bool ResolveRotationAntiAimEdgeYawUnsafe(uintptr_t player,
+    float* outYaw)
+{
+    if (!player || !outYaw || !o_Physics_RaycastAll ||
+        !o_RaycastHit_get_collider || !o_Component_GetInParent ||
+        !g_PlayerControllerReflectionType)
+        return false;
+
+    const ULONGLONG now = GetTickCount64();
+    if (now < silentAntiAimNextEdgeScan) {
+        if (silentAntiAimEdgeFound) *outYaw = silentAntiAimEdgeYaw;
+        return silentAntiAimEdgeFound;
+    }
+    silentAntiAimNextEdgeScan = now + 100ULL;
+    silentAntiAimEdgeFound = false;
+
+    Vector3 origin;
+    if (!GetPCPosition(reinterpret_cast<void*>(player), origin)) return false;
+    origin.y += 0.85f;
+    float nearestDistance = silentAntiAimEdgeDistance + 0.001f;
+    float nearestYaw = 0.0f;
+
+    __try {
+        // A dense horizontal sweep finds the closest map face. RaycastAll lets us
+        // reject the local player's own collider instead of mistaking it for an edge.
+        constexpr int rayCount = 24;
+        constexpr float radiansPerRay = 6.2831853071795864769f / rayCount;
+        for (int ray = 0; ray < rayCount; ++ray) {
+            const float radians = static_cast<float>(ray) * radiansPerRay;
+            const Vector3 direction(sinf(radians), 0.0f, cosf(radians));
+            Il2CppArray* hits = o_Physics_RaycastAll(origin, direction,
+                silentAntiAimEdgeDistance, -1, 1, nullptr);
+            const uintptr_t array = reinterpret_cast<uintptr_t>(hits);
+            const size_t count = array ?
+                *reinterpret_cast<size_t*>(array + 0x18) : 0;
+            if (!array || count == 0 || count > 128) continue;
+            for (size_t i = 0; i < count; ++i) {
+                RaycastHitNative* hit = reinterpret_cast<RaycastHitNative*>(
+                    array + 0x20 + i * sizeof(RaycastHitNative));
+                if (!isfinite(hit->distance) || hit->distance < 0.08f ||
+                    hit->distance >= nearestDistance)
+                    continue;
+                const uintptr_t collider =
+                    o_RaycastHit_get_collider(hit, nullptr);
+                if (!collider) continue;
+                const uintptr_t hitPlayer = o_Component_GetInParent(collider,
+                    reinterpret_cast<uintptr_t>(g_PlayerControllerReflectionType),
+                    true, nullptr);
+                if (hitPlayer) continue;
+
+                // Unity's surface normal points out of the wall. Reverse it so fake
+                // yaw points into the nearest edge; Edge Offset can rotate that result.
+                const float normalLengthSquared =
+                    hit->normal.x * hit->normal.x +
+                    hit->normal.z * hit->normal.z;
+                float wallYaw = 0.0f;
+                if (isfinite(normalLengthSquared) &&
+                    normalLengthSquared > 0.001f) {
+                    wallYaw = atan2f(-hit->normal.x, -hit->normal.z) *
+                        57.29577951308232f;
+                } else {
+                    wallYaw = atan2f(direction.x, direction.z) *
+                        57.29577951308232f;
+                }
+                nearestDistance = hit->distance;
+                nearestYaw = NormalizeAngle360(
+                    wallYaw + silentAntiAimEdgeOffset);
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        silentAntiAimEdgeFound = false;
+        return false;
+    }
+
+    if (nearestDistance > silentAntiAimEdgeDistance) return false;
+    silentAntiAimEdgeYaw = nearestYaw;
+    silentAntiAimEdgeFound = true;
+    *outYaw = nearestYaw;
+    return true;
+}
+
 static void UpdateRotationAntiAimTarget(uintptr_t player)
 {
     if (!silentAntiAimEnabled || !player) return;
@@ -3024,10 +3111,17 @@ static void UpdateRotationAntiAimTarget(uintptr_t player)
         silentAntiAimLatestController = aimController;
         silentAntiAimLatestAimingData = aimingData;
         silentAntiAimLatestRealAimAngle = realAngles;
+        float fakeYaw = NormalizeAngle360(
+            realAngles.y - GetRotationAntiAimYawOffset());
+        if (silentAntiAimMode == 3) {
+            float edgeYaw = 0.0f;
+            if (ResolveRotationAntiAimEdgeYawUnsafe(player, &edgeYaw))
+                fakeYaw = edgeYaw;
+            else
+                fakeYaw = NormalizeAngle360(realAngles.y - silentAntiAimYaw);
+        }
         silentAntiAimLatestFakeAngles = Vector3(
-            GetRotationAntiAimPitch(),
-            NormalizeAngle360(realAngles.y - GetRotationAntiAimYawOffset()),
-            0.0f);
+            GetRotationAntiAimPitch(), fakeYaw, 0.0f);
         silentAntiAimLatestCommandTick = GetTickCount64();
         silentAntiAimLatestInputValid = true;
         liveHudLocalPlayer = player;
@@ -3309,7 +3403,9 @@ void __fastcall hk_AimController_LateAim(
         strcpy_s(silentAntiAimStatus,
             silentAntiAimMode == 0 ? "Working: Static rotation" :
             (silentAntiAimMode == 1 ? "Working: Jitter rotation" :
-                                      "Working: Spin rotation"));
+            (silentAntiAimMode == 2 ? "Working: Spin rotation" :
+            (silentAntiAimEdgeFound ? "Working: Edge Yaw locked" :
+                                      "Edge Yaw: no nearby wall"))));
     else if (IsLocalRotationAimControllerUnsafe(aimController))
         strcpy_s(silentAntiAimStatus,
             "Local AimController found; BipedMap unavailable");
@@ -7110,6 +7206,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             silentAntiAimSpinEpoch = 0;
             silentAntiAimSpinYaw = 0.0f;
             silentAntiAimLastJitterTick = 0;
+            silentAntiAimNextEdgeScan = 0;
+            silentAntiAimEdgeFound = false;
             InterlockedExchange(&silentAntiAimLateAimCalls, 0);
             InterlockedExchange(&silentAntiAimBonePasses, 0);
             strcpy_s(silentAntiAimStatus, !silentAntiAimEnabled ? "Disabled" :
@@ -7117,13 +7215,13 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                                          "Rotation anti-aim hook failed"));
         }
         ImGui::Spacing();
-        const char* antiAimModes[] = { "Static", "Jitter", "Spin" };
+        const char* antiAimModes[] = { "Static", "Jitter", "Spin", "Edge Yaw" };
         ImGui::SetNextItemWidth(190.0f);
-        ImGui::Combo("Mode", &silentAntiAimMode, antiAimModes, 3);
+        ImGui::Combo("Mode", &silentAntiAimMode, antiAimModes, 4);
         const char* pitchModes[] = { "Neutral", "Down", "Up" };
         ImGui::SetNextItemWidth(190.0f);
         ImGui::Combo("Pitch", &silentAntiAimPitch, pitchModes, 3);
-        if (silentAntiAimMode != 2) {
+        if (silentAntiAimMode != 2 && silentAntiAimMode != 3) {
             ImGui::SetNextItemWidth(190.0f);
             ImGui::SliderFloat("Yaw", &silentAntiAimYaw,
                 -180.0f, 180.0f, "%.0f deg");
@@ -7137,6 +7235,14 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SetNextItemWidth(190.0f);
             ImGui::SliderFloat("Spin Speed", &silentAntiAimSpinSpeed,
                 1.0f, 3600.0f, "%.0f deg/s");
+        }
+        if (silentAntiAimMode == 3) {
+            ImGui::SetNextItemWidth(190.0f);
+            ImGui::SliderFloat("Edge Distance", &silentAntiAimEdgeDistance,
+                0.5f, 6.0f, "%.1f m");
+            ImGui::SetNextItemWidth(190.0f);
+            ImGui::SliderFloat("Edge Offset", &silentAntiAimEdgeOffset,
+                -180.0f, 180.0f, "%.0f deg");
         }
         ImGui::TextWrapped("Status: %s", silentAntiAimStatus);
         ImGui::TextDisabled("late:%ld bones:%ld yaw:%.1f",
