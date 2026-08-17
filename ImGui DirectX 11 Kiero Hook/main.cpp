@@ -301,7 +301,6 @@ struct Matrix16 {
 #define OFFSET_AIMCONTROLLER_GET_HEAD_DIRECTIVE      0xC19DD0  // AimController.oci() -> Vector3
 #define OFFSET_CAMERA_FIRE_ON_PRE_CULL                0x3441780 // Camera.FireOnPreCull(Camera), final render boundary
 #define OFFSET_AIMINGDATA_CLONE                      0xC1D170
-#define OFFSET_AIMINGDATA_SERIALIZE                  0xC1CC50  // AimingData.neu(gfh), outgoing writer
 #define OFFSET_TRANSFORM_GET_EULERANGLES            0x348B3C0
 #define OFFSET_TRANSFORM_SET_EULERANGLES            0x348BD30
 #define OFFSET_TRANSFORM_GET_LOCALEULERANGLES       0x348B5A0
@@ -1928,7 +1927,6 @@ void(__fastcall* o_PlayerControls_Update)(uintptr_t, const Il2CppMethod*) = null
 void(__fastcall* o_CameraMovementController_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CameraMovementController_FixedUpdate)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
-void(__fastcall* o_AimingData_Serialize)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 Vector3(__fastcall* o_AimController_GetHeadDirective)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_Camera_FireOnPreCull)(uintptr_t, const Il2CppMethod*) = nullptr;
 
@@ -3170,54 +3168,62 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     return command;
 }
 
-void __fastcall hk_AimingData_Serialize(
-    uintptr_t aimingData, uintptr_t writer, const Il2CppMethod* method)
+static bool ApplyBipedMapAntiAimUnsafe()
 {
-    if (!o_AimingData_Serialize) return;
-    const ULONGLONG now = GetTickCount64();
-    // AimController.mwq() builds AimSnapshot.aimingData and may clone the live
-    // AimController.aimingData object. Therefore pointer equality with the live
-    // object is not a valid local-player test. AimingData.neu(gfh) is the writer
-    // direction; accept only serialization immediately following our local
-    // KeyboardControl.BuildCommand tick.
-    const bool recentLocalCommand = silentAntiAimLatestCommandTick &&
-        now >= silentAntiAimLatestCommandTick &&
-        now - silentAntiAimLatestCommandTick <= 250;
-    if (!aimingData || !writer || !keyValidated || !silentAntiAimEnabled ||
-        !silentAntiAimLatestInputValid || silentAntiAimLatestFiring ||
-        !recentLocalCommand) {
-        o_AimingData_Serialize(aimingData, writer, method);
-        return;
-    }
+    if (!keyValidated || !silentAntiAimEnabled ||
+        !silentAntiAimLatestInputValid || !silentAntiAimLatestPlayer ||
+        !o_Component_get_transform || !o_Transform_get_eulerAngles ||
+        !o_Transform_set_eulerAngles ||
+        !o_Transform_get_localEulerAngles ||
+        !o_Transform_set_localEulerAngles)
+        return false;
 
-    Vector3 savedAim;
-    Vector3 savedEuler;
-    bool patched = false;
     __try {
-        savedAim = *reinterpret_cast<Vector3*>(aimingData + 0x18);
-        savedEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
-        *reinterpret_cast<Vector3*>(aimingData + 0x18) =
-            silentAntiAimLatestFakeAngles;
-        *reinterpret_cast<Vector3*>(aimingData + 0x24) =
-            silentAntiAimLatestFakeAngles;
-        patched = true;
+        const uintptr_t player = silentAntiAimLatestPlayer;
+        if (liveHudLocalPlayer && player != liveHudLocalPlayer) return false;
+
+        // dump1 PlayerController._characterBiped +0x30 is the rendered TPS rig.
+        // The backing BipedMap at +0x118 is the same character skeleton on builds
+        // where the private field is not populated yet, so use it as a fallback.
+        uintptr_t bipedMap = *reinterpret_cast<uintptr_t*>(player + 0x30);
+        if (!bipedMap)
+            bipedMap = *reinterpret_cast<uintptr_t*>(player + 0x118);
+        if (!bipedMap) return false;
+
+        const uintptr_t modelRoot = o_Component_get_transform(bipedMap);
+        const uintptr_t head = *reinterpret_cast<uintptr_t*>(bipedMap + 0x20);
+        const uintptr_t neck = *reinterpret_cast<uintptr_t*>(bipedMap + 0x28);
+        const uintptr_t spine2 = *reinterpret_cast<uintptr_t*>(bipedMap + 0x40);
+        if (!modelRoot || !head) return false;
+
+        // Apply an absolute world yaw to the rendered model. This cannot feed the
+        // FPS/TPS camera because camera transforms are outside BipedMap.
+        Vector3 rootEuler = o_Transform_get_eulerAngles(modelRoot);
+        rootEuler.y = silentAntiAimLatestFakeAngles.y;
+        o_Transform_set_eulerAngles(modelRoot, rootEuler);
+
+        // The animation pass has already produced a fresh pose this frame. Add the
+        // selected pitch across the upper chain, strongest at Head.
+        const float pitch = silentAntiAimLatestFakeAngles.x;
+        if (spine2) {
+            Vector3 local = o_Transform_get_localEulerAngles(spine2);
+            local.x += pitch * 0.15f;
+            o_Transform_set_localEulerAngles(spine2, local);
+        }
+        if (neck) {
+            Vector3 local = o_Transform_get_localEulerAngles(neck);
+            local.x += pitch * 0.30f;
+            o_Transform_set_localEulerAngles(neck, local);
+        }
+        Vector3 headLocal = o_Transform_get_localEulerAngles(head);
+        headLocal.x += pitch * 0.55f;
+        o_Transform_set_localEulerAngles(head, headLocal);
+
+        InterlockedIncrement(&silentAntiAimCommandCalls);
+        return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        patched = false;
-    }
-
-    // The fake state exists only while outgoing bytes are written by neu(gfh).
-    o_AimingData_Serialize(aimingData, writer, method);
-
-    if (patched) {
-        __try {
-            *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAim;
-            *reinterpret_cast<Vector3*>(aimingData + 0x24) = savedEuler;
-            InterlockedIncrement(&silentAntiAimCommandCalls);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            silentAntiAimLatestInputValid = false;
-        }
+        return false;
     }
 }
 
@@ -3373,6 +3379,15 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
+    if (silentAntiAimEnabled) {
+        if (ApplyBipedMapAntiAimUnsafe())
+            strcpy_s(silentAntiAimStatus,
+                silentAntiAimMode == 0 ? "BipedMap anti-aim: Static" :
+                (silentAntiAimMode == 1 ? "BipedMap anti-aim: Jitter" :
+                                          "BipedMap anti-aim: Spin"));
+        else
+            strcpy_s(silentAntiAimStatus, "Waiting for rendered BipedMap");
+    }
     if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
         SendPendingPixelSurfChatMessageUnsafe();
     UpdateFrozenCorpses();
@@ -7056,7 +7071,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::TextColored(accent, "Anti-Aim");
         ImGui::Separator();
         ImGui::Spacing();
-        if (ImGui::Checkbox("Command Anti-Aim", &silentAntiAimEnabled)) {
+        if (ImGui::Checkbox("BipedMap Anti-Aim", &silentAntiAimEnabled)) {
             InterlockedExchange(&silentAntiAimInputBuildCalls, 0);
             InterlockedExchange(&silentAntiAimCommandCalls, 0);
             InterlockedExchange(&silentAntiAimAppliedCalls, 0);
@@ -7072,8 +7087,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             silentAntiAimLastSpinTick = 0;
             silentAntiAimSpinYaw = 0.0f;
             strcpy_s(silentAntiAimStatus, !silentAntiAimEnabled ? "Disabled" :
-                (silentAntiAimHookReady ? "Command hook active" :
-                                         "Command anti-aim hooks failed"));
+                (silentAntiAimHookReady ? "BipedMap hook active" :
+                                         "BipedMap anti-aim hook failed"));
         }
         ImGui::Spacing();
         const char* antiAimModes[] = { "Static", "Jitter", "Spin" };
@@ -7701,14 +7716,6 @@ DWORD WINAPI HackThread(LPVOID)
         MH_EnableHook((LPVOID)(base + OFFSET_HITMARKERVIEW_LOCAL_HIT)) : hitLogCreateStatus;
     if (hitLogCreateStatus != MH_OK || hitLogEnableStatus != MH_OK)
         hitLogEnabled = false;
-    const MH_STATUS antiAimSerializeCreateStatus = MH_CreateHook(
-        (LPVOID)(base + OFFSET_AIMINGDATA_SERIALIZE),
-        hk_AimingData_Serialize,
-        (LPVOID*)&o_AimingData_Serialize);
-    const MH_STATUS antiAimSerializeEnableStatus =
-        antiAimSerializeCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_AIMINGDATA_SERIALIZE)) :
-        antiAimSerializeCreateStatus;
     const MH_STATUS antiAimInputCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND),
         hk_KeyboardControl_BuildCommand,
@@ -7719,14 +7726,14 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimInputCreateStatus;
     silentAntiAimHookReady = antiAimInputCreateStatus == MH_OK &&
         antiAimInputEnableStatus == MH_OK &&
-        antiAimSerializeCreateStatus == MH_OK &&
-        antiAimSerializeEnableStatus == MH_OK &&
-        o_Transform_get_eulerAngles;
+        o_Component_get_transform && o_Transform_get_eulerAngles &&
+        o_Transform_set_eulerAngles && o_Transform_get_localEulerAngles &&
+        o_Transform_set_localEulerAngles;
 
-    LINDY_LOG("[anti-aim] input=%d/%d; serialize=%d/%d; camera_get=%p; ready=%d",
+    LINDY_LOG("[anti-aim] BipedMap input=%d/%d; transform=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
-        (int)antiAimSerializeCreateStatus, (int)antiAimSerializeEnableStatus,
         (void*)o_Transform_get_eulerAngles,
+        (void*)o_Transform_set_eulerAngles,
         silentAntiAimHookReady ? 1 : 0);
 
     // Capture the live ArmsLodGroup directly whenever its first-person visibility is enabled.
