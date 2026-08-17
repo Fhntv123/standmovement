@@ -1929,6 +1929,7 @@ void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2
 Vector3(__fastcall* o_AimController_GetHeadDirective)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_Camera_FireOnPreCull)(uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_AimingData_Clone)(uintptr_t, const Il2CppMethod*) = nullptr;
+void(__cdecl* o_Il2CppGcWbarrierSetField)(Il2CppObject*, void**, Il2CppObject*) = nullptr;
 
 
 
@@ -3042,6 +3043,7 @@ static void ApplyCommandAntiAim(uintptr_t player, uintptr_t command)
         return;
     }
     if (silentAntiAimLatestFiring) {
+        silentAntiAimLatestInputValid = false;
         strcpy_s(silentAntiAimStatus, "Real angles while firing");
         return;
     }
@@ -3049,24 +3051,20 @@ static void ApplyCommandAntiAim(uintptr_t player, uintptr_t command)
         const float realYaw = NormalizeAngle360(
             silentAntiAimLatestRealAimAngle.y);
         const float yawOffset = GetCommandAntiAimYawOffset();
-        const Vector3 fakeAngles(
+        silentAntiAimLatestFakeAngles = Vector3(
             GetCommandAntiAimPitch(),
             NormalizeAngle360(realYaw - yawOffset),
             0.0f);
-        // dump1 xl: bbb angle mode +0x29 (TargetAngle=0), Vector3 +0x2C.
-        // Fake angles exist only in the outgoing command, never in AimingData/camera.
-        *reinterpret_cast<uint8_t*>(command + 0x29) = 0;
-        *reinterpret_cast<Vector3*>(command + 0x2C) = fakeAngles;
-        FixAntiAimMovement(command, realYaw, fakeAngles.y);
-        silentAntiAimLatestFakeAngles = fakeAngles;
+        FixAntiAimMovement(command, realYaw, silentAntiAimLatestFakeAngles.y);
         InterlockedIncrement(&silentAntiAimAppliedCalls);
         strcpy_s(silentAntiAimStatus,
-            silentAntiAimMode == 0 ? "Command anti-aim: Static" :
-            (silentAntiAimMode == 1 ? "Command anti-aim: Jitter" :
-                                      "Command anti-aim: Spin"));
+            silentAntiAimMode == 0 ? "Snapshot anti-aim: Static" :
+            (silentAntiAimMode == 1 ? "Snapshot anti-aim: Jitter" :
+                                      "Snapshot anti-aim: Spin"));
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        strcpy_s(silentAntiAimStatus, "Command anti-aim write failed safely");
+        silentAntiAimLatestInputValid = false;
+        strcpy_s(silentAntiAimStatus, "Snapshot anti-aim failed safely");
     }
 }
 
@@ -3128,64 +3126,51 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
 
-    // Keep the builder camera-pure. Fake angles are scoped to the native
-    // PlayerController command call below and restored before it returns.
+    // Build fake network/body state from the real command, but never replace
+    // xl angle fields or live AimingData used by the local camera.
+    if (keyValidated && silentAntiAimEnabled && player && command)
+        ApplyCommandAntiAim(player, command);
     return command;
 }
 
-void __fastcall hk_PlayerController_Command(
-    uintptr_t player, uintptr_t command, float deltaTime,
-    const Il2CppMethod* method)
+uintptr_t __fastcall hk_AimController_GetSnapshot(
+    uintptr_t aimController, const Il2CppMethod* method)
 {
-    const bool localCommand = keyValidated && silentAntiAimEnabled &&
-        player && command && (!liveHudLocalPlayer || player == liveHudLocalPlayer);
-    if (!localCommand) {
-        o_PlayerController_Command(player, command, deltaTime, method);
-        return;
-    }
+    const uintptr_t snapshot = o_AimController_GetSnapshot(aimController, method);
+    if (!snapshot || !keyValidated || !silentAntiAimEnabled ||
+        !silentAntiAimLatestInputValid || silentAntiAimLatestFiring ||
+        aimController != silentAntiAimLatestController || !o_AimingData_Clone)
+        return snapshot;
 
-    uint8_t originalMode = 0;
-    Vector3 originalAngles;
-    float originalHorizontal = 0.0f;
-    float originalVertical = 0.0f;
-    uintptr_t aimingData = 0;
-    Vector3 originalAimAngle;
-    Vector3 originalEulerAngles;
-    bool captured = false;
     __try {
-        originalMode = *reinterpret_cast<uint8_t*>(command + 0x29);
-        originalAngles = *reinterpret_cast<Vector3*>(command + 0x2C);
-        originalHorizontal = *reinterpret_cast<float*>(command + 0x10);
-        originalVertical = *reinterpret_cast<float*>(command + 0x14);
-        const uintptr_t aimController =
-            *reinterpret_cast<uintptr_t*>(player + 0xC8);
-        aimingData = aimController ?
-            *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
-        if (aimingData) {
-            originalAimAngle = *reinterpret_cast<Vector3*>(aimingData + 0x18);
-            originalEulerAngles = *reinterpret_cast<Vector3*>(aimingData + 0x24);
+        // dump1 AimSnapshot.aimingData +0x18. Clone it so the outgoing/network
+        // pose has fake angles while AimController.aimingData +0x80 remains the
+        // real camera-owned object.
+        uintptr_t* snapshotDataField =
+            reinterpret_cast<uintptr_t*>(snapshot + 0x18);
+        const uintptr_t snapshotData = *snapshotDataField;
+        if (!snapshotData) return snapshot;
+        const uintptr_t fakeData = o_AimingData_Clone(snapshotData, nullptr);
+        if (!fakeData) return snapshot;
+        *reinterpret_cast<Vector3*>(fakeData + 0x18) =
+            silentAntiAimLatestFakeAngles;
+        *reinterpret_cast<Vector3*>(fakeData + 0x24) =
+            silentAntiAimLatestFakeAngles;
+        if (o_Il2CppGcWbarrierSetField) {
+            o_Il2CppGcWbarrierSetField(
+                reinterpret_cast<Il2CppObject*>(snapshot),
+                reinterpret_cast<void**>(snapshotDataField),
+                reinterpret_cast<Il2CppObject*>(fakeData));
+        } else {
+            // Fail closed: never publish an untracked managed reference.
+            return snapshot;
         }
-        captured = true;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { captured = false; }
-
-    if (captured) ApplyCommandAntiAim(player, command);
-    o_PlayerController_Command(player, command, deltaTime, method);
-
-    // xl is reused. Restore command and complete local view vectors synchronously,
-    // before any camera update can observe command-side pose state.
-    if (captured) __try {
-        *reinterpret_cast<uint8_t*>(command + 0x29) = originalMode;
-        *reinterpret_cast<Vector3*>(command + 0x2C) = originalAngles;
-        *reinterpret_cast<float*>(command + 0x10) = originalHorizontal;
-        *reinterpret_cast<float*>(command + 0x14) = originalVertical;
-        if (aimingData) {
-            *reinterpret_cast<Vector3*>(aimingData + 0x18) = originalAimAngle;
-            *reinterpret_cast<Vector3*>(aimingData + 0x24) = originalEulerAngles;
-        }
-        InterlockedIncrement(&silentAntiAimCommandCalls);
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return snapshot;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    InterlockedIncrement(&silentAntiAimCommandCalls);
+    return snapshot;
 }
 
 static bool ReadAntiAimFpsCameraTransformUnsafe(uintptr_t* transform)
@@ -7665,14 +7650,18 @@ DWORD WINAPI HackThread(LPVOID)
         MH_EnableHook((LPVOID)(base + OFFSET_HITMARKERVIEW_LOCAL_HIT)) : hitLogCreateStatus;
     if (hitLogCreateStatus != MH_OK || hitLogEnableStatus != MH_OK)
         hitLogEnabled = false;
-    const MH_STATUS antiAimCommandCreateStatus = MH_CreateHook(
-        (LPVOID)(base + OFFSET_PLAYERCONTROLLER_COMMAND),
-        hk_PlayerController_Command,
-        (LPVOID*)&o_PlayerController_Command);
-    const MH_STATUS antiAimCommandEnableStatus =
-        antiAimCommandCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_PLAYERCONTROLLER_COMMAND)) :
-        antiAimCommandCreateStatus;
+    o_AimingData_Clone = (uintptr_t(__fastcall*)(uintptr_t, const Il2CppMethod*))
+        (base + OFFSET_AIMINGDATA_CLONE);
+    o_Il2CppGcWbarrierSetField = reinterpret_cast<decltype(o_Il2CppGcWbarrierSetField)>(
+        GetProcAddress(reinterpret_cast<HMODULE>(base), "il2cpp_gc_wbarrier_set_field"));
+    const MH_STATUS antiAimSnapshotCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_AIMCONTROLLER_GET_SNAPSHOT),
+        hk_AimController_GetSnapshot,
+        (LPVOID*)&o_AimController_GetSnapshot);
+    const MH_STATUS antiAimSnapshotEnableStatus =
+        antiAimSnapshotCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_GET_SNAPSHOT)) :
+        antiAimSnapshotCreateStatus;
     const MH_STATUS antiAimInputCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND),
         hk_KeyboardControl_BuildCommand,
@@ -7681,14 +7670,16 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimInputCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND)) :
         antiAimInputCreateStatus;
-    silentAntiAimHookReady = antiAimCommandCreateStatus == MH_OK &&
-        antiAimCommandEnableStatus == MH_OK &&
+    silentAntiAimHookReady = antiAimSnapshotCreateStatus == MH_OK &&
+        antiAimSnapshotEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
-        antiAimInputEnableStatus == MH_OK;
+        antiAimInputEnableStatus == MH_OK &&
+        o_AimingData_Clone && o_Il2CppGcWbarrierSetField;
 
-    LINDY_LOG("[anti-aim] input=%d/%d; command=%d/%d; ready=%d",
+    LINDY_LOG("[anti-aim] input=%d/%d; snapshot=%d/%d; clone=%p; wb=%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
-        (int)antiAimCommandCreateStatus, (int)antiAimCommandEnableStatus,
+        (int)antiAimSnapshotCreateStatus, (int)antiAimSnapshotEnableStatus,
+        (void*)o_AimingData_Clone, (void*)o_Il2CppGcWbarrierSetField,
         silentAntiAimHookReady ? 1 : 0);
 
     // Capture the live ArmsLodGroup directly whenever its first-person visibility is enabled.
