@@ -3306,10 +3306,38 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(uintptr_t aimController)
             MultiplyQuaternion(yaw, baseRotation));
         o_Transform_set_rotation_Injected(hip, &hipTarget);
 
-        // och/oci is overwritten inside nhi in this build, so it cannot produce a
-        // visible pitch. Apply Up/Down directly to the current live Head after nhi.
-        // Like Hip yaw, this is stateless: no pointer or base rotation survives the call.
+        // Pitch the upper-body root, not only the Head. Spine is the parent of
+        // Spine1/Spine2/Neck/Head, so this makes the torso visibly follow Up/Down.
+        // All pointers and rotations are reacquired from this callback's live rig.
         if (silentAntiAimPitch != 0) {
+            const uintptr_t spine =
+                *reinterpret_cast<uintptr_t*>(bipedMap + 0x30);
+            if (spine && IsRotationAntiAimTransformAliveUnsafe(spine)) {
+                Quaternion spineBase = {};
+                o_Transform_get_rotation_Injected(spine, &spineBase);
+                const Vector3 spineForward = o_Transform_get_forward(spine);
+                const float horizontal = sqrtf(
+                    spineForward.x * spineForward.x +
+                    spineForward.z * spineForward.z);
+                if (IsFiniteQuaternion(spineBase) && isfinite(horizontal) &&
+                    horizontal > 0.0001f && isfinite(spineForward.y)) {
+                    spineBase = NormalizeQuaternionSafe(spineBase);
+                    const float currentPitch = -atan2f(
+                        spineForward.y, horizontal) * 57.29577951308232f;
+                    const float pitchDelta = NormalizeAngle180(
+                        GetRotationAntiAimPitch() - currentPitch);
+                    const float inverseHorizontal = 1.0f / horizontal;
+                    const Quaternion pitch = QuaternionFromAxisAngle(
+                        spineForward.z * inverseHorizontal, 0.0f,
+                        -spineForward.x * inverseHorizontal, pitchDelta);
+                    Quaternion spineTarget = NormalizeQuaternionSafe(
+                        MultiplyQuaternion(pitch, spineBase));
+                    o_Transform_set_rotation_Injected(spine, &spineTarget);
+                }
+            }
+
+            // The animation can carry a small local Head offset. Correct the Head
+            // after its parent Spine moved so the final visible direction stays exact.
             const uintptr_t head =
                 *reinterpret_cast<uintptr_t*>(bipedMap + 0x20);
             if (head && IsRotationAntiAimTransformAliveUnsafe(head)) {
@@ -3327,7 +3355,6 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(uintptr_t aimController)
                     const float pitchDelta = NormalizeAngle180(
                         GetRotationAntiAimPitch() - currentPitch);
                     const float inverseHorizontal = 1.0f / horizontal;
-                    // right = cross(worldUp, forward), normalized in XZ.
                     const Quaternion pitch = QuaternionFromAxisAngle(
                         headForward.z * inverseHorizontal, 0.0f,
                         -headForward.x * inverseHorizontal, pitchDelta);
@@ -3349,7 +3376,7 @@ void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
     // BuildCommand is the sole target producer. The native pose is completed first;
-    // then current-frame yaw/pitch are applied to the current live Hip/Head only.
+    // then current-frame yaw/pitch are applied to the current live Hip/Spine/Head only.
     const bool applyLocal = silentAntiAimEnabled &&
         IsLocalRotationAimControllerUnsafe(aimController);
     o_AimController_LateAim(aimController, method);
