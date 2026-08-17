@@ -2974,32 +2974,6 @@ static float GetCommandAntiAimYawOffset()
     return silentAntiAimSpinYaw;
 }
 
-static void FixAntiAimMovement(uintptr_t command, float realYaw, float fakeYaw)
-{
-    if (!command) return;
-    __try {
-        // dump.cs blr: bzxz +0x10, bzya +0x14.
-        const float horizontal = *reinterpret_cast<float*>(command + 0x10);
-        const float vertical = *reinterpret_cast<float*>(command + 0x14);
-        if (horizontal == 0.0f && vertical == 0.0f) return;
-        const float delta = NormalizeAngle180(fakeYaw - realYaw);
-        const float radians = delta * 0.017453292519943295f;
-        const float cosine = cosf(radians);
-        const float sine = sinf(radians);
-        float fixedHorizontal = cosine * horizontal - sine * vertical;
-        float fixedVertical = sine * horizontal + cosine * vertical;
-        const float length = sqrtf(
-            fixedHorizontal * fixedHorizontal + fixedVertical * fixedVertical);
-        if (length > 1.0f) {
-            fixedHorizontal /= length;
-            fixedVertical /= length;
-        }
-        *reinterpret_cast<float*>(command + 0x10) = fixedHorizontal;
-        *reinterpret_cast<float*>(command + 0x14) = fixedVertical;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-}
-
 static bool CaptureCommandAntiAimInput(uintptr_t player, uintptr_t command)
 {
     if (!silentAntiAimEnabled || !player || !command) return false;
@@ -3055,7 +3029,9 @@ static void ApplyCommandAntiAim(uintptr_t player, uintptr_t command)
             GetCommandAntiAimPitch(),
             NormalizeAngle360(realYaw - yawOffset),
             0.0f);
-        FixAntiAimMovement(command, realYaw, silentAntiAimLatestFakeAngles.y);
+        // The command keeps the user's real camera-relative movement axes.
+        // Fake yaw exists only in the cloned AimSnapshot, so rotating xl input
+        // here would invert W/A/S/D (especially with a 180-degree fake yaw).
         InterlockedIncrement(&silentAntiAimAppliedCalls);
         strcpy_s(silentAntiAimStatus,
             silentAntiAimMode == 0 ? "Snapshot anti-aim: Static" :
