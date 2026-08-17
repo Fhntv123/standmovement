@@ -3682,12 +3682,11 @@ void __fastcall hk_AimController_LateAim(
     InterlockedIncrement(&silentAntiAimLateAimCalls);
     if (!applyLocal) return;
 
-    // ArmsLodGroup is a skinned renderer. Its own/FPSP_go transform does not control
-    // where the hands are drawn: dump1 BipedMap shoulder/hand bones do. Save the two
-    // arm-chain roots and WeaponContainer after native nhi, apply body anti-aim, then
-    // restore those world poses only in first person. Their children retain the native
-    // animation, while Hip/Spine/Head still expose the fake pose to third person.
-    FirstPersonBonePose firstPersonBones[3] = {};
+    // ArmsLodGroup is a skinned renderer, so the hands follow BipedMap bones. The
+    // equipped weapon is separate: WeaponController::WeaponLodGroup (+0x80) owns its
+    // mesh hierarchy. Save both arm-chain roots, WeaponContainer and the live weapon
+    // LOD hierarchy after native nhi, then restore them only in first person.
+    FirstPersonBonePose firstPersonBones[6] = {};
     size_t firstPersonBoneCount = 0;
     if (!thirdPersonEnabled && o_Transform_SetPositionAndRotation_Injected) {
         __try {
@@ -3705,6 +3704,36 @@ void __fastcall hk_AimController_LateAim(
                             armRoot, &firstPersonBones[firstPersonBoneCount]))
                         ++firstPersonBoneCount;
                 }
+            }
+
+            // dump1: current WeaponController comes from WeaponryController +0x98;
+            // its WeaponLodGroup backing field is +0x80. Unlike the skinned hands,
+            // the weapon mesh follows this separate component transform.
+            const uintptr_t weaponController = GetCurrentLocalWeaponController();
+            const uintptr_t weaponLodGroup = weaponController ?
+                *reinterpret_cast<uintptr_t*>(weaponController + 0x80) : 0;
+            const uintptr_t weaponTransforms[] = {
+                weaponController && o_Component_get_transform ?
+                    o_Component_get_transform(weaponController) : 0,
+                weaponLodGroup && o_Component_get_transform ?
+                    o_Component_get_transform(weaponLodGroup) : 0,
+                weaponController ?
+                    *reinterpret_cast<uintptr_t*>(weaponController + 0x58) : 0,
+                weaponLodGroup ?
+                    *reinterpret_cast<uintptr_t*>(weaponLodGroup + 0x50) : 0
+            };
+            for (uintptr_t weaponTransform : weaponTransforms) {
+                bool duplicate = false;
+                for (size_t i = 0; i < firstPersonBoneCount; ++i)
+                    if (firstPersonBones[i].transform == weaponTransform) {
+                        duplicate = true;
+                        break;
+                    }
+                if (!duplicate &&
+                    firstPersonBoneCount < IM_ARRAYSIZE(firstPersonBones) &&
+                    CaptureFirstPersonBonePoseUnsafe(
+                        weaponTransform, &firstPersonBones[firstPersonBoneCount]))
+                    ++firstPersonBoneCount;
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
