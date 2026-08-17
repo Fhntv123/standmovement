@@ -2998,6 +2998,34 @@ static float GetRotationAntiAimYawOffset()
     return silentAntiAimSpinYaw;
 }
 
+static bool ReadAntiAimCameraAnglesUnsafe(
+    uintptr_t player, uintptr_t aimController,
+    uintptr_t* transform, Vector3* angles)
+{
+    if (!player || !aimController || !transform || !angles ||
+        !o_Transform_get_eulerAngles)
+        return false;
+    *transform = 0;
+    __try {
+        if (!thirdPersonEnabled)
+            *transform = *reinterpret_cast<uintptr_t*>(aimController + 0x68);
+        else {
+            const uintptr_t mainCamera =
+                *reinterpret_cast<uintptr_t*>(player + 0x80);
+            *transform = mainCamera ?
+                *reinterpret_cast<uintptr_t*>(mainCamera + 0x38) : 0;
+        }
+        if (!*transform) return false;
+        *angles = o_Transform_get_eulerAngles(*transform);
+        return isfinite(angles->x) && isfinite(angles->y) &&
+            isfinite(angles->z);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        *transform = 0;
+        return false;
+    }
+}
+
 static void UpdateRotationAntiAimTarget(uintptr_t player)
 {
     if (!silentAntiAimEnabled || !player) return;
