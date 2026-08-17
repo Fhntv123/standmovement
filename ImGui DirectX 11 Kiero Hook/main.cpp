@@ -210,8 +210,6 @@ struct Matrix16 {
 #define OFFSET_TRANSFORM_GET_FORWARD               0x348B490
 
 #define OFFSET_COMPONENT_GET_TRANSFORM             0x34747D0
-#define OFFSET_GAMEOBJECT_GET_TRANSFORM            0x3478630
-#define OFFSET_TRANSFORM_SET_POSITION_ROTATION_INJECTED 0x348B040
 
 #define OFFSET_GET_PLAYERCONTROLLER                0xBEA600  // PlayerManager.ncm() -> current player controller
 
@@ -971,7 +969,15 @@ t_PlayerManagerPlayerEvent o_PlayerManagerPlayerEventC = nullptr;
 
 static void ForgetCachedHealthForPlayer(void* player) {
     if (!player) return;
+    uintptr_t healthState = 0;
+    __try {
+        // dump.cs + il2cpp.h: PlayerController::_cawp_k__BackingField (+0x148).
+        healthState = *reinterpret_cast<uintptr_t*>(
+            reinterpret_cast<uintptr_t>(player) + 0x148);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { healthState = 0; }
     AcquireSRWLockExclusive(&g_LiveHealthLock);
+    if (healthState) g_LiveHealthByState.erase(healthState);
     g_LiveHealthByPlayer.erase(reinterpret_cast<uintptr_t>(player));
     g_ConfirmedHealthByPlayer.erase(reinterpret_cast<uintptr_t>(player));
     ReleaseSRWLockExclusive(&g_LiveHealthLock);
@@ -1280,28 +1286,36 @@ static void GetPCName(void* pc, char* output, int outputSize) {
 
 static int GetPCHealth(void* pc) {
     if (!pc) return -1;
-    uintptr_t states[3] = {};
+    uintptr_t state = 0;
     __try {
-        states[0] = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pc) + 0x148);
-        const uintptr_t network = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pc) + 0x108);
-        if (network) states[1] = *reinterpret_cast<uintptr_t*>(network + 0xA0);
-        const uintptr_t hit = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pc) + 0xF0);
-        if (hit) states[2] = *reinterpret_cast<uintptr_t*>(hit + 0x50);
-    } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
-    // Deliberately no cross-frame cache here: a hashmap keyed by pointer breaks the moment
-    // Unity/Il2Cpp reuses a PlayerController/bqw address for a respawned or newly joined
-    // player, silently showing that address's last (possibly dead) value on a full-health
-    // player who was never hit. The state pointer is recomputed from pc every call, so a
-    // respawn/rejoin naturally resolves to a brand-new bqw with its own fresh value.
-    int bestHp = 101;
-    for (uintptr_t state : states) { const int hp = ReadHealthStateNow(state); if (hp >= 0 && hp < bestHp) bestHp = hp; }
-    if (bestHp <= 100) { InterlockedExchange(&boxEspHealthLastRead, bestHp); return bestHp; }
+        // dump.cs PlayerController::<cawp> bdl and il2cpp.h
+        // PlayerController_Fields::_cawp_k__BackingField are both exactly +0x148.
+        state = *reinterpret_cast<uintptr_t*>(
+            reinterpret_cast<uintptr_t>(pc) + 0x148);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+    if (!state) return -1;
+    __try {
+        // bdl_Fields::ccgy is +0x40. Reject a recycled or mismatched health object.
+        if (*reinterpret_cast<uintptr_t*>(state + 0x40) !=
+            reinterpret_cast<uintptr_t>(pc))
+            return -1;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+
+    // bdl.pbq is authoritative for initial/respawn health. RPC/apply hooks update the
+    // same bdl instance after damage; prefer that state-keyed live value because remote
+    // pbq can remain at its spawn default (100) until the next replication read.
+    const int directHp = ReadHealthStateNow(state);
+    int liveHp = -1;
     AcquireSRWLockShared(&g_LiveHealthLock);
-    const auto confirmedIt = g_ConfirmedHealthByPlayer.find(reinterpret_cast<uintptr_t>(pc));
-    const bool hasConfirmed = confirmedIt != g_ConfirmedHealthByPlayer.end();
-    const int confirmedHp = hasConfirmed ? confirmedIt->second : -1;
+    const auto liveIt = g_LiveHealthByState.find(state);
+    if (liveIt != g_LiveHealthByState.end()) liveHp = liveIt->second;
     ReleaseSRWLockShared(&g_LiveHealthLock);
-    return hasConfirmed ? confirmedHp : -1;
+    const int hp = liveHp >= 0 && liveHp <= 100 ? liveHp : directHp;
+    if (hp >= 0 && hp <= 100)
+        InterlockedExchange(&boxEspHealthLastRead, hp);
+    return hp >= 0 && hp <= 100 ? hp : -1;
 }
 
 static const char* WeaponNameFromId(unsigned char id) {
@@ -1844,9 +1858,6 @@ void(__fastcall* o_Transform_get_localRotation_Injected)(uintptr_t, Quaternion*)
 void(__fastcall* o_Transform_set_localRotation_Injected)(uintptr_t, Quaternion*) = nullptr;
 
 uintptr_t(__fastcall* o_Component_get_transform)(uintptr_t) = nullptr;
-uintptr_t(__fastcall* o_GameObject_get_transform)(uintptr_t) = nullptr;
-void(__fastcall* o_Transform_SetPositionAndRotation_Injected)(
-    uintptr_t, Vector3*, Quaternion*) = nullptr;
 
 uintptr_t lastCharacterController = 0;
 
@@ -3186,7 +3197,7 @@ static bool ResolveRotationAntiAimEdgeYawUnsafe(uintptr_t player,
             !IsRotationAntiAimTransformAliveUnsafe(aimController))
             return false;
         const uintptr_t bipedMap =
-            *reinterpret_cast<uintptr_t*>(aimController + 0x28);
+            *reinterpret_cast<uintptr_t*>(player + 0x30);
         if (!bipedMap || !IsRotationAntiAimTransformAliveUnsafe(bipedMap))
             return false;
         const uintptr_t head =
@@ -3295,7 +3306,7 @@ static void UpdateRotationAntiAimTarget(uintptr_t player, bool jumpProfile)
         const uintptr_t aimingData =
             *reinterpret_cast<uintptr_t*>(aimController + 0x80);
         const uintptr_t bipedMap =
-            *reinterpret_cast<uintptr_t*>(aimController + 0x28);
+            *reinterpret_cast<uintptr_t*>(player + 0x30);
         if (!aimingData || !bipedMap ||
             !IsRotationAntiAimTransformAliveUnsafe(bipedMap)) {
             ClearRotationAntiAimTargetUnsafe();
@@ -3529,10 +3540,12 @@ static bool ReadLocalRotationAntiAimSnapshotUnsafe(
         return false;
     __try {
         if (!IsRotationAntiAimTransformAliveUnsafe(aimController)) return false;
-        const uintptr_t bipedMap =
-            *reinterpret_cast<uintptr_t*>(aimController + 0x28);
-        if (!bipedMap || !IsRotationAntiAimTransformAliveUnsafe(bipedMap) ||
-            *reinterpret_cast<uintptr_t*>(aimController + 0xC8) != player)
+        const uintptr_t ownerPlayer =
+            *reinterpret_cast<uintptr_t*>(aimController + 0xC8);
+        const uintptr_t bipedMap = ownerPlayer ?
+            *reinterpret_cast<uintptr_t*>(ownerPlayer + 0x30) : 0;
+        if (ownerPlayer != player || !bipedMap ||
+            !IsRotationAntiAimTransformAliveUnsafe(bipedMap))
             return false;
         *fakeYaw = fakeAngles.y;
         *fakePitch = fakeAngles.x;
@@ -3550,10 +3563,16 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(
         !o_Transform_set_rotation_Injected || !o_Transform_get_forward)
         return false;
     __try {
-        // Use only the Hip currently owned by this AimController. Nothing is cached,
-        // rooted or restored across callbacks, deaths, respawns or round transitions.
-        const uintptr_t bipedMap =
-            *reinterpret_cast<uintptr_t*>(aimController + 0x28);
+        // dump1/il2cpp.h: PlayerController::_characterBiped is +0x30 and
+        // PlayerController::_armsBiped is +0x38. Controller::BipedMap (+0x28) can
+        // switch to the FPS arms rig, which made hands and weapons fly away. Apply
+        // anti-aim only to the owner's character rig; never touch the arms rig.
+        const uintptr_t ownerPlayer =
+            *reinterpret_cast<uintptr_t*>(aimController + 0xC8);
+        const uintptr_t bipedMap = ownerPlayer ?
+            *reinterpret_cast<uintptr_t*>(ownerPlayer + 0x30) : 0;
+        if (!ownerPlayer || ownerPlayer != liveHudLocalPlayer || !bipedMap ||
+            !IsRotationAntiAimTransformAliveUnsafe(bipedMap)) return false;
         const uintptr_t hip = bipedMap ?
             *reinterpret_cast<uintptr_t*>(bipedMap + 0x88) : 0;
         if (!hip || !IsRotationAntiAimTransformAliveUnsafe(hip)) return false;
@@ -3648,31 +3667,12 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-struct FirstPersonBonePose {
-    uintptr_t transform;
-    Vector3 position;
-    Quaternion rotation;
-};
-
-static bool CaptureFirstPersonBonePoseUnsafe(
-    uintptr_t transform, FirstPersonBonePose* pose)
-{
-    if (!transform || !pose || !o_Transform_get_position ||
-        !o_Transform_get_rotation_Injected ||
-        !IsRotationAntiAimTransformAliveUnsafe(transform))
-        return false;
-    pose->transform = transform;
-    pose->position = o_Transform_get_position(transform);
-    o_Transform_get_rotation_Injected(transform, &pose->rotation);
-    return isfinite(pose->position.x) && isfinite(pose->position.y) &&
-        isfinite(pose->position.z) && IsFiniteQuaternion(pose->rotation);
-}
-
 void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
-    // BuildCommand is the sole target producer. The native pose is completed first;
-    // then current-frame yaw/pitch are applied to the current live Hip/Spine/Head only.
+    // Native nhi updates both rigs first. The anti-aim pass below targets only
+    // PlayerController::_characterBiped, so the separate _armsBiped/FPS weapon
+    // hierarchy remains entirely native in both first and third person.
     float fakeYaw = 0.0f;
     float fakePitch = 0.0f;
     const bool applyLocal = silentAntiAimEnabled &&
@@ -3680,79 +3680,9 @@ void __fastcall hk_AimController_LateAim(
             aimController, &fakeYaw, &fakePitch);
     o_AimController_LateAim(aimController, method);
     InterlockedIncrement(&silentAntiAimLateAimCalls);
-    if (!applyLocal) return;
-
-    // ArmsLodGroup is a skinned renderer, so the hands follow BipedMap bones. The
-    // equipped weapon is separate: WeaponController::WeaponLodGroup (+0x80) owns its
-    // mesh hierarchy. Save both arm-chain roots, WeaponContainer and the live weapon
-    // LOD hierarchy after native nhi, then restore them only in first person.
-    FirstPersonBonePose firstPersonBones[6] = {};
-    size_t firstPersonBoneCount = 0;
-    if (!thirdPersonEnabled && o_Transform_SetPositionAndRotation_Injected) {
-        __try {
-            const uintptr_t bipedMap =
-                *reinterpret_cast<uintptr_t*>(aimController + 0x28);
-            if (bipedMap && IsRotationAntiAimTransformAliveUnsafe(bipedMap)) {
-                const uintptr_t armRoots[] = {
-                    *reinterpret_cast<uintptr_t*>(bipedMap + 0x48),  // LeftShoulder
-                    *reinterpret_cast<uintptr_t*>(bipedMap + 0x68),  // RightShoulder
-                    *reinterpret_cast<uintptr_t*>(bipedMap + 0x250)  // WeaponContainer
-                };
-                for (uintptr_t armRoot : armRoots) {
-                    if (firstPersonBoneCount < IM_ARRAYSIZE(firstPersonBones) &&
-                        CaptureFirstPersonBonePoseUnsafe(
-                            armRoot, &firstPersonBones[firstPersonBoneCount]))
-                        ++firstPersonBoneCount;
-                }
-            }
-
-            // dump1: current WeaponController comes from WeaponryController +0x98;
-            // its WeaponLodGroup backing field is +0x80. Unlike the skinned hands,
-            // the weapon mesh follows this separate component transform.
-            const uintptr_t weaponController = GetCurrentLocalWeaponController();
-            const uintptr_t weaponLodGroup = weaponController ?
-                *reinterpret_cast<uintptr_t*>(weaponController + 0x80) : 0;
-            const uintptr_t weaponTransforms[] = {
-                weaponController && o_Component_get_transform ?
-                    o_Component_get_transform(weaponController) : 0,
-                weaponLodGroup && o_Component_get_transform ?
-                    o_Component_get_transform(weaponLodGroup) : 0,
-                weaponController ?
-                    *reinterpret_cast<uintptr_t*>(weaponController + 0x58) : 0,
-                weaponLodGroup ?
-                    *reinterpret_cast<uintptr_t*>(weaponLodGroup + 0x50) : 0
-            };
-            for (uintptr_t weaponTransform : weaponTransforms) {
-                bool duplicate = false;
-                for (size_t i = 0; i < firstPersonBoneCount; ++i)
-                    if (firstPersonBones[i].transform == weaponTransform) {
-                        duplicate = true;
-                        break;
-                    }
-                if (!duplicate &&
-                    firstPersonBoneCount < IM_ARRAYSIZE(firstPersonBones) &&
-                    CaptureFirstPersonBonePoseUnsafe(
-                        weaponTransform, &firstPersonBones[firstPersonBoneCount]))
-                    ++firstPersonBoneCount;
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            firstPersonBoneCount = 0;
-        }
-    }
-
-    ApplyRotationAntiAimAfterAimPassUnsafe(
-        aimController, fakeYaw, fakePitch);
-
-    for (size_t i = 0; i < firstPersonBoneCount; ++i) {
-        FirstPersonBonePose& pose = firstPersonBones[i];
-        __try {
-            if (IsRotationAntiAimTransformAliveUnsafe(pose.transform))
-                o_Transform_SetPositionAndRotation_Injected(
-                    pose.transform, &pose.position, &pose.rotation);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
+    if (applyLocal)
+        ApplyRotationAntiAimAfterAimPassUnsafe(
+            aimController, fakeYaw, fakePitch);
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -8335,11 +8265,6 @@ DWORD WINAPI HackThread(LPVOID)
     o_Transform_set_localRotation_Injected = (void(__fastcall*)(uintptr_t, Quaternion*))(base + OFFSET_TRANSFORM_SET_LOCALROTATION_INJECTED);
 
     o_Component_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_TRANSFORM);
-    o_GameObject_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(
-        base + OFFSET_GAMEOBJECT_GET_TRANSFORM);
-    o_Transform_SetPositionAndRotation_Injected =
-        (void(__fastcall*)(uintptr_t, Vector3*, Quaternion*))(
-            base + OFFSET_TRANSFORM_SET_POSITION_ROTATION_INJECTED);
 
     o_Camera_get_main = (uintptr_t(__fastcall*)())(base + OFFSET_CAMERA_MAIN);
     o_Time_get_deltaTime = (float(__fastcall*)())(base + OFFSET_TIME_GET_DELTATIME);
