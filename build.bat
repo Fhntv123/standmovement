@@ -22,7 +22,6 @@ echo [2/3] Building Release x64...
 
 set "MSBUILD_PATH="
 
-:: Ищем MSBuild в стандартных местах
 if exist "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" (
     set "MSBUILD_PATH=C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
     echo Found MSBuild: Community 2022
@@ -48,7 +47,6 @@ if exist "C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\MSBui
     echo Found MSBuild: Professional 2019
 )
 
-:: Пробуем через where
 if "%MSBUILD_PATH%"=="" (
     where msbuild >nul 2>nul
     if errorlevel 0 (
@@ -59,25 +57,18 @@ if "%MSBUILD_PATH%"=="" (
 
 if "%MSBUILD_PATH%"=="" (
     echo [!] MSBuild not found!
-    echo.
-    echo Please install Visual Studio or run:
-    echo "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
-    echo.
-    pause
     exit /b 1
 )
 
 :: === 3) Build ===
 echo.
-echo Running: %MSBUILD_PATH%
 "%MSBUILD_PATH%" "ImGui DirectX 11 Kiero Hook.sln" /p:Configuration=Release /p:Platform=x64 /v:minimal
 
 if errorlevel 1 (
     echo [!] Build failed!
-    pause
     exit /b 1
 )
 
 echo.
 echo Build finished successfully!
-pause
+:: НЕТ PAUSE!
