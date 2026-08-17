@@ -639,6 +639,8 @@ uintptr_t aimbotAutoFirePendingGun = 0;
 ULONGLONG aimbotAutoFirePendingUntil = 0;
 ULONGLONG aimbotAutoFireNextDecisionAt = 0;
 bool visibleAimbotCameraActive = false;
+uintptr_t visibleAimbotOwnerPlayer = 0;
+uintptr_t visibleAimbotAimController = 0;
 uintptr_t visibleAimbotAimingData = 0;
 Vector3 visibleAimbotOriginalAimAngle;
 Vector3 visibleAimbotOriginalAimEuler;
@@ -1606,6 +1608,24 @@ static bool LoadConfig(const char* requestedName)
     LOAD_INT(airJumpBind.key); LOAD_BOOL(airJumpBind.toggleMode); LOAD_INT(edgeBugBind.key); LOAD_BOOL(edgeBugBind.toggleMode);
     LOAD_INT(velocityBind.key); LOAD_BOOL(velocityBind.toggleMode); LOAD_INT(trailBind.key); LOAD_BOOL(trailBind.toggleMode);
     LOAD_INT(ammoBind.key); LOAD_BOOL(ammoBind.toggleMode); LOAD_INT(espBind.key); LOAD_BOOL(espBind.toggleMode);
+    // Config files are user-editable. Clamp every value used as an array index or
+    // collection bound before any pending refresh can consume it.
+    if (worldColorMode < 0 || worldColorMode > 6) worldColorMode = 0;
+    if (freezeCorpsesChamsMode < 0 || freezeCorpsesChamsMode > 7)
+        freezeCorpsesChamsMode = 0;
+    if (weaponChamsMode < 0 || weaponChamsMode > 7) weaponChamsMode = 0;
+    if (armChamsMode < 0 || armChamsMode > 7) armChamsMode = 0;
+    if (gloveChamsMode < 0 || gloveChamsMode > 7) gloveChamsMode = 0;
+    if (localPlayerChamsMode < 0 || localPlayerChamsMode > 7)
+        localPlayerChamsMode = 0;
+    if (enemyChamsMode < 0 || enemyChamsMode > 8) enemyChamsMode = 0;
+    if (maxTrailPoints < 2) maxTrailPoints = 2;
+    if (maxTrailPoints > 2048) maxTrailPoints = 2048;
+    if (!isfinite(trailMinDistance) || trailMinDistance < 0.01f)
+        trailMinDistance = 0.01f;
+    if (trailMinDistance > 10.0f) trailMinDistance = 10.0f;
+    if (espCount < 1) espCount = 1;
+    if (espCount > 64) espCount = 64;
     ReadConfigColor(path, "menuColor", menuColor); ReadConfigColor(path, "accentColor", accentColor);
     ReadConfigColor(path, "worldColor", worldColor); ReadConfigColor(path, "fogColor", fogColor);
     ReadConfigColor(path, "penetrableSurfaceFillColor", penetrableSurfaceFillColor);
@@ -2078,6 +2098,7 @@ static Color GetWorldAnimatedColor()
 
 static void ApplyWorldColorToCache()
 {
+    if (worldColorMode < 0 || worldColorMode > 6) worldColorMode = 0;
     if (worldColorMode == 0) {
         if (!o_Material_set_color) return;
         for (const WorldColorTintMaterial& entry : worldColorTintMaterials)
@@ -2107,6 +2128,7 @@ static void ApplyWorldColorToCache()
 
 static void AnimateWorldColor()
 {
+    if (worldColorMode < 0 || worldColorMode > 6) return;
     if (!worldColorEnabled || (worldColorMode != 5 && worldColorMode != 6) || !o_Material_set_color) return;
     const ULONGLONG now = GetTickCount64();
     if (now - worldColorLastAnimationTick < 33) return;
@@ -2686,6 +2708,7 @@ static void SetCorpseRigidbodiesFrozen(FrozenCorpseEntry& corpse, bool frozen)
     const auto setVelocity = reinterpret_cast<SetVectorFn>(base + OFFSET_RIGIDBODY_SET_VELOCITY);
     const auto setAngularVelocity = reinterpret_cast<SetVectorFn>(base + OFFSET_RIGIDBODY_SET_ANGULAR_VELOCITY);
     __try {
+        if (!corpse.ragdoll || !IsUnityObjectAliveUnsafe(corpse.ragdoll)) return;
         if (frozen && corpse.rigidbodies.empty()) {
             const uintptr_t bodies = *reinterpret_cast<uintptr_t*>(corpse.ragdoll + 0x40);
             const int count = bodies ? *reinterpret_cast<int*>(bodies + 0x18) : 0;
@@ -2695,7 +2718,7 @@ static void SetCorpseRigidbodiesFrozen(FrozenCorpseEntry& corpse, bool frozen)
             for (int i = 0; i < count; ++i) {
                 const uintptr_t body = *reinterpret_cast<uintptr_t*>(items + 0x20 +
                     static_cast<uintptr_t>(i) * sizeof(uintptr_t));
-                if (!body) continue;
+                if (!body || !IsUnityObjectAliveUnsafe(body)) continue;
                 const bool wasKinematic = getKinematic(body, nullptr);
                 const Vector3 zero(0.0f, 0.0f, 0.0f);
                 setVelocity(body, zero, nullptr);
@@ -2706,7 +2729,8 @@ static void SetCorpseRigidbodiesFrozen(FrozenCorpseEntry& corpse, bool frozen)
         }
         else if (!frozen) {
             for (const auto& body : corpse.rigidbodies)
-                if (body.first) setKinematic(body.first, body.second, nullptr);
+                if (body.first && IsUnityObjectAliveUnsafe(body.first))
+                    setKinematic(body.first, body.second, nullptr);
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -2757,13 +2781,15 @@ static uintptr_t CreateFrozenCorpseMaterial(uintptr_t originalMaterial, int mode
 
 static void SetupFrozenCorpseMaterial(FrozenCorpseEntry& corpse)
 {
-    if (!corpse.ragdoll || !o_Renderer_get_material || !o_Renderer_set_material ||
+    if (!corpse.ragdoll || !IsUnityObjectAliveUnsafe(corpse.ragdoll) ||
+        !o_Renderer_get_material || !o_Renderer_set_material ||
         !o_Material_set_color) return;
     __try {
         const uintptr_t lodGroup = *reinterpret_cast<uintptr_t*>(corpse.ragdoll + 0x90);
         corpse.renderer = lodGroup ? *reinterpret_cast<uintptr_t*>(lodGroup + 0x60) : 0;
-        corpse.originalMaterial = corpse.renderer ? o_Renderer_get_material(corpse.renderer) : 0;
-        if (!corpse.renderer || !corpse.originalMaterial) return;
+        if (!corpse.renderer || !IsUnityObjectAliveUnsafe(corpse.renderer)) return;
+        corpse.originalMaterial = o_Renderer_get_material(corpse.renderer);
+        if (!corpse.originalMaterial) return;
         corpse.materialMode = freezeCorpsesChamsMode;
         corpse.fadeMaterial = CreateFrozenCorpseMaterial(corpse.originalMaterial, corpse.materialMode);
         if (!corpse.fadeMaterial) return;
@@ -2784,10 +2810,17 @@ static void SetCorpseRendererVisibleUnsafe(uintptr_t renderer, bool visible);
 
 static void RestoreFrozenCorpseMaterial(FrozenCorpseEntry& corpse)
 {
-    SetCorpseRendererVisibleUnsafe(corpse.renderer, true);
-    DestroyOutlineCloneUnsafe(&corpse.outlineObject, &corpse.outlineRenderer);
+    const bool rendererAlive = corpse.renderer &&
+        IsUnityObjectAliveUnsafe(corpse.renderer);
+    if (rendererAlive) {
+        SetCorpseRendererVisibleUnsafe(corpse.renderer, true);
+        DestroyOutlineCloneUnsafe(&corpse.outlineObject, &corpse.outlineRenderer);
+    } else {
+        corpse.outlineObject = 0;
+        corpse.outlineRenderer = 0;
+    }
     __try {
-        if (corpse.renderer && corpse.originalMaterial && o_Renderer_set_material)
+        if (rendererAlive && corpse.originalMaterial && o_Renderer_set_material)
             o_Renderer_set_material(corpse.renderer, corpse.originalMaterial);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -2808,7 +2841,10 @@ static uintptr_t GetCorpseRendererUnsafe(uintptr_t ragdoll)
 
 static void SetCorpseRendererVisibleUnsafe(uintptr_t renderer, bool visible)
 {
-    __try { if (renderer && o_Renderer_set_enabled) o_Renderer_set_enabled(renderer, visible); }
+    __try {
+        if (renderer && IsUnityObjectAliveUnsafe(renderer) && o_Renderer_set_enabled)
+            o_Renderer_set_enabled(renderer, visible);
+    }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
@@ -2900,6 +2936,11 @@ static void UpdateFrozenCorpses()
     std::vector<std::pair<uintptr_t, uintptr_t>> releases;
     AcquireSRWLockExclusive(&frozenCorpseLock);
     for (auto it = frozenCorpses.begin(); it != frozenCorpses.end();) {
+        if (!it->ragdoll || !IsUnityObjectAliveUnsafe(it->ragdoll)) {
+            RestoreFrozenCorpseMaterial(*it);
+            it = frozenCorpses.erase(it);
+            continue;
+        }
         if (freezeCorpsesEnabled && now < it->releaseAt) {
             if (it->fadeMaterial && o_Material_set_color) {
                 float alpha = it->materialMode == 2 ? freezeCorpsesChamsAlpha : 1.0f;
@@ -3565,9 +3606,17 @@ static void BeginVisibleAimbotCameraSnap(const Vector3& targetDirection)
 {
     if (!visibleAimbotEnabled || !liveHudLocalPlayer) return;
     __try {
-        const uintptr_t aimController = *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
-        const uintptr_t aimingData = aimController ? *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
+        const uintptr_t ownerPlayer = liveHudLocalPlayer;
+        if (!IsRotationAntiAimTransformAliveUnsafe(ownerPlayer)) return;
+        const uintptr_t aimController =
+            *reinterpret_cast<uintptr_t*>(ownerPlayer + 0xC8);
+        if (!aimController ||
+            !IsRotationAntiAimTransformAliveUnsafe(aimController)) return;
+        const uintptr_t aimingData =
+            *reinterpret_cast<uintptr_t*>(aimController + 0x80);
         if (!aimingData) return;
+        visibleAimbotOwnerPlayer = ownerPlayer;
+        visibleAimbotAimController = aimController;
         visibleAimbotAimingData = aimingData;
         visibleAimbotOriginalAimAngle = *reinterpret_cast<Vector3*>(aimingData + 0x18);
         visibleAimbotOriginalAimEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
@@ -3577,38 +3626,84 @@ static void BeginVisibleAimbotCameraSnap(const Vector3& targetDirection)
         *reinterpret_cast<Vector3*>(aimingData + 0x18) = visibleAimbotTargetAim;
         *reinterpret_cast<Vector3*>(aimingData + 0x24) = visibleAimbotTargetAim;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { visibleAimbotCameraActive = false; visibleAimbotAimingData = 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        visibleAimbotCameraActive = false;
+        visibleAimbotOwnerPlayer = 0;
+        visibleAimbotAimController = 0;
+        visibleAimbotAimingData = 0;
+    }
+}
+
+static void ClearVisibleAimbotCameraStateUnsafe()
+{
+    visibleAimbotCameraActive = false;
+    visibleAimbotOwnerPlayer = 0;
+    visibleAimbotAimController = 0;
+    visibleAimbotAimingData = 0;
+    visibleAimbotRestoreAt = 0;
+}
+
+static bool VisibleAimbotCameraOwnerStillCurrentUnsafe()
+{
+    if (!visibleAimbotCameraActive || !visibleAimbotOwnerPlayer ||
+        !visibleAimbotAimController || !visibleAimbotAimingData ||
+        liveHudLocalPlayer != visibleAimbotOwnerPlayer)
+        return false;
+    __try {
+        if (!IsRotationAntiAimTransformAliveUnsafe(visibleAimbotOwnerPlayer) ||
+            !IsRotationAntiAimTransformAliveUnsafe(visibleAimbotAimController))
+            return false;
+        return *reinterpret_cast<uintptr_t*>(
+                   visibleAimbotOwnerPlayer + 0xC8) ==
+                   visibleAimbotAimController &&
+            *reinterpret_cast<uintptr_t*>(
+                   visibleAimbotAimController + 0x80) ==
+                   visibleAimbotAimingData;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
 static void UpdateVisibleAimbotCamera()
 {
-    if (!visibleAimbotCameraActive || !visibleAimbotAimingData) return;
+    if (!visibleAimbotCameraActive) return;
+    // Death/respawn can replace AimingData during the hold. Never restore or write
+    // through a pointer unless the complete owner chain still matches.
+    if (!VisibleAimbotCameraOwnerStillCurrentUnsafe()) {
+        ClearVisibleAimbotCameraStateUnsafe();
+        return;
+    }
     __try {
         if (GetTickCount64() < visibleAimbotRestoreAt) {
-            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x18) = visibleAimbotTargetAim;
-            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x24) = visibleAimbotTargetAim;
+            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x18) =
+                visibleAimbotTargetAim;
+            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x24) =
+                visibleAimbotTargetAim;
         } else {
-            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x18) = visibleAimbotOriginalAimAngle;
-            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x24) = visibleAimbotOriginalAimEuler;
-            visibleAimbotCameraActive = false;
-            visibleAimbotAimingData = 0;
+            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x18) =
+                visibleAimbotOriginalAimAngle;
+            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x24) =
+                visibleAimbotOriginalAimEuler;
+            ClearVisibleAimbotCameraStateUnsafe();
         }
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { visibleAimbotCameraActive = false; visibleAimbotAimingData = 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        ClearVisibleAimbotCameraStateUnsafe();
+    }
 }
 
 static void CancelVisibleAimbotCamera()
 {
     if (!visibleAimbotCameraActive) return;
-    __try {
-        if (visibleAimbotAimingData) {
-            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x18) = visibleAimbotOriginalAimAngle;
-            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x24) = visibleAimbotOriginalAimEuler;
+    if (VisibleAimbotCameraOwnerStillCurrentUnsafe()) {
+        __try {
+            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x18) =
+                visibleAimbotOriginalAimAngle;
+            *reinterpret_cast<Vector3*>(visibleAimbotAimingData + 0x24) =
+                visibleAimbotOriginalAimEuler;
         }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-    visibleAimbotCameraActive = false;
-    visibleAimbotAimingData = 0;
+    ClearVisibleAimbotCameraStateUnsafe();
 }
 
 static bool SendPendingPixelSurfChatMessageUnsafe()
@@ -3630,6 +3725,8 @@ static bool SendPendingPixelSurfChatMessageUnsafe()
     }
 }
 
+void InfinityAmmoLoop();
+
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
     __try {
@@ -3645,6 +3742,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     UpdateFrozenCorpses();
     UpdatePenetrableSurfaceVisualization();
     UpdateVisibleAimbotCamera();
+    InfinityAmmoLoop();
     if (thirdPersonEnabled && !InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0))
         ApplyCustomizedThirdPersonOffsets();
     if (InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0) && ApplyNativeThirdPersonState())
@@ -4543,15 +4641,31 @@ short __fastcall hk_GunController_GetCurrentAmmo(uintptr_t instance)
 void InfinityAmmoLoop()
 {
     if (!keyValidated || !base) return;
+    if (!infinityAmmo) {
+        frozenAmmoWeapon = 0;
+        frozenAmmoValue = -1;
+        return;
+    }
     __try {
-        const uintptr_t weaponController = GetCurrentLocalWeaponController();
-        if (!weaponController) return;
-        if (!infinityAmmo) {
+        // Never fall back to a weapon cached from the previous life/equip. Resolve
+        // the current local player's authoritative weapon on the game thread.
+        const uintptr_t weaponController =
+            GetAuthoritativeLocalWeaponController();
+        if (!weaponController ||
+            !IsUnityObjectAliveUnsafe(weaponController)) {
             frozenAmmoWeapon = 0;
             frozenAmmoValue = -1;
             return;
         }
-        const short currentAmmo = *reinterpret_cast<short*>(weaponController + OFFSET_CURRENT_AMMO);
+        const uintptr_t owner =
+            *reinterpret_cast<uintptr_t*>(weaponController + 0x20);
+        if (!liveHudLocalPlayer || owner != liveHudLocalPlayer) {
+            frozenAmmoWeapon = 0;
+            frozenAmmoValue = -1;
+            return;
+        }
+        const short currentAmmo = *reinterpret_cast<short*>(
+            weaponController + OFFSET_CURRENT_AMMO);
         InterlockedExchange(&infinityAmmoLastField, currentAmmo);
         if (weaponController != frozenAmmoWeapon || frozenAmmoValue < 0) {
             const short nativeAmmo = o_GunController_GetCurrentAmmo ?
@@ -4752,14 +4866,18 @@ bool WorldToScreen(const Vector3& pos, Vector2& screen, const Matrix16& matrix) 
 
 
 
+static uintptr_t GetLocalCharacterControllerUnsafe();
+
 bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
 
 {
 
     const bool grounded = o_CC_get_isGrounded(instance);
     if (!keyValidated) return grounded;
+    const uintptr_t localController = GetLocalCharacterControllerUnsafe();
+    if (!localController || instance != localController) return grounded;
 
-    if (airJump && instance) return true;
+    if (airJump) return true;
 
     const LONG64 releaseGraceUntil = InterlockedCompareExchange64(
         &pixelSurfReleaseGraceUntil, 0, 0);
@@ -4783,6 +4901,8 @@ Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 {
     Vector3 vel = o_CC_get_velocity(instance);
     if (!keyValidated) return vel;
+    const uintptr_t localController = GetLocalCharacterControllerUnsafe();
+    if (!localController || instance != localController) return vel;
 
     if (jbActive) {
         const float horSpeed = sqrtf(vel.x * vel.x + vel.z * vel.z);
@@ -4825,7 +4945,12 @@ static void RestoreWeaponChams()
 {
     if (o_Renderer_set_material) {
         for (WeaponChamsRenderer& entry : weaponChamsRenderers) {
-            if (!entry.renderer || !entry.originalMaterial) continue;
+            if (!entry.renderer || !entry.originalMaterial ||
+                !IsUnityObjectAliveUnsafe(entry.renderer)) {
+                entry.outlineObject = 0;
+                entry.outlineRenderer = 0;
+                continue;
+            }
             DestroyOutlineCloneUnsafe(&entry.outlineObject, &entry.outlineRenderer);
             __try { o_Renderer_set_material(entry.renderer, entry.originalMaterial); }
             __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -5237,6 +5362,7 @@ static Color GetWeaponChamsDisplayColor()
 
 static void AnimateWeaponChamsColor()
 {
+    if (weaponChamsMode < 0 || weaponChamsMode > 7) return;
     if (!weaponChamsEnabled || (weaponChamsMode != 5 && weaponChamsMode != 6) || !o_Material_set_color) return;
     const ULONGLONG now = GetTickCount64();
     if (now - weaponChamsLastAnimationTick < 33) return;
@@ -5291,6 +5417,7 @@ static Color GetArmChamsDisplayColor()
 
 static void AnimateArmChamsColor()
 {
+    if (armChamsMode < 0 || armChamsMode > 7) return;
     if (!armChamsEnabled || (armChamsMode != 5 && armChamsMode != 6) || !o_Material_set_color) return;
     const ULONGLONG now = GetTickCount64();
     if (now - armChamsLastAnimationTick < 33) return;
@@ -5321,7 +5448,12 @@ static void RestoreArmChams()
 {
     if (o_Renderer_set_material) {
         for (ArmChamsRenderer& entry : armChamsRenderers) {
-            if (!entry.renderer || !entry.originalMaterial) continue;
+            if (!entry.renderer || !entry.originalMaterial ||
+                !IsUnityObjectAliveUnsafe(entry.renderer)) {
+                entry.outlineObject = 0;
+                entry.outlineRenderer = 0;
+                continue;
+            }
             DestroyOutlineCloneUnsafe(&entry.outlineObject, &entry.outlineRenderer);
             __try { o_Renderer_set_material(entry.renderer, entry.originalMaterial); }
             __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -5440,6 +5572,7 @@ static Color GetGloveChamsDisplayColor()
 
 static void AnimateGloveChamsColor()
 {
+    if (gloveChamsMode < 0 || gloveChamsMode > 7) return;
     if (!gloveChamsEnabled || (gloveChamsMode != 5 && gloveChamsMode != 6) || !o_Material_set_color) return;
     const ULONGLONG now = GetTickCount64();
     if (now - gloveChamsLastAnimationTick < 33) return;
@@ -5454,7 +5587,12 @@ static void RestoreGloveChams()
 {
     if (o_Renderer_set_material) {
         for (GloveChamsRenderer& entry : gloveChamsRenderers) {
-            if (!entry.renderer || !entry.originalMaterial) continue;
+            if (!entry.renderer || !entry.originalMaterial ||
+                !IsUnityObjectAliveUnsafe(entry.renderer)) {
+                entry.outlineObject = 0;
+                entry.outlineRenderer = 0;
+                continue;
+            }
             DestroyOutlineCloneUnsafe(&entry.outlineObject, &entry.outlineRenderer);
             __try { o_Renderer_set_material(entry.renderer, entry.originalMaterial); }
             __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -5532,11 +5670,22 @@ static void UpdateGloveChams(uintptr_t knownArmsLodGroup)
 static uintptr_t GetCurrentLocalCharacterLodGroup()
 {
     __try {
-        const uintptr_t lodGroup = liveHudLocalPlayer ? *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0x130) : 0;
-        if (lodGroup) currentLocalCharacterLodGroupCache = lodGroup;
-        return lodGroup ? lodGroup : currentLocalCharacterLodGroupCache;
+        const uintptr_t lodGroup = liveHudLocalPlayer ?
+            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0x130) : 0;
+        if (lodGroup && IsUnityObjectAliveUnsafe(lodGroup)) {
+            currentLocalCharacterLodGroupCache = lodGroup;
+            return lodGroup;
+        }
+        if (currentLocalCharacterLodGroupCache &&
+            IsUnityObjectAliveUnsafe(currentLocalCharacterLodGroupCache))
+            return currentLocalCharacterLodGroupCache;
+        currentLocalCharacterLodGroupCache = 0;
+        return 0;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return currentLocalCharacterLodGroupCache; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        currentLocalCharacterLodGroupCache = 0;
+        return 0;
+    }
 }
 
 static uintptr_t EnsureSelectedLocalPlayerChamsMaterial()
@@ -5588,7 +5737,12 @@ static void RestoreLocalPlayerChams()
 {
     if (o_Renderer_set_material) {
         for (LocalPlayerChamsRenderer& entry : localPlayerChamsRenderers) {
-            if (!entry.renderer || !entry.originalMaterial) continue;
+            if (!entry.renderer || !entry.originalMaterial ||
+                !IsUnityObjectAliveUnsafe(entry.renderer)) {
+                entry.outlineObject = 0;
+                entry.outlineRenderer = 0;
+                continue;
+            }
             DestroyOutlineCloneUnsafe(&entry.outlineObject, &entry.outlineRenderer);
             __try {
                 o_Renderer_set_material(entry.renderer, entry.originalMaterial);
@@ -5674,6 +5828,7 @@ static void UpdateLocalPlayerChams(uintptr_t knownCharacterLodGroup)
 
 static void AnimateLocalPlayerChamsColor()
 {
+    if (localPlayerChamsMode < 0 || localPlayerChamsMode > 7) return;
     if (!localPlayerChamsEnabled || (localPlayerChamsMode != 5 && localPlayerChamsMode != 6) || !o_Material_set_color) return;
     const ULONGLONG now = GetTickCount64();
     if (now - localPlayerChamsLastAnimationTick < 33) return;
@@ -5748,7 +5903,12 @@ static void RestoreEnemyChams()
 {
     if (o_Renderer_set_material) {
         for (EnemyChamsRenderer& entry : enemyChamsRenderers) {
-            if (!entry.renderer || !entry.originalMaterial) continue;
+            if (!entry.renderer || !entry.originalMaterial ||
+                !IsUnityObjectAliveUnsafe(entry.renderer)) {
+                entry.outlineObject = 0;
+                entry.outlineRenderer = 0;
+                continue;
+            }
             DestroyOutlineCloneUnsafe(&entry.outlineObject, &entry.outlineRenderer);
             __try {
                 o_Renderer_set_material(entry.renderer, entry.originalMaterial);
@@ -5908,6 +6068,7 @@ static void UpdateEnemyChams()
 
 static void AnimateEnemyChamsColor()
 {
+    if (enemyChamsMode < 0 || enemyChamsMode > 8) return;
     if (!enemyChamsEnabled || (enemyChamsMode != 5 && enemyChamsMode != 6) || !o_Material_set_color) return;
     const ULONGLONG now = GetTickCount64();
     if (now - enemyChamsLastAnimationTick < 33) return;
@@ -6010,13 +6171,39 @@ static void UpdateWeaponChams(uintptr_t knownWeaponController)
     strcpy_s(weaponChamsStatus, "Active");
 }
 
+static uintptr_t GetLocalCharacterControllerUnsafe()
+{
+    const uintptr_t player = liveHudLocalPlayer;
+    if (!player) return 0;
+    __try {
+        if (!IsUnityObjectAliveUnsafe(player)) return 0;
+        // dump1: PlayerController::MovementController +0xE0, then its
+        // CharacterController backing field +0xD0.
+        const uintptr_t movement =
+            *reinterpret_cast<uintptr_t*>(player + 0xE0);
+        if (!movement || !IsUnityObjectAliveUnsafe(movement)) return 0;
+        const uintptr_t controller =
+            *reinterpret_cast<uintptr_t*>(movement + 0xD0);
+        return controller && IsUnityObjectAliveUnsafe(controller) ? controller : 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
 int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
-    if (keyValidated && instance) lastCharacterController = instance;
+    const uintptr_t localCharacterController =
+        GetLocalCharacterControllerUnsafe();
+    // CharacterController.Move runs for local player, enemies, bots and other
+    // scene actors. All feature maintenance and movement changes are local-only.
+    if (!instance || instance != localCharacterController)
+        return o_CC_Move(instance, motion);
+    if (keyValidated) lastCharacterController = instance;
 
     const uintptr_t currentLocalPlayer = liveHudLocalPlayer;
     const bool localPlayerChanged = currentLocalPlayer && currentLocalPlayer != chamsObservedLocalPlayer;
     if (localPlayerChanged) {
+        // Never carry a short camera snap into a replaced player/AimingData.
+        if (visibleAimbotCameraActive) ClearVisibleAimbotCameraStateUnsafe();
         // A different local PlayerController means a new match/respawn scene.
         // Old Unity renderer pointers may already be destroyed, so abandon them
         // without attempting Restore* on stale objects and rediscover everything.
@@ -6808,24 +6995,6 @@ DWORD WINAPI KeyListenerThread(LPVOID) {
 
 }
 
-
-
-DWORD WINAPI TrailThread(LPVOID) {
-
-    
-    
-    
-
-    while (!unloadRequested) {
-
-        InfinityAmmoLoop();
-        Sleep(16);
-
-    }
-
-    return 0;
-
-}
 
 
 
@@ -8123,6 +8292,7 @@ DWORD WINAPI MainThread(LPVOID lpReserved)
             init_hook = true;
 
         }
+        if (!init_hook) Sleep(100);
 
     } while (!init_hook);
 
@@ -8150,8 +8320,6 @@ BOOL WINAPI DllMain(HMODULE hMod, DWORD dwReason, LPVOID lpReserved)
         CreateThread(nullptr, 0, HackThread, hMod, 0, nullptr);
 
         CreateThread(nullptr, 0, KeyListenerThread, hMod, 0, nullptr);
-
-        CreateThread(nullptr, 0, TrailThread, hMod, 0, nullptr);
 
         break;
 
