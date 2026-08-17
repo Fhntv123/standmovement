@@ -210,6 +210,8 @@ struct Matrix16 {
 #define OFFSET_TRANSFORM_GET_FORWARD               0x348B490
 
 #define OFFSET_COMPONENT_GET_TRANSFORM             0x34747D0
+#define OFFSET_GAMEOBJECT_GET_TRANSFORM            0x3478630
+#define OFFSET_TRANSFORM_SET_POSITION_ROTATION_INJECTED 0x348B040
 
 #define OFFSET_GET_PLAYERCONTROLLER                0xBEA600  // PlayerManager.ncm() -> current player controller
 
@@ -1842,6 +1844,9 @@ void(__fastcall* o_Transform_get_localRotation_Injected)(uintptr_t, Quaternion*)
 void(__fastcall* o_Transform_set_localRotation_Injected)(uintptr_t, Quaternion*) = nullptr;
 
 uintptr_t(__fastcall* o_Component_get_transform)(uintptr_t) = nullptr;
+uintptr_t(__fastcall* o_GameObject_get_transform)(uintptr_t) = nullptr;
+void(__fastcall* o_Transform_SetPositionAndRotation_Injected)(
+    uintptr_t, Vector3*, Quaternion*) = nullptr;
 
 uintptr_t lastCharacterController = 0;
 
@@ -3657,8 +3662,52 @@ void __fastcall hk_AimController_LateAim(
     InterlockedIncrement(&silentAntiAimLateAimCalls);
     if (!applyLocal) return;
 
+    // dump1 AimController::FPSP_go (+0xA0) is the first-person viewmodel root.
+    // It may be parented under the live character hierarchy, so pitching Spine for
+    // anti-aim also drags the hands/weapon below the camera. Preserve its world pose
+    // only in first person; third person keeps the complete fake body pose.
+    uintptr_t fpsViewmodelTransform = 0;
+    Vector3 fpsViewmodelPosition = {};
+    Quaternion fpsViewmodelRotation = {};
+    bool restoreFpsViewmodel = false;
+    if (!thirdPersonEnabled && o_GameObject_get_transform &&
+        o_Transform_get_position && o_Transform_get_rotation_Injected &&
+        o_Transform_SetPositionAndRotation_Injected) {
+        __try {
+            const uintptr_t fpsViewmodel =
+                *reinterpret_cast<uintptr_t*>(aimController + 0xA0);
+            fpsViewmodelTransform = fpsViewmodel ?
+                o_GameObject_get_transform(fpsViewmodel) : 0;
+            if (fpsViewmodelTransform &&
+                IsRotationAntiAimTransformAliveUnsafe(fpsViewmodelTransform)) {
+                fpsViewmodelPosition =
+                    o_Transform_get_position(fpsViewmodelTransform);
+                o_Transform_get_rotation_Injected(
+                    fpsViewmodelTransform, &fpsViewmodelRotation);
+                restoreFpsViewmodel =
+                    isfinite(fpsViewmodelPosition.x) &&
+                    isfinite(fpsViewmodelPosition.y) &&
+                    isfinite(fpsViewmodelPosition.z) &&
+                    IsFiniteQuaternion(fpsViewmodelRotation);
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            restoreFpsViewmodel = false;
+        }
+    }
+
     ApplyRotationAntiAimAfterAimPassUnsafe(
         aimController, fakeYaw, fakePitch);
+
+    if (restoreFpsViewmodel) {
+        __try {
+            if (IsRotationAntiAimTransformAliveUnsafe(fpsViewmodelTransform))
+                o_Transform_SetPositionAndRotation_Injected(
+                    fpsViewmodelTransform, &fpsViewmodelPosition,
+                    &fpsViewmodelRotation);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -8241,6 +8290,11 @@ DWORD WINAPI HackThread(LPVOID)
     o_Transform_set_localRotation_Injected = (void(__fastcall*)(uintptr_t, Quaternion*))(base + OFFSET_TRANSFORM_SET_LOCALROTATION_INJECTED);
 
     o_Component_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(base + OFFSET_COMPONENT_GET_TRANSFORM);
+    o_GameObject_get_transform = (uintptr_t(__fastcall*)(uintptr_t))(
+        base + OFFSET_GAMEOBJECT_GET_TRANSFORM);
+    o_Transform_SetPositionAndRotation_Injected =
+        (void(__fastcall*)(uintptr_t, Vector3*, Quaternion*))(
+            base + OFFSET_TRANSFORM_SET_POSITION_ROTATION_INJECTED);
 
     o_Camera_get_main = (uintptr_t(__fastcall*)())(base + OFFSET_CAMERA_MAIN);
     o_Time_get_deltaTime = (float(__fastcall*)())(base + OFFSET_TIME_GET_DELTATIME);
