@@ -3306,6 +3306,38 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(uintptr_t aimController)
             MultiplyQuaternion(yaw, baseRotation));
         o_Transform_set_rotation_Injected(hip, &hipTarget);
 
+        // och/oci is overwritten inside nhi in this build, so it cannot produce a
+        // visible pitch. Apply Up/Down directly to the current live Head after nhi.
+        // Like Hip yaw, this is stateless: no pointer or base rotation survives the call.
+        if (silentAntiAimPitch != 0) {
+            const uintptr_t head =
+                *reinterpret_cast<uintptr_t*>(bipedMap + 0x20);
+            if (head && IsRotationAntiAimTransformAliveUnsafe(head)) {
+                Quaternion headBase = {};
+                o_Transform_get_rotation_Injected(head, &headBase);
+                const Vector3 headForward = o_Transform_get_forward(head);
+                const float horizontal = sqrtf(
+                    headForward.x * headForward.x +
+                    headForward.z * headForward.z);
+                if (IsFiniteQuaternion(headBase) && isfinite(horizontal) &&
+                    horizontal > 0.0001f && isfinite(headForward.y)) {
+                    headBase = NormalizeQuaternionSafe(headBase);
+                    const float currentPitch = -atan2f(
+                        headForward.y, horizontal) * 57.29577951308232f;
+                    const float pitchDelta = NormalizeAngle180(
+                        GetRotationAntiAimPitch() - currentPitch);
+                    const float inverseHorizontal = 1.0f / horizontal;
+                    // right = cross(worldUp, forward), normalized in XZ.
+                    const Quaternion pitch = QuaternionFromAxisAngle(
+                        headForward.z * inverseHorizontal, 0.0f,
+                        -headForward.x * inverseHorizontal, pitchDelta);
+                    Quaternion headTarget = NormalizeQuaternionSafe(
+                        MultiplyQuaternion(pitch, headBase));
+                    o_Transform_set_rotation_Injected(head, &headTarget);
+                }
+            }
+        }
+
         silentAntiAimRenderYaw = yawOffset;
         InterlockedIncrement(&silentAntiAimBonePasses);
         return true;
@@ -3316,44 +3348,11 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(uintptr_t aimController)
 void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
-    // BuildCommand is the sole target producer. Never enumerate players, resolve the
-    // local singleton or run Physics from inside this animation callback.
+    // BuildCommand is the sole target producer. The native pose is completed first;
+    // then current-frame yaw/pitch are applied to the current live Hip/Head only.
     const bool applyLocal = silentAntiAimEnabled &&
         IsLocalRotationAimControllerUnsafe(aimController);
-    Vector3 originalHeadDirective = {};
-    bool restoreHeadDirective = false;
-    if (applyLocal && silentAntiAimPitch != 0 &&
-        o_AimController_GetHeadDirective &&
-        o_AimController_SetHeadDirective) {
-        __try {
-            originalHeadDirective = o_AimController_GetHeadDirective(
-                aimController, nullptr);
-            if (isfinite(originalHeadDirective.x) &&
-                isfinite(originalHeadDirective.y) &&
-                isfinite(originalHeadDirective.z)) {
-                Vector3 fakeHeadDirective = originalHeadDirective;
-                fakeHeadDirective.x = GetRotationAntiAimPitch();
-                o_AimController_SetHeadDirective(
-                    aimController, fakeHeadDirective, nullptr);
-                restoreHeadDirective = true;
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            restoreHeadDirective = false;
-        }
-    }
-
     o_AimController_LateAim(aimController, method);
-
-    // Restore controller state synchronously after native nhi consumed fake pitch.
-    // Camera/input never retains the fake head directive between callbacks.
-    if (restoreHeadDirective) {
-        __try {
-            o_AimController_SetHeadDirective(
-                aimController, originalHeadDirective, nullptr);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
     InterlockedIncrement(&silentAntiAimLateAimCalls);
     if (!applyLocal) return;
 
@@ -3366,7 +3365,7 @@ void __fastcall hk_AimController_LateAim(
                                       "Edge Yaw: no nearby wall"))));
     else
         strcpy_s(silentAntiAimStatus,
-            "Local AimController found; live Hip unavailable");
+            "Local AimController found; live rig unavailable");
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -7837,8 +7836,7 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimInputEnableStatus == MH_OK &&
         o_Transform_get_rotation_Injected &&
         o_Transform_set_rotation_Injected && o_Transform_get_forward &&
-        o_Object_IsAlive && o_AimController_GetHeadDirective &&
-        o_AimController_SetHeadDirective;
+        o_Object_IsAlive;
 
     LINDY_LOG("[anti-aim] rotation input=%d/%d; nhi=%d/%d; quaternion=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
