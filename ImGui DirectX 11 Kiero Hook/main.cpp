@@ -3153,15 +3153,50 @@ static void ClearRotationAntiAimPoseStateUnsafe()
 
 static void RestoreRotationAntiAimPoseBeforeNativeUnsafe(uintptr_t aimController)
 {
-    if (!silentAntiAimPoseApplied ||
-        silentAntiAimPoseController != aimController ||
-        !o_Transform_set_localRotation_Injected)
+    if (!silentAntiAimPoseApplied) return;
+    if (silentAntiAimPoseController != aimController) {
+        // A different controller means respawn/spectator/round transition. Never
+        // carry Transform pointers across an IL2CPP object lifetime boundary.
+        ClearRotationAntiAimPoseStateUnsafe();
         return;
+    }
+    if (!o_Transform_set_rotation_Injected ||
+        !o_Transform_set_localRotation_Injected) {
+        ClearRotationAntiAimPoseStateUnsafe();
+        return;
+    }
     __try {
-        for (int i = 0; i < 6; ++i)
-            if (silentAntiAimPoseBones[i])
+        const uintptr_t currentBiped =
+            *reinterpret_cast<uintptr_t*>(aimController + 0x28);
+        if (!currentBiped || currentBiped != silentAntiAimPoseBiped) {
+            ClearRotationAntiAimPoseStateUnsafe();
+            return;
+        }
+        const uintptr_t currentBones[6] = {
+            *reinterpret_cast<uintptr_t*>(currentBiped + 0x88),
+            *reinterpret_cast<uintptr_t*>(currentBiped + 0x30),
+            *reinterpret_cast<uintptr_t*>(currentBiped + 0x38),
+            *reinterpret_cast<uintptr_t*>(currentBiped + 0x40),
+            *reinterpret_cast<uintptr_t*>(currentBiped + 0x28),
+            *reinterpret_cast<uintptr_t*>(currentBiped + 0x20)
+        };
+        // During model replacement the AimController may survive while its rig is
+        // destroyed. Validate every pointer against the currently owned BipedMap.
+        for (int i = 0; i < 6; ++i) {
+            if (currentBones[i] != silentAntiAimPoseBones[i]) {
+                ClearRotationAntiAimPoseStateUnsafe();
+                return;
+            }
+        }
+        // Hip is stored/applied in world space so yaw is around world-up rather
+        // than the animated pelvis' tilted local axis. Upper bones stay local.
+        if (currentBones[0])
+            o_Transform_set_rotation_Injected(
+                currentBones[0], &silentAntiAimPoseBase[0]);
+        for (int i = 1; i < 6; ++i)
+            if (currentBones[i])
                 o_Transform_set_localRotation_Injected(
-                    silentAntiAimPoseBones[i], &silentAntiAimPoseBase[i]);
+                    currentBones[i], &silentAntiAimPoseBase[i]);
         silentAntiAimPoseApplied = false;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -3201,7 +3236,12 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(uintptr_t aimController)
         if (!bones[0] || !bones[5]) return false;
 
         Quaternion bases[6] = {};
-        for (int i = 0; i < 6; ++i) {
+        // Capture Hip in world space. Its local Y axis is tilted by the animation,
+        // which made a nominal yaw lean/translate the visible body to the left.
+        o_Transform_get_rotation_Injected(bones[0], &bases[0]);
+        if (!IsFiniteQuaternion(bases[0])) return false;
+        bases[0] = NormalizeQuaternionSafe(bases[0]);
+        for (int i = 1; i < 6; ++i) {
             if (!bones[i]) continue;
             o_Transform_get_localRotation_Injected(bones[i], &bases[i]);
             if (!IsFiniteQuaternion(bases[i])) return false;
@@ -3219,9 +3259,11 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(uintptr_t aimController)
             silentAntiAimLatestFakeAngles.y);
         const Quaternion yaw = QuaternionFromAxisAngle(
             0.0f, 1.0f, 0.0f, yawOffset);
+        // Pre-multiply in world space: rotate around global vertical without
+        // introducing pelvis roll or a lateral skeleton offset.
         Quaternion hipTarget = NormalizeQuaternionSafe(
-            MultiplyQuaternion(bases[0], yaw));
-        o_Transform_set_localRotation_Injected(bones[0], &hipTarget);
+            MultiplyQuaternion(yaw, bases[0]));
+        o_Transform_set_rotation_Injected(bones[0], &hipTarget);
 
         const float pitchDelta = GetRotationAntiAimPitch() -
             NormalizeAngle180(silentAntiAimLatestRealAimAngle.x);
