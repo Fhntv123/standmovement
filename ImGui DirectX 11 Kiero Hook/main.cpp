@@ -2348,7 +2348,14 @@ static uintptr_t GetNativeCheatRuntime()
             { "DeathmatchWithBotsController", 0x2C0 },
             { "ArmsRaceWithBotsController", 0x2E8 },
             { "DuelV2WithBotsController", 0x298 },
-            { "RankedDefuseController", 0x328 }
+            // dump1/il2cpp.h: every RankedDefuse derivative inherits citi at +0x328.
+            // class_get_name returns the concrete runtime type, so list each playable
+            // variant instead of matching only the base RankedDefuseController name.
+            { "RankedDefuseController", 0x328 },
+            { "RankedDefuse2v2Controller", 0x328 },
+            { "RankedDefuseWithBotsController", 0x328 },
+            { "RankedDefuse2v2WithBotsController", 0x328 },
+            { "FreeForAllModificatorWithBotsController", 0x328 }
         };
         for (const RuntimeField& field : fields)
             if (strcmp(name, field.className) == 0)
