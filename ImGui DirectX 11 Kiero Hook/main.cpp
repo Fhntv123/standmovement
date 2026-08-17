@@ -3648,6 +3648,26 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+struct FirstPersonBonePose {
+    uintptr_t transform;
+    Vector3 position;
+    Quaternion rotation;
+};
+
+static bool CaptureFirstPersonBonePoseUnsafe(
+    uintptr_t transform, FirstPersonBonePose* pose)
+{
+    if (!transform || !pose || !o_Transform_get_position ||
+        !o_Transform_get_rotation_Injected ||
+        !IsRotationAntiAimTransformAliveUnsafe(transform))
+        return false;
+    pose->transform = transform;
+    pose->position = o_Transform_get_position(transform);
+    o_Transform_get_rotation_Injected(transform, &pose->rotation);
+    return isfinite(pose->position.x) && isfinite(pose->position.y) &&
+        isfinite(pose->position.z) && IsFiniteQuaternion(pose->rotation);
+}
+
 void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
@@ -3662,49 +3682,45 @@ void __fastcall hk_AimController_LateAim(
     InterlockedIncrement(&silentAntiAimLateAimCalls);
     if (!applyLocal) return;
 
-    // dump1 AimController::FPSP_go (+0xA0) is the first-person viewmodel root.
-    // It may be parented under the live character hierarchy, so pitching Spine for
-    // anti-aim also drags the hands/weapon below the camera. Preserve its world pose
-    // only in first person; third person keeps the complete fake body pose.
-    uintptr_t fpsViewmodelTransform = 0;
-    Vector3 fpsViewmodelPosition = {};
-    Quaternion fpsViewmodelRotation = {};
-    bool restoreFpsViewmodel = false;
-    if (!thirdPersonEnabled && o_GameObject_get_transform &&
-        o_Transform_get_position && o_Transform_get_rotation_Injected &&
-        o_Transform_SetPositionAndRotation_Injected) {
+    // ArmsLodGroup is a skinned renderer. Its own/FPSP_go transform does not control
+    // where the hands are drawn: dump1 BipedMap shoulder/hand bones do. Save the two
+    // arm-chain roots and WeaponContainer after native nhi, apply body anti-aim, then
+    // restore those world poses only in first person. Their children retain the native
+    // animation, while Hip/Spine/Head still expose the fake pose to third person.
+    FirstPersonBonePose firstPersonBones[3] = {};
+    size_t firstPersonBoneCount = 0;
+    if (!thirdPersonEnabled && o_Transform_SetPositionAndRotation_Injected) {
         __try {
-            const uintptr_t fpsViewmodel =
-                *reinterpret_cast<uintptr_t*>(aimController + 0xA0);
-            fpsViewmodelTransform = fpsViewmodel ?
-                o_GameObject_get_transform(fpsViewmodel) : 0;
-            if (fpsViewmodelTransform &&
-                IsRotationAntiAimTransformAliveUnsafe(fpsViewmodelTransform)) {
-                fpsViewmodelPosition =
-                    o_Transform_get_position(fpsViewmodelTransform);
-                o_Transform_get_rotation_Injected(
-                    fpsViewmodelTransform, &fpsViewmodelRotation);
-                restoreFpsViewmodel =
-                    isfinite(fpsViewmodelPosition.x) &&
-                    isfinite(fpsViewmodelPosition.y) &&
-                    isfinite(fpsViewmodelPosition.z) &&
-                    IsFiniteQuaternion(fpsViewmodelRotation);
+            const uintptr_t bipedMap =
+                *reinterpret_cast<uintptr_t*>(aimController + 0x28);
+            if (bipedMap && IsRotationAntiAimTransformAliveUnsafe(bipedMap)) {
+                const uintptr_t armRoots[] = {
+                    *reinterpret_cast<uintptr_t*>(bipedMap + 0x48),  // LeftShoulder
+                    *reinterpret_cast<uintptr_t*>(bipedMap + 0x68),  // RightShoulder
+                    *reinterpret_cast<uintptr_t*>(bipedMap + 0x250)  // WeaponContainer
+                };
+                for (uintptr_t armRoot : armRoots) {
+                    if (firstPersonBoneCount < IM_ARRAYSIZE(firstPersonBones) &&
+                        CaptureFirstPersonBonePoseUnsafe(
+                            armRoot, &firstPersonBones[firstPersonBoneCount]))
+                        ++firstPersonBoneCount;
+                }
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
-            restoreFpsViewmodel = false;
+            firstPersonBoneCount = 0;
         }
     }
 
     ApplyRotationAntiAimAfterAimPassUnsafe(
         aimController, fakeYaw, fakePitch);
 
-    if (restoreFpsViewmodel) {
+    for (size_t i = 0; i < firstPersonBoneCount; ++i) {
+        FirstPersonBonePose& pose = firstPersonBones[i];
         __try {
-            if (IsRotationAntiAimTransformAliveUnsafe(fpsViewmodelTransform))
+            if (IsRotationAntiAimTransformAliveUnsafe(pose.transform))
                 o_Transform_SetPositionAndRotation_Injected(
-                    fpsViewmodelTransform, &fpsViewmodelPosition,
-                    &fpsViewmodelRotation);
+                    pose.transform, &pose.position, &pose.rotation);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
