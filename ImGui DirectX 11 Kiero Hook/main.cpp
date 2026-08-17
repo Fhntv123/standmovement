@@ -3316,13 +3316,47 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(uintptr_t aimController)
 void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
-    o_AimController_LateAim(aimController, method);
-    InterlockedIncrement(&silentAntiAimLateAimCalls);
-    if (!silentAntiAimEnabled) return;
+    // BuildCommand is the sole target producer. Never enumerate players, resolve the
+    // local singleton or run Physics from inside this animation callback.
+    const bool applyLocal = silentAntiAimEnabled &&
+        IsLocalRotationAimControllerUnsafe(aimController);
+    Vector3 originalHeadDirective = {};
+    bool restoreHeadDirective = false;
+    if (applyLocal && silentAntiAimPitch != 0 &&
+        o_AimController_GetHeadDirective &&
+        o_AimController_SetHeadDirective) {
+        __try {
+            originalHeadDirective = o_AimController_GetHeadDirective(
+                aimController, nullptr);
+            if (isfinite(originalHeadDirective.x) &&
+                isfinite(originalHeadDirective.y) &&
+                isfinite(originalHeadDirective.z)) {
+                Vector3 fakeHeadDirective = originalHeadDirective;
+                fakeHeadDirective.x = GetRotationAntiAimPitch();
+                o_AimController_SetHeadDirective(
+                    aimController, fakeHeadDirective, nullptr);
+                restoreHeadDirective = true;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            restoreHeadDirective = false;
+        }
+    }
 
-    UpdateRotationAntiAimTarget(
-        liveHudLocalPlayer ? liveHudLocalPlayer :
-        reinterpret_cast<uintptr_t>(GetLocalPC()));
+    o_AimController_LateAim(aimController, method);
+
+    // Restore controller state synchronously after native nhi consumed fake pitch.
+    // Camera/input never retains the fake head directive between callbacks.
+    if (restoreHeadDirective) {
+        __try {
+            o_AimController_SetHeadDirective(
+                aimController, originalHeadDirective, nullptr);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    InterlockedIncrement(&silentAntiAimLateAimCalls);
+    if (!applyLocal) return;
+
     if (ApplyRotationAntiAimAfterAimPassUnsafe(aimController))
         strcpy_s(silentAntiAimStatus,
             silentAntiAimMode == 0 ? "Working: Static rotation" :
@@ -3330,9 +3364,9 @@ void __fastcall hk_AimController_LateAim(
             (silentAntiAimMode == 2 ? "Working: Spin rotation" :
             (silentAntiAimEdgeFound ? "Working: Edge Yaw locked" :
                                       "Edge Yaw: no nearby wall"))));
-    else if (IsLocalRotationAimControllerUnsafe(aimController))
+    else
         strcpy_s(silentAntiAimStatus,
-            "Local AimController found; BipedMap unavailable");
+            "Local AimController found; live Hip unavailable");
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -7803,7 +7837,8 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimInputEnableStatus == MH_OK &&
         o_Transform_get_rotation_Injected &&
         o_Transform_set_rotation_Injected && o_Transform_get_forward &&
-        o_Object_IsAlive;
+        o_Object_IsAlive && o_AimController_GetHeadDirective &&
+        o_AimController_SetHeadDirective;
 
     LINDY_LOG("[anti-aim] rotation input=%d/%d; nhi=%d/%d; quaternion=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
