@@ -397,6 +397,7 @@ BindConfig aimbotBind = { 0, true };
 BindConfig visibleAimbotBind = { 0, true };
 BindConfig autoWallBind = { 0, true };
 BindConfig autoFireBind = { 0, true };
+BindConfig autoStopBind = { 0, true };
 BindConfig antiAimBind = { 0, true };
 BindConfig espBind = { 0, true };
 BindConfig velocityBind = { 0, true }; // Show Velocity
@@ -649,6 +650,11 @@ float aimbotAutoWallMinDamage = 1.0f;
 float aimbotFov = 360.0f;
 float visibleAimbotHoldMs = 140.0f;
 bool aimbotAutoFire = false;
+bool aimbotAutoStop = false;
+bool aimbotAutoStopHasTarget = false;
+uintptr_t aimbotAutoStopLastGun = 0;
+ULONGLONG aimbotAutoStopNextScanAt = 0;
+volatile LONG aimbotAutoStopApplications = 0;
 uintptr_t aimbotLastHitParameters = 0;
 uint32_t aimbotLastHitParametersHandle = 0;
 volatile LONG aimbotAutoFired = 0;
@@ -1555,7 +1561,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(adminBhopEnabled); SAVE_BOOL(adminBhopCsStrafeMode); SAVE_FLOAT(adminBhopMaxSpeed);
     SAVE_BOOL(airJump); SAVE_BOOL(edgeBugEnabled); SAVE_FLOAT(edgeBugPullForce);
     SAVE_BOOL(velocityLimiterEnabled); SAVE_FLOAT(velocityLimit);
-    SAVE_BOOL(aimbotEnabled); SAVE_BOOL(visibleAimbotEnabled); SAVE_BOOL(aimbotVisibleCheck); SAVE_BOOL(aimbotAutoWall); SAVE_FLOAT(aimbotAutoWallMinDamage); SAVE_BOOL(aimbotAutoFire);
+    SAVE_BOOL(aimbotEnabled); SAVE_BOOL(visibleAimbotEnabled); SAVE_BOOL(aimbotVisibleCheck); SAVE_BOOL(aimbotAutoWall); SAVE_FLOAT(aimbotAutoWallMinDamage); SAVE_BOOL(aimbotAutoFire); SAVE_BOOL(aimbotAutoStop);
     SAVE_BOOL(silentAntiAimEnabled); SAVE_INT(silentAntiAimMode); SAVE_INT(silentAntiAimPitch); SAVE_FLOAT(silentAntiAimYaw); SAVE_FLOAT(silentAntiAimJitterRange); SAVE_FLOAT(silentAntiAimSpinSpeed); SAVE_FLOAT(silentAntiAimEdgeDistance); SAVE_FLOAT(silentAntiAimEdgeOffset); SAVE_INT(silentAntiAimJumpMode); SAVE_INT(silentAntiAimJumpPitch); SAVE_FLOAT(silentAntiAimJumpYaw); SAVE_FLOAT(silentAntiAimJumpJitterRange); SAVE_FLOAT(silentAntiAimJumpSpinSpeed); SAVE_FLOAT(silentAntiAimJumpEdgeDistance); SAVE_FLOAT(silentAntiAimJumpEdgeOffset); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(freezeCorpsesFadeEnabled); SAVE_FLOAT(freezeCorpsesFadeDuration); SAVE_INT(freezeCorpsesChamsMode); SAVE_FLOAT(freezeCorpsesChamsAlpha); SAVE_FLOAT(freezeCorpsesMetallic); SAVE_FLOAT(freezeCorpsesSmoothness); SAVE_FLOAT(freezeCorpsesAnimationSpeed); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
     SAVE_BOOL(espShowName); SAVE_BOOL(espShowHealth); SAVE_BOOL(espShowWeapon); SAVE_BOOL(espGradient);
     SAVE_BOOL(worldColorEnabled); SAVE_INT(worldColorMode); SAVE_FLOAT(worldColorStrength); SAVE_FLOAT(worldColorAlpha);
@@ -1584,7 +1590,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_INT(adminBhopBind.key); SAVE_BOOL(adminBhopBind.toggleMode); SAVE_INT(velocityLimiterBind.key); SAVE_BOOL(velocityLimiterBind.toggleMode);
     SAVE_INT(airJumpBind.key); SAVE_BOOL(airJumpBind.toggleMode); SAVE_INT(edgeBugBind.key); SAVE_BOOL(edgeBugBind.toggleMode);
     SAVE_INT(aimbotBind.key); SAVE_BOOL(aimbotBind.toggleMode); SAVE_INT(visibleAimbotBind.key); SAVE_BOOL(visibleAimbotBind.toggleMode);
-    SAVE_INT(autoWallBind.key); SAVE_BOOL(autoWallBind.toggleMode); SAVE_INT(autoFireBind.key); SAVE_BOOL(autoFireBind.toggleMode);
+    SAVE_INT(autoWallBind.key); SAVE_BOOL(autoWallBind.toggleMode); SAVE_INT(autoFireBind.key); SAVE_BOOL(autoFireBind.toggleMode); SAVE_INT(autoStopBind.key); SAVE_BOOL(autoStopBind.toggleMode);
     SAVE_INT(antiAimBind.key); SAVE_BOOL(antiAimBind.toggleMode); SAVE_INT(espBind.key); SAVE_BOOL(espBind.toggleMode);
     SAVE_INT(velocityBind.key); SAVE_BOOL(velocityBind.toggleMode); SAVE_INT(trailBind.key); SAVE_BOOL(trailBind.toggleMode);
     SAVE_INT(freezeCorpsesBind.key); SAVE_BOOL(freezeCorpsesBind.toggleMode); SAVE_INT(worldColorBind.key); SAVE_BOOL(worldColorBind.toggleMode);
@@ -1639,7 +1645,7 @@ static bool LoadConfig(const char* requestedName)
     if (adminBhopMaxSpeed < 1.0f) adminBhopMaxSpeed = 1.0f; if (adminBhopMaxSpeed > 30.0f) adminBhopMaxSpeed = 30.0f;
     LOAD_BOOL(airJump); LOAD_BOOL(edgeBugEnabled); LOAD_FLOAT(edgeBugPullForce);
     LOAD_BOOL(velocityLimiterEnabled); LOAD_FLOAT(velocityLimit);
-    LOAD_BOOL(aimbotEnabled); LOAD_BOOL(visibleAimbotEnabled); LOAD_BOOL(aimbotVisibleCheck); LOAD_BOOL(aimbotAutoWall); LOAD_FLOAT(aimbotAutoWallMinDamage); LOAD_BOOL(aimbotAutoFire);
+    LOAD_BOOL(aimbotEnabled); LOAD_BOOL(visibleAimbotEnabled); LOAD_BOOL(aimbotVisibleCheck); LOAD_BOOL(aimbotAutoWall); LOAD_FLOAT(aimbotAutoWallMinDamage); LOAD_BOOL(aimbotAutoFire); LOAD_BOOL(aimbotAutoStop);
     LOAD_BOOL(silentAntiAimEnabled); LOAD_INT(silentAntiAimMode); LOAD_INT(silentAntiAimPitch); LOAD_FLOAT(silentAntiAimYaw); LOAD_FLOAT(silentAntiAimJitterRange); LOAD_FLOAT(silentAntiAimSpinSpeed); LOAD_FLOAT(silentAntiAimEdgeDistance); LOAD_FLOAT(silentAntiAimEdgeOffset); LOAD_INT(silentAntiAimJumpMode); LOAD_INT(silentAntiAimJumpPitch); LOAD_FLOAT(silentAntiAimJumpYaw); LOAD_FLOAT(silentAntiAimJumpJitterRange); LOAD_FLOAT(silentAntiAimJumpSpinSpeed); LOAD_FLOAT(silentAntiAimJumpEdgeDistance); LOAD_FLOAT(silentAntiAimJumpEdgeOffset); if (!isfinite(silentAntiAimYaw)) silentAntiAimYaw = 180.0f; if (!isfinite(silentAntiAimJitterRange)) silentAntiAimJitterRange = 45.0f; if (!isfinite(silentAntiAimSpinSpeed)) silentAntiAimSpinSpeed = 180.0f; if (!isfinite(silentAntiAimEdgeDistance)) silentAntiAimEdgeDistance = 3.0f; if (!isfinite(silentAntiAimEdgeOffset)) silentAntiAimEdgeOffset = 0.0f; if (silentAntiAimMode < 0 || silentAntiAimMode > 3) silentAntiAimMode = 0; if (silentAntiAimPitch < 0 || silentAntiAimPitch > 2) silentAntiAimPitch = 0; if (silentAntiAimYaw < -180.0f) silentAntiAimYaw = -180.0f; if (silentAntiAimYaw > 180.0f) silentAntiAimYaw = 180.0f; if (silentAntiAimJitterRange < 0.0f) silentAntiAimJitterRange = 0.0f; if (silentAntiAimJitterRange > 180.0f) silentAntiAimJitterRange = 180.0f; if (silentAntiAimSpinSpeed < 1.0f) silentAntiAimSpinSpeed = 1.0f; if (silentAntiAimSpinSpeed > 3600.0f) silentAntiAimSpinSpeed = 3600.0f; if (silentAntiAimEdgeDistance < 0.5f) silentAntiAimEdgeDistance = 0.5f; if (silentAntiAimEdgeDistance > 6.0f) silentAntiAimEdgeDistance = 6.0f; if (silentAntiAimEdgeOffset < -180.0f) silentAntiAimEdgeOffset = -180.0f; if (silentAntiAimEdgeOffset > 180.0f) silentAntiAimEdgeOffset = 180.0f; if (!isfinite(silentAntiAimJumpYaw)) silentAntiAimJumpYaw = 180.0f; if (!isfinite(silentAntiAimJumpJitterRange)) silentAntiAimJumpJitterRange = 45.0f; if (!isfinite(silentAntiAimJumpSpinSpeed)) silentAntiAimJumpSpinSpeed = 180.0f; if (!isfinite(silentAntiAimJumpEdgeDistance)) silentAntiAimJumpEdgeDistance = 3.0f; if (!isfinite(silentAntiAimJumpEdgeOffset)) silentAntiAimJumpEdgeOffset = 0.0f; if (silentAntiAimJumpMode < 0 || silentAntiAimJumpMode > 3) silentAntiAimJumpMode = 0; if (silentAntiAimJumpPitch < 0 || silentAntiAimJumpPitch > 2) silentAntiAimJumpPitch = 0; if (silentAntiAimJumpYaw < -180.0f) silentAntiAimJumpYaw = -180.0f; if (silentAntiAimJumpYaw > 180.0f) silentAntiAimJumpYaw = 180.0f; if (silentAntiAimJumpJitterRange < 0.0f) silentAntiAimJumpJitterRange = 0.0f; if (silentAntiAimJumpJitterRange > 180.0f) silentAntiAimJumpJitterRange = 180.0f; if (silentAntiAimJumpSpinSpeed < 1.0f) silentAntiAimJumpSpinSpeed = 1.0f; if (silentAntiAimJumpSpinSpeed > 3600.0f) silentAntiAimJumpSpinSpeed = 3600.0f; if (silentAntiAimJumpEdgeDistance < 0.5f) silentAntiAimJumpEdgeDistance = 0.5f; if (silentAntiAimJumpEdgeDistance > 6.0f) silentAntiAimJumpEdgeDistance = 6.0f; if (silentAntiAimJumpEdgeOffset < -180.0f) silentAntiAimJumpEdgeOffset = -180.0f; if (silentAntiAimJumpEdgeOffset > 180.0f) silentAntiAimJumpEdgeOffset = 180.0f; LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(freezeCorpsesFadeEnabled); LOAD_FLOAT(freezeCorpsesFadeDuration); LOAD_INT(freezeCorpsesChamsMode); LOAD_FLOAT(freezeCorpsesChamsAlpha); LOAD_FLOAT(freezeCorpsesMetallic); LOAD_FLOAT(freezeCorpsesSmoothness); LOAD_FLOAT(freezeCorpsesAnimationSpeed); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
     LOAD_BOOL(espShowName); LOAD_BOOL(espShowHealth); LOAD_BOOL(espShowWeapon); LOAD_BOOL(espGradient);
     LOAD_BOOL(worldColorEnabled); LOAD_INT(worldColorMode); LOAD_FLOAT(worldColorStrength); LOAD_FLOAT(worldColorAlpha);
@@ -1670,7 +1676,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_INT(adminBhopBind.key); LOAD_BOOL(adminBhopBind.toggleMode); LOAD_INT(velocityLimiterBind.key); LOAD_BOOL(velocityLimiterBind.toggleMode);
     LOAD_INT(airJumpBind.key); LOAD_BOOL(airJumpBind.toggleMode); LOAD_INT(edgeBugBind.key); LOAD_BOOL(edgeBugBind.toggleMode);
     LOAD_INT(aimbotBind.key); LOAD_BOOL(aimbotBind.toggleMode); LOAD_INT(visibleAimbotBind.key); LOAD_BOOL(visibleAimbotBind.toggleMode);
-    LOAD_INT(autoWallBind.key); LOAD_BOOL(autoWallBind.toggleMode); LOAD_INT(autoFireBind.key); LOAD_BOOL(autoFireBind.toggleMode);
+    LOAD_INT(autoWallBind.key); LOAD_BOOL(autoWallBind.toggleMode); LOAD_INT(autoFireBind.key); LOAD_BOOL(autoFireBind.toggleMode); LOAD_INT(autoStopBind.key); LOAD_BOOL(autoStopBind.toggleMode);
     LOAD_INT(antiAimBind.key); LOAD_BOOL(antiAimBind.toggleMode); LOAD_INT(espBind.key); LOAD_BOOL(espBind.toggleMode);
     LOAD_INT(velocityBind.key); LOAD_BOOL(velocityBind.toggleMode); LOAD_INT(trailBind.key); LOAD_BOOL(trailBind.toggleMode);
     LOAD_INT(freezeCorpsesBind.key); LOAD_BOOL(freezeCorpsesBind.toggleMode); LOAD_INT(worldColorBind.key); LOAD_BOOL(worldColorBind.toggleMode);
@@ -2092,6 +2098,7 @@ static void SetRendererMaterialPair(uintptr_t renderer, uintptr_t first, uintptr
 }
 
 static uintptr_t GetCurrentLocalWeaponController();
+static bool HasVisibleTargetBeforeNativeFire(uintptr_t gun);
 static uintptr_t GetCurrentLocalCharacterLodGroup();
 static bool IsUnityObjectAliveUnsafe(uintptr_t object);
 
@@ -3439,6 +3446,41 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
+    if (keyValidated && aimbotAutoStop && (aimbotEnabled || visibleAimbotEnabled) &&
+        player && command && liveHudLocalPlayer && player == liveHudLocalPlayer) {
+        __try {
+            const uintptr_t gun = GetCurrentLocalWeaponController();
+            const ULONGLONG now = GetTickCount64();
+            if (!gun) {
+                aimbotAutoStopHasTarget = false;
+                aimbotAutoStopLastGun = 0;
+                aimbotAutoStopNextScanAt = 0;
+            }
+            else if (gun != aimbotAutoStopLastGun || now >= aimbotAutoStopNextScanAt) {
+                aimbotAutoStopHasTarget = HasVisibleTargetBeforeNativeFire(gun);
+                aimbotAutoStopLastGun = gun;
+                aimbotAutoStopNextScanAt = now + 16ULL;
+            }
+            if (aimbotAutoStopHasTarget) {
+                // dump1 xl.caxa/caxb: strafe +0x10, forward +0x14. Suppress only
+                // horizontal input; jump, crouch, fire and camera fields stay native.
+                *reinterpret_cast<float*>(command + 0x10) = 0.0f;
+                *reinterpret_cast<float*>(command + 0x14) = 0.0f;
+                InterlockedIncrement(&aimbotAutoStopApplications);
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            aimbotAutoStopHasTarget = false;
+            aimbotAutoStopLastGun = 0;
+            aimbotAutoStopNextScanAt = 0;
+        }
+    }
+    else if (!aimbotAutoStop || (!aimbotEnabled && !visibleAimbotEnabled)) {
+        aimbotAutoStopHasTarget = false;
+        aimbotAutoStopLastGun = 0;
+        aimbotAutoStopNextScanAt = 0;
     }
 
     if (keyValidated && silentAntiAimEnabled && player && command &&
@@ -7010,7 +7052,7 @@ std::string GetKeyName(int key) {
 
 enum class BindAction {
     PixelSurf, AdminBhop, VelocityLimiter, AirJump, EdgeBug,
-    Aimbot, VisibleAimbot, AutoWall, AutoFire, AntiAim,
+    Aimbot, VisibleAimbot, AutoWall, AutoFire, AutoStop, AntiAim,
     BoxEsp, ShowVelocity, ShowTrail, FreezeCorpses, WorldColor,
     PenetrableSurfaces, ThirdPerson, CameraFov, Fog, CustomSkybox,
     DoubleTap, InfinityAmmo, NoSpread, RemoveScope, WeaponChams,
@@ -7037,6 +7079,7 @@ static BindEntry* GetBindEntries(size_t& count)
         { "Aim", "Visible Camera Snap", &visibleAimbotBind, BindAction::VisibleAimbot },
         { "Aim", "Auto Wall", &autoWallBind, BindAction::AutoWall },
         { "Aim", "Auto Fire", &autoFireBind, BindAction::AutoFire },
+        { "Aim", "Auto Stop", &autoStopBind, BindAction::AutoStop },
         { "Aim", "Rotation Anti-Aim", &antiAimBind, BindAction::AntiAim },
         { "Visuals", "Box ESP", &espBind, BindAction::BoxEsp },
         { "Visuals", "Show Velocity", &velocityBind, BindAction::ShowVelocity },
@@ -7102,6 +7145,7 @@ static bool GetBoundFeatureState(BindAction action)
     case BindAction::VisibleAimbot: return visibleAimbotEnabled;
     case BindAction::AutoWall: return aimbotAutoWall;
     case BindAction::AutoFire: return aimbotAutoFire;
+    case BindAction::AutoStop: return aimbotAutoStop;
     case BindAction::AntiAim: return silentAntiAimEnabled;
     case BindAction::BoxEsp: return boxEsp;
     case BindAction::ShowVelocity: return showVelocity;
@@ -7146,6 +7190,14 @@ static void SetBoundFeatureState(BindAction action, bool enabled)
         break;
     case BindAction::AutoWall: aimbotAutoWall = enabled; break;
     case BindAction::AutoFire: aimbotAutoFire = enabled; break;
+    case BindAction::AutoStop:
+        aimbotAutoStop = enabled;
+        if (!enabled) {
+            aimbotAutoStopHasTarget = false;
+            aimbotAutoStopLastGun = 0;
+            aimbotAutoStopNextScanAt = 0;
+        }
+        break;
     case BindAction::AntiAim:
         silentAntiAimEnabled = enabled;
         if (!enabled) ClearRotationAntiAimTargetUnsafe();
@@ -7705,6 +7757,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     1.0f, 100.0f, "%.0f");
         }
         ImGui::Checkbox("Auto Fire", &aimbotAutoFire);
+        ImGui::Checkbox("Auto Stop", &aimbotAutoStop);
         ImGui::Text("FOV: %.0f degrees", aimbotFov);
         ImGui::Spacing();
         ImGui::TextDisabled("All feature hotkeys are configured in the BINDS tab.");
