@@ -15,6 +15,7 @@ import os
 import sys
 import webbrowser
 import time
+import glob
 from urllib.parse import urlparse
 
 REPO_DIR = r"C:\Users\НИЗКИЙ\source\repos\ImGui-DirectX-11-Kiero-Hook-master"
@@ -116,21 +117,38 @@ def stream_build(q: "queue.Queue"):
             
             q.put({"type": "log", "line": line})
 
+        # Ждем завершения процесса
         proc.stdout.close()
         code = proc.wait()
         
-        # Check if DLL was actually created
+        # Проверяем наличие DLL (даже если код ошибки 0)
         dll_path = os.path.join(REPO_DIR, "x64", "Release", "ImGui DirectX 11 Kiero Hook.dll")
-        if code == 0 and not os.path.exists(dll_path):
-            q.put({"type": "error", "line": f"[ERROR] DLL not found at: {dll_path}"})
-            q.put({"type": "error", "line": "Check build configuration or output path"})
-            code = 1
         
-        q.put({"type": "status", "line": "-" * 60})
         if code == 0:
-            q.put({"type": "success", "line": f"build succeeded (exit {code})"})
+            if os.path.exists(dll_path):
+                q.put({"type": "status", "line": f"✅ DLL found at: {dll_path}"})
+                q.put({"type": "success", "line": f"build succeeded (exit {code})"})
+            else:
+                q.put({"type": "error", "line": f"❌ DLL NOT found at: {dll_path}"})
+                q.put({"type": "error", "line": "Checking for DLL in repository..."})
+                
+                # Ищем все DLL в репозитории
+                try:
+                    all_dlls = glob.glob(os.path.join(REPO_DIR, "**", "*.dll"), recursive=True)
+                    if all_dlls:
+                        q.put({"type": "log", "line": f"Found DLLs: {', '.join(all_dlls[:5])}"})
+                        if len(all_dlls) > 5:
+                            q.put({"type": "log", "line": f"... and {len(all_dlls) - 5} more"})
+                    else:
+                        q.put({"type": "log", "line": "No .dll files found in repository"})
+                except Exception as e:
+                    q.put({"type": "log", "line": f"Error searching for DLLs: {e}"})
+                
+                code = 1
         else:
             q.put({"type": "error", "line": f"build failed (exit {code})"})
+        
+        q.put({"type": "status", "line": "-" * 60})
         emit_done(code)
         
     except Exception as e:

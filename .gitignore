@@ -2,3 +2,7 @@ x64/
 .vs/
 *.obj
 *.pdb
+"serverr.py"  "*.dll" 
+"serverr.py" 
+"*.dll" 
+"serverr.py" 
