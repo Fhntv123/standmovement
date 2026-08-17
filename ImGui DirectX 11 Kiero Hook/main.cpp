@@ -1326,10 +1326,16 @@ static int GetPCHealth(void* pc) {
     if (confirmedIt != g_ConfirmedHealthByPlayer.end())
         confirmedHp = confirmedIt->second;
     ReleaseSRWLockShared(&g_LiveHealthLock);
-    // A locally confirmed bai result is newer than the remote bdl value, which can
-    // legally remain at its spawn default of 100 for the entire remote lifetime.
-    const int hp = confirmedHp >= 0 && confirmedHp <= 100 ? confirmedHp :
+    // A locally confirmed hit is normally newer than remote bdl replication. Do not,
+    // however, let accumulated raw/pre-mitigation ccv damage display zero while the
+    // replicated bdl state still reports the same PlayerController alive. Preserve the
+    // confirmed damage history and clamp only this contradictory terminal value to 1;
+    // player lifecycle hooks clear the cache on a real death/respawn transition.
+    const bool replicatedAlive =
+        (liveHp > 0 && liveHp <= 100) || (directHp > 0 && directHp <= 100);
+    int hp = confirmedHp >= 0 && confirmedHp <= 100 ? confirmedHp :
         (liveHp >= 0 && liveHp <= 100 ? liveHp : directHp);
+    if (hp == 0 && replicatedAlive) hp = 1;
     if (hp >= 0 && hp <= 100)
         InterlockedExchange(&boxEspHealthLastRead, hp);
     return hp >= 0 && hp <= 100 ? hp : -1;
