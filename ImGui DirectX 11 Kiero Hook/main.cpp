@@ -388,21 +388,41 @@ struct BindConfig {
 
 
 
-BindConfig psBind = { 0, false };
-
+BindConfig psBind = { 0, false }; // legacy slot; Pixel Surf uses jbBind
 BindConfig jbBind = { 0, false };
-
+BindConfig adminBhopBind = { 0, true };
+BindConfig velocityLimiterBind = { 0, true };
 BindConfig airJumpBind = { 0, false };
-
 BindConfig edgeBugBind = { 0, false };
-
-BindConfig velocityBind = { 0, false };
-
-BindConfig trailBind = { 0, false };
-
-BindConfig ammoBind = { 0, false };
-
-BindConfig espBind = { 0, false };
+BindConfig aimbotBind = { 0, true };
+BindConfig visibleAimbotBind = { 0, true };
+BindConfig autoWallBind = { 0, true };
+BindConfig autoFireBind = { 0, true };
+BindConfig antiAimBind = { 0, true };
+BindConfig espBind = { 0, true };
+BindConfig velocityBind = { 0, true }; // Show Velocity
+BindConfig trailBind = { 0, true };
+BindConfig freezeCorpsesBind = { 0, true };
+BindConfig worldColorBind = { 0, true };
+BindConfig penetrableSurfacesBind = { 0, true };
+BindConfig thirdPersonBind = { 0, true };
+BindConfig cameraFovBind = { 0, true };
+BindConfig fogBind = { 0, true };
+BindConfig customSkyboxBind = { 0, true };
+BindConfig doubleTapBind = { 0, true };
+BindConfig ammoBind = { 0, true };
+BindConfig noSpreadBind = { 0, true };
+BindConfig removeScopeBind = { 0, true };
+BindConfig weaponChamsBind = { 0, true };
+BindConfig armChamsBind = { 0, true };
+BindConfig gloveChamsBind = { 0, true };
+BindConfig localPlayerChamsBind = { 0, true };
+BindConfig enemyChamsBind = { 0, true };
+BindConfig enemyThroughWallsBind = { 0, true };
+BindConfig hitLogBind = { 0, true };
+BindConfig hitMarkerBind = { 0, true };
+BindConfig bulletImpactsBind = { 0, true };
+BindConfig bulletTracerBind = { 0, true };
 
 
 
@@ -1534,9 +1554,23 @@ static bool SaveConfig(const char* requestedName)
     SAVE_FLOAT(localPlayerChamsAlpha); SAVE_FLOAT(localPlayerChamsMetallic); SAVE_FLOAT(localPlayerChamsSmoothness); SAVE_FLOAT(localPlayerChamsAnimationSpeed);
     SAVE_FLOAT(enemyChamsAlpha); SAVE_FLOAT(enemyChamsMetallic); SAVE_FLOAT(enemyChamsSmoothness); SAVE_FLOAT(enemyChamsAnimationSpeed);
     SAVE_INT(psBind.key); SAVE_BOOL(psBind.toggleMode); SAVE_INT(jbBind.key); SAVE_BOOL(jbBind.toggleMode);
+    SAVE_INT(adminBhopBind.key); SAVE_BOOL(adminBhopBind.toggleMode); SAVE_INT(velocityLimiterBind.key); SAVE_BOOL(velocityLimiterBind.toggleMode);
     SAVE_INT(airJumpBind.key); SAVE_BOOL(airJumpBind.toggleMode); SAVE_INT(edgeBugBind.key); SAVE_BOOL(edgeBugBind.toggleMode);
+    SAVE_INT(aimbotBind.key); SAVE_BOOL(aimbotBind.toggleMode); SAVE_INT(visibleAimbotBind.key); SAVE_BOOL(visibleAimbotBind.toggleMode);
+    SAVE_INT(autoWallBind.key); SAVE_BOOL(autoWallBind.toggleMode); SAVE_INT(autoFireBind.key); SAVE_BOOL(autoFireBind.toggleMode);
+    SAVE_INT(antiAimBind.key); SAVE_BOOL(antiAimBind.toggleMode); SAVE_INT(espBind.key); SAVE_BOOL(espBind.toggleMode);
     SAVE_INT(velocityBind.key); SAVE_BOOL(velocityBind.toggleMode); SAVE_INT(trailBind.key); SAVE_BOOL(trailBind.toggleMode);
-    SAVE_INT(ammoBind.key); SAVE_BOOL(ammoBind.toggleMode); SAVE_INT(espBind.key); SAVE_BOOL(espBind.toggleMode);
+    SAVE_INT(freezeCorpsesBind.key); SAVE_BOOL(freezeCorpsesBind.toggleMode); SAVE_INT(worldColorBind.key); SAVE_BOOL(worldColorBind.toggleMode);
+    SAVE_INT(penetrableSurfacesBind.key); SAVE_BOOL(penetrableSurfacesBind.toggleMode); SAVE_INT(thirdPersonBind.key); SAVE_BOOL(thirdPersonBind.toggleMode);
+    SAVE_INT(cameraFovBind.key); SAVE_BOOL(cameraFovBind.toggleMode); SAVE_INT(fogBind.key); SAVE_BOOL(fogBind.toggleMode);
+    SAVE_INT(customSkyboxBind.key); SAVE_BOOL(customSkyboxBind.toggleMode); SAVE_INT(doubleTapBind.key); SAVE_BOOL(doubleTapBind.toggleMode);
+    SAVE_INT(ammoBind.key); SAVE_BOOL(ammoBind.toggleMode); SAVE_INT(noSpreadBind.key); SAVE_BOOL(noSpreadBind.toggleMode);
+    SAVE_INT(removeScopeBind.key); SAVE_BOOL(removeScopeBind.toggleMode); SAVE_INT(weaponChamsBind.key); SAVE_BOOL(weaponChamsBind.toggleMode);
+    SAVE_INT(armChamsBind.key); SAVE_BOOL(armChamsBind.toggleMode); SAVE_INT(gloveChamsBind.key); SAVE_BOOL(gloveChamsBind.toggleMode);
+    SAVE_INT(localPlayerChamsBind.key); SAVE_BOOL(localPlayerChamsBind.toggleMode); SAVE_INT(enemyChamsBind.key); SAVE_BOOL(enemyChamsBind.toggleMode);
+    SAVE_INT(enemyThroughWallsBind.key); SAVE_BOOL(enemyThroughWallsBind.toggleMode); SAVE_INT(hitLogBind.key); SAVE_BOOL(hitLogBind.toggleMode);
+    SAVE_INT(hitMarkerBind.key); SAVE_BOOL(hitMarkerBind.toggleMode); SAVE_INT(bulletImpactsBind.key); SAVE_BOOL(bulletImpactsBind.toggleMode);
+    SAVE_INT(bulletTracerBind.key); SAVE_BOOL(bulletTracerBind.toggleMode);
     WriteConfigColor(path, "menuColor", menuColor); WriteConfigColor(path, "accentColor", accentColor);
     WriteConfigColor(path, "worldColor", worldColor); WriteConfigColor(path, "fogColor", fogColor);
     WriteConfigColor(path, "penetrableSurfaceFillColor", penetrableSurfaceFillColor);
@@ -1606,9 +1640,23 @@ static bool LoadConfig(const char* requestedName)
     LOAD_FLOAT(localPlayerChamsAlpha); LOAD_FLOAT(localPlayerChamsMetallic); LOAD_FLOAT(localPlayerChamsSmoothness); LOAD_FLOAT(localPlayerChamsAnimationSpeed);
     LOAD_FLOAT(enemyChamsAlpha); LOAD_FLOAT(enemyChamsMetallic); LOAD_FLOAT(enemyChamsSmoothness); LOAD_FLOAT(enemyChamsAnimationSpeed);
     LOAD_INT(psBind.key); LOAD_BOOL(psBind.toggleMode); LOAD_INT(jbBind.key); LOAD_BOOL(jbBind.toggleMode);
+    LOAD_INT(adminBhopBind.key); LOAD_BOOL(adminBhopBind.toggleMode); LOAD_INT(velocityLimiterBind.key); LOAD_BOOL(velocityLimiterBind.toggleMode);
     LOAD_INT(airJumpBind.key); LOAD_BOOL(airJumpBind.toggleMode); LOAD_INT(edgeBugBind.key); LOAD_BOOL(edgeBugBind.toggleMode);
+    LOAD_INT(aimbotBind.key); LOAD_BOOL(aimbotBind.toggleMode); LOAD_INT(visibleAimbotBind.key); LOAD_BOOL(visibleAimbotBind.toggleMode);
+    LOAD_INT(autoWallBind.key); LOAD_BOOL(autoWallBind.toggleMode); LOAD_INT(autoFireBind.key); LOAD_BOOL(autoFireBind.toggleMode);
+    LOAD_INT(antiAimBind.key); LOAD_BOOL(antiAimBind.toggleMode); LOAD_INT(espBind.key); LOAD_BOOL(espBind.toggleMode);
     LOAD_INT(velocityBind.key); LOAD_BOOL(velocityBind.toggleMode); LOAD_INT(trailBind.key); LOAD_BOOL(trailBind.toggleMode);
-    LOAD_INT(ammoBind.key); LOAD_BOOL(ammoBind.toggleMode); LOAD_INT(espBind.key); LOAD_BOOL(espBind.toggleMode);
+    LOAD_INT(freezeCorpsesBind.key); LOAD_BOOL(freezeCorpsesBind.toggleMode); LOAD_INT(worldColorBind.key); LOAD_BOOL(worldColorBind.toggleMode);
+    LOAD_INT(penetrableSurfacesBind.key); LOAD_BOOL(penetrableSurfacesBind.toggleMode); LOAD_INT(thirdPersonBind.key); LOAD_BOOL(thirdPersonBind.toggleMode);
+    LOAD_INT(cameraFovBind.key); LOAD_BOOL(cameraFovBind.toggleMode); LOAD_INT(fogBind.key); LOAD_BOOL(fogBind.toggleMode);
+    LOAD_INT(customSkyboxBind.key); LOAD_BOOL(customSkyboxBind.toggleMode); LOAD_INT(doubleTapBind.key); LOAD_BOOL(doubleTapBind.toggleMode);
+    LOAD_INT(ammoBind.key); LOAD_BOOL(ammoBind.toggleMode); LOAD_INT(noSpreadBind.key); LOAD_BOOL(noSpreadBind.toggleMode);
+    LOAD_INT(removeScopeBind.key); LOAD_BOOL(removeScopeBind.toggleMode); LOAD_INT(weaponChamsBind.key); LOAD_BOOL(weaponChamsBind.toggleMode);
+    LOAD_INT(armChamsBind.key); LOAD_BOOL(armChamsBind.toggleMode); LOAD_INT(gloveChamsBind.key); LOAD_BOOL(gloveChamsBind.toggleMode);
+    LOAD_INT(localPlayerChamsBind.key); LOAD_BOOL(localPlayerChamsBind.toggleMode); LOAD_INT(enemyChamsBind.key); LOAD_BOOL(enemyChamsBind.toggleMode);
+    LOAD_INT(enemyThroughWallsBind.key); LOAD_BOOL(enemyThroughWallsBind.toggleMode); LOAD_INT(hitLogBind.key); LOAD_BOOL(hitLogBind.toggleMode);
+    LOAD_INT(hitMarkerBind.key); LOAD_BOOL(hitMarkerBind.toggleMode); LOAD_INT(bulletImpactsBind.key); LOAD_BOOL(bulletImpactsBind.toggleMode);
+    LOAD_INT(bulletTracerBind.key); LOAD_BOOL(bulletTracerBind.toggleMode);
     // Config files are user-editable. Clamp every value used as an array index or
     // collection bound before any pending refresh can consume it.
     if (worldColorMode < 0 || worldColorMode > 6) worldColorMode = 0;
@@ -6887,147 +6935,219 @@ std::string GetKeyName(int key) {
 }
 
 
-
-DWORD WINAPI KeyListenerThread(LPVOID) {
-
-    while (!unloadRequested) {
-
-        if (keyValidated) {
-
-            if (jbBind.key > 0) {
-
-                bool held = (GetAsyncKeyState(jbBind.key) & 0x8000) != 0;
-
-                static bool jbToggle = false, jbLast = false;
-
-                bool requestedPixelSurf = held;
-                if (jbBind.toggleMode) {
-                    if (held && !jbLast) jbToggle = !jbToggle;
-                    requestedPixelSurf = jbToggle;
-                }
-                SetPixelSurfActive(requestedPixelSurf);
-
-                jbLast = held;
-
-            }
-
-            if (airJumpBind.key > 0) {
-
-                bool held = (GetAsyncKeyState(airJumpBind.key) & 0x8000) != 0;
-
-                static bool ajToggle = false, ajLast = false;
-
-                if (airJumpBind.toggleMode) { if (held && !ajLast) ajToggle = !ajToggle; airJump = ajToggle; }
-
-                else airJump = held;
-
-                ajLast = held;
-
-            }
-
-            if (edgeBugBind.key > 0) {
-
-                bool held = (GetAsyncKeyState(edgeBugBind.key) & 0x8000) != 0;
-
-                static bool edgeBugToggle = false, edgeBugLast = false;
-
-                if (edgeBugBind.toggleMode) { if (held && !edgeBugLast) edgeBugToggle = !edgeBugToggle; edgeBugEnabled = edgeBugToggle; }
-
-                else edgeBugEnabled = held;
-
-                edgeBugLast = held;
-
-            }
-
-            if (velocityBind.key > 0) {
-
-                bool held = (GetAsyncKeyState(velocityBind.key) & 0x8000) != 0;
-
-                static bool velToggle = false, velLast = false;
-
-                if (velocityBind.toggleMode) { if (held && !velLast) velToggle = !velToggle; showVelocity = velToggle; }
-
-                else showVelocity = held;
-
-                velLast = held;
-
-            }
-
-            if (trailBind.key > 0) {
-
-                bool held = (GetAsyncKeyState(trailBind.key) & 0x8000) != 0;
-
-                static bool trailToggle = false, trailLast = false;
-
-                if (trailBind.toggleMode) { if (held && !trailLast) trailToggle = !trailToggle; showTrail = trailToggle; }
-
-                else showTrail = held;
-
-                trailLast = held;
-
-            }
-
-            if (ammoBind.key > 0) {
-
-                bool held = (GetAsyncKeyState(ammoBind.key) & 0x8000) != 0;
-
-                static bool ammoToggle = false, ammoLast = false;
-
-                if (ammoBind.toggleMode) { if (held && !ammoLast) ammoToggle = !ammoToggle; infinityAmmo = ammoToggle; }
-
-                else infinityAmmo = held;
-
-                ammoLast = held;
-
-            }
-
-            if (espBind.key > 0) {
-
-                bool held = (GetAsyncKeyState(espBind.key) & 0x8000) != 0;
-
-                static bool espToggle = false, espLast = false;
-
-                if (espBind.toggleMode) { 
-
-                    if (held && !espLast) {
-
-                        espToggle = !espToggle;
-
-                        boxEsp = espToggle;
-
-                        b_HookEnemyCords = espToggle;
-
-                        b_HookLocalCords = espToggle;
-
-                    }
-
-                }
-
-                else {
-
-                    boxEsp = held;
-
-                    b_HookEnemyCords = held;
-
-                    b_HookLocalCords = held;
-
-                }
-
-                espLast = held;
-
-            }
-
-        }
-
-        Sleep(10);
-
-    }
-
-    return 0;
-
+enum class BindAction {
+    PixelSurf, AdminBhop, VelocityLimiter, AirJump, EdgeBug,
+    Aimbot, VisibleAimbot, AutoWall, AutoFire, AntiAim,
+    BoxEsp, ShowVelocity, ShowTrail, FreezeCorpses, WorldColor,
+    PenetrableSurfaces, ThirdPerson, CameraFov, Fog, CustomSkybox,
+    DoubleTap, InfinityAmmo, NoSpread, RemoveScope, WeaponChams,
+    ArmChams, GloveChams, LocalPlayerChams, EnemyChams,
+    EnemyThroughWalls, HitLog, HitMarker, BulletImpacts, BulletTracer
+};
+
+struct BindEntry {
+    const char* category;
+    const char* name;
+    BindConfig* config;
+    BindAction action;
+};
+
+static BindEntry* GetBindEntries(size_t& count)
+{
+    static BindEntry entries[] = {
+        { "Movement", "Pixel Surf", &jbBind, BindAction::PixelSurf },
+        { "Movement", "Admin Panel BHop", &adminBhopBind, BindAction::AdminBhop },
+        { "Movement", "Velocity Limiter", &velocityLimiterBind, BindAction::VelocityLimiter },
+        { "Movement", "Air Jump", &airJumpBind, BindAction::AirJump },
+        { "Movement", "Edge Bug", &edgeBugBind, BindAction::EdgeBug },
+        { "Aim", "Silent 360 Aimbot", &aimbotBind, BindAction::Aimbot },
+        { "Aim", "Visible Camera Snap", &visibleAimbotBind, BindAction::VisibleAimbot },
+        { "Aim", "Auto Wall", &autoWallBind, BindAction::AutoWall },
+        { "Aim", "Auto Fire", &autoFireBind, BindAction::AutoFire },
+        { "Aim", "Rotation Anti-Aim", &antiAimBind, BindAction::AntiAim },
+        { "Visuals", "Box ESP", &espBind, BindAction::BoxEsp },
+        { "Visuals", "Show Velocity", &velocityBind, BindAction::ShowVelocity },
+        { "Visuals", "Show Trail", &trailBind, BindAction::ShowTrail },
+        { "Visuals", "Freeze Corpses", &freezeCorpsesBind, BindAction::FreezeCorpses },
+        { "Visuals", "World Color", &worldColorBind, BindAction::WorldColor },
+        { "Visuals", "Penetrable Surfaces", &penetrableSurfacesBind, BindAction::PenetrableSurfaces },
+        { "Visuals", "Third Person", &thirdPersonBind, BindAction::ThirdPerson },
+        { "Visuals", "Camera FOV", &cameraFovBind, BindAction::CameraFov },
+        { "Visuals", "Fog", &fogBind, BindAction::Fog },
+        { "Visuals", "Custom Skybox", &customSkyboxBind, BindAction::CustomSkybox },
+        { "Weapons", "Double Tap", &doubleTapBind, BindAction::DoubleTap },
+        { "Weapons", "Infinity Ammo", &ammoBind, BindAction::InfinityAmmo },
+        { "Weapons", "No Spread", &noSpreadBind, BindAction::NoSpread },
+        { "Weapons", "Remove Scope Borders", &removeScopeBind, BindAction::RemoveScope },
+        { "Chams", "Weapon Chams", &weaponChamsBind, BindAction::WeaponChams },
+        { "Chams", "Arm Chams", &armChamsBind, BindAction::ArmChams },
+        { "Chams", "Glove Chams", &gloveChamsBind, BindAction::GloveChams },
+        { "Chams", "Local Player Chams", &localPlayerChamsBind, BindAction::LocalPlayerChams },
+        { "Chams", "Enemy Chams", &enemyChamsBind, BindAction::EnemyChams },
+        { "Chams", "Enemy Through Walls", &enemyThroughWallsBind, BindAction::EnemyThroughWalls },
+        { "Shot Visuals", "Hit Log", &hitLogBind, BindAction::HitLog },
+        { "Shot Visuals", "Hit Marker", &hitMarkerBind, BindAction::HitMarker },
+        { "Shot Visuals", "Bullet Impacts", &bulletImpactsBind, BindAction::BulletImpacts },
+        { "Shot Visuals", "Bullet Tracer", &bulletTracerBind, BindAction::BulletTracer }
+    };
+    count = IM_ARRAYSIZE(entries);
+    return entries;
 }
 
+static void DrawBindRow(const BindEntry& entry, int index)
+{
+    ImGui::PushID(index);
+    ImGui::TextUnformatted(entry.name);
+    ImGui::SameLine(230.0f);
+    const std::string keyName = waitingForBind == &entry.config->key ?
+        "Press a key..." : GetKeyName(entry.config->key);
+    if (ImGui::Button(keyName.c_str(), ImVec2(115.0f, 0.0f)))
+        waitingForBind = &entry.config->key;
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(85.0f);
+    const char* modes[] = { "Hold", "Toggle" };
+    int mode = entry.config->toggleMode ? 1 : 0;
+    if (ImGui::Combo("##mode", &mode, modes, 2))
+        entry.config->toggleMode = mode == 1;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear")) {
+        entry.config->key = 0;
+        if (waitingForBind == &entry.config->key) waitingForBind = nullptr;
+    }
+    ImGui::PopID();
+}
 
+static bool GetBoundFeatureState(BindAction action)
+{
+    switch (action) {
+    case BindAction::PixelSurf: return jbActive;
+    case BindAction::AdminBhop: return adminBhopEnabled;
+    case BindAction::VelocityLimiter: return velocityLimiterEnabled;
+    case BindAction::AirJump: return airJump;
+    case BindAction::EdgeBug: return edgeBugEnabled;
+    case BindAction::Aimbot: return aimbotEnabled;
+    case BindAction::VisibleAimbot: return visibleAimbotEnabled;
+    case BindAction::AutoWall: return aimbotAutoWall;
+    case BindAction::AutoFire: return aimbotAutoFire;
+    case BindAction::AntiAim: return silentAntiAimEnabled;
+    case BindAction::BoxEsp: return boxEsp;
+    case BindAction::ShowVelocity: return showVelocity;
+    case BindAction::ShowTrail: return showTrail;
+    case BindAction::FreezeCorpses: return freezeCorpsesEnabled;
+    case BindAction::WorldColor: return worldColorEnabled;
+    case BindAction::PenetrableSurfaces: return penetrableSurfacesEnabled;
+    case BindAction::ThirdPerson: return thirdPersonEnabled;
+    case BindAction::CameraFov: return cameraFovEnabled;
+    case BindAction::Fog: return fogEnabled;
+    case BindAction::CustomSkybox: return customSkyboxEnabled;
+    case BindAction::DoubleTap: return doubleTapEnabled;
+    case BindAction::InfinityAmmo: return infinityAmmo;
+    case BindAction::NoSpread: return noSpreadEnabled;
+    case BindAction::RemoveScope: return removeScopeBorders;
+    case BindAction::WeaponChams: return weaponChamsEnabled;
+    case BindAction::ArmChams: return armChamsEnabled;
+    case BindAction::GloveChams: return gloveChamsEnabled;
+    case BindAction::LocalPlayerChams: return localPlayerChamsEnabled;
+    case BindAction::EnemyChams: return enemyChamsEnabled;
+    case BindAction::EnemyThroughWalls: return enemyChamsThroughWalls;
+    case BindAction::HitLog: return hitLogEnabled;
+    case BindAction::HitMarker: return hitMarkerEnabled;
+    case BindAction::BulletImpacts: return bulletImpactsEnabled;
+    case BindAction::BulletTracer: return bulletTracerEnabled;
+    }
+    return false;
+}
+
+static void SetBoundFeatureState(BindAction action, bool enabled)
+{
+    switch (action) {
+    case BindAction::PixelSurf: SetPixelSurfActive(enabled); break;
+    case BindAction::AdminBhop: adminBhopEnabled = enabled; break;
+    case BindAction::VelocityLimiter: velocityLimiterEnabled = enabled; break;
+    case BindAction::AirJump: airJump = enabled; break;
+    case BindAction::EdgeBug: edgeBugEnabled = enabled; break;
+    case BindAction::Aimbot: aimbotEnabled = enabled; break;
+    case BindAction::VisibleAimbot:
+        visibleAimbotEnabled = enabled;
+        if (!enabled) ClearVisibleAimbotCameraStateUnsafe();
+        break;
+    case BindAction::AutoWall: aimbotAutoWall = enabled; break;
+    case BindAction::AutoFire: aimbotAutoFire = enabled; break;
+    case BindAction::AntiAim:
+        silentAntiAimEnabled = enabled;
+        if (!enabled) ClearRotationAntiAimTargetUnsafe();
+        break;
+    case BindAction::BoxEsp:
+        boxEsp = enabled; b_HookEnemyCords = enabled; b_HookLocalCords = enabled;
+        break;
+    case BindAction::ShowVelocity: showVelocity = enabled; break;
+    case BindAction::ShowTrail: showTrail = enabled; break;
+    case BindAction::FreezeCorpses: freezeCorpsesEnabled = enabled; break;
+    case BindAction::WorldColor:
+        worldColorEnabled = enabled;
+        InterlockedExchange(&pendingWorldColorCommand, enabled ? 1 : 2);
+        break;
+    case BindAction::PenetrableSurfaces:
+        penetrableSurfacesEnabled = enabled; penetrableSurfaceNextScan = 0; break;
+    case BindAction::ThirdPerson:
+        thirdPersonEnabled = enabled;
+        InterlockedExchange(&pendingThirdPersonCommand, 1);
+        break;
+    case BindAction::CameraFov: cameraFovEnabled = enabled; break;
+    case BindAction::Fog:
+        fogEnabled = enabled; InterlockedExchange(&pendingFogCommand, enabled ? 1 : 2); break;
+    case BindAction::CustomSkybox: customSkyboxEnabled = enabled; break;
+    case BindAction::DoubleTap: doubleTapEnabled = enabled; break;
+    case BindAction::InfinityAmmo:
+        infinityAmmo = enabled; frozenAmmoWeapon = 0; frozenAmmoValue = -1; break;
+    case BindAction::NoSpread: noSpreadEnabled = enabled; break;
+    case BindAction::RemoveScope:
+        removeScopeBorders = enabled; InterlockedExchange(&pendingScopeOverlayRefresh, 1); break;
+    case BindAction::WeaponChams:
+        weaponChamsEnabled = enabled; InterlockedExchange(&pendingWeaponChamsRefresh, 1); break;
+    case BindAction::ArmChams:
+        armChamsEnabled = enabled; InterlockedExchange(&pendingArmChamsRefresh, 1); break;
+    case BindAction::GloveChams:
+        gloveChamsEnabled = enabled; InterlockedExchange(&pendingGloveChamsRefresh, 1); break;
+    case BindAction::LocalPlayerChams:
+        localPlayerChamsEnabled = enabled; InterlockedExchange(&pendingLocalPlayerChamsRefresh, 1); break;
+    case BindAction::EnemyChams:
+        enemyChamsEnabled = enabled; InterlockedExchange(&pendingEnemyChamsRefresh, 1); break;
+    case BindAction::EnemyThroughWalls:
+        enemyChamsThroughWalls = enabled; InterlockedExchange(&pendingEnemyChamsRefresh, 1); break;
+    case BindAction::HitLog: hitLogEnabled = enabled; break;
+    case BindAction::HitMarker: hitMarkerEnabled = enabled; break;
+    case BindAction::BulletImpacts: bulletImpactsEnabled = enabled; break;
+    case BindAction::BulletTracer: bulletTracerEnabled = enabled; break;
+    }
+}
+
+DWORD WINAPI KeyListenerThread(LPVOID)
+{
+    size_t bindCount = 0;
+    BindEntry* entries = GetBindEntries(bindCount);
+    std::vector<unsigned char> wasDown(bindCount, 0);
+    while (!unloadRequested) {
+        if (keyValidated && !waitingForBind) {
+            for (size_t i = 0; i < bindCount; ++i) {
+                BindConfig& bind = *entries[i].config;
+                if (bind.key <= 0) { wasDown[i] = 0; continue; }
+                const bool down = (GetAsyncKeyState(bind.key) & 0x8000) != 0;
+                if (bind.toggleMode) {
+                    if (down && !wasDown[i])
+                        SetBoundFeatureState(entries[i].action,
+                            !GetBoundFeatureState(entries[i].action));
+                }
+                else if (down != (wasDown[i] != 0)) {
+                    SetBoundFeatureState(entries[i].action, down);
+                }
+                wasDown[i] = down ? 1 : 0;
+            }
+        }
+        Sleep(10);
+    }
+    return 0;
+}
 
 
 void InitImGui()
@@ -7405,8 +7525,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     ImGui::TextColored(accent, "ze0nware");
     ImGui::SetCursorPosY(93.0f);
 
-    const char* navLabels[] = { "AIMBOT", "ANTI-AIM", "VISUALS", "WEAPONS", "CONFIGS" };
-    for (int tab = 0; tab < 5; ++tab) {
+    const char* navLabels[] = { "AIMBOT", "ANTI-AIM", "VISUALS", "WEAPONS", "BINDS", "CONFIGS" };
+    for (int tab = 0; tab < 6; ++tab) {
         const bool selected = currentTab == tab;
         ImGui::SetCursorPosX(3.0f);
         ImGui::PushID(tab);
@@ -7487,7 +7607,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         
         ImGui::NextColumn();
         
-        ImGui::BeginChild("Keybinds", ImVec2(0, 0), true);
+        ImGui::BeginChild("AimbotPanel", ImVec2(0, 0), true);
         ImGui::TextColored(accent, "Aimbot");
         ImGui::Separator();
         ImGui::Spacing();
@@ -7514,20 +7634,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Checkbox("Auto Fire", &aimbotAutoFire);
         ImGui::Text("FOV: %.0f degrees", aimbotFov);
         ImGui::Spacing();
-        ImGui::TextColored(accent, "Keybinds");
-        ImGui::Separator();
-        ImGui::Spacing();
-        
-        ImGui::Text("Pixel Surf Key");
-        if (ImGui::Button(waitingForBind == &jbBind.key ? "[...]" : (jbBind.key > 0 ? GetKeyName(jbBind.key).c_str() : "None##jb"), ImVec2(100, 0))) waitingForBind = &jbBind.key;
-        
-        ImGui::Text("Air Jump Key");
-        if (ImGui::Button(waitingForBind == &airJumpBind.key ? "[...]" : (airJumpBind.key > 0 ? GetKeyName(airJumpBind.key).c_str() : "None##aj"), ImVec2(100, 0))) waitingForBind = &airJumpBind.key;
-
-        ImGui::Text("Edge Bug Key");
-        if (ImGui::Button(waitingForBind == &edgeBugBind.key ? "[...]" : (edgeBugBind.key > 0 ? GetKeyName(edgeBugBind.key).c_str() : "None##eb"), ImVec2(100, 0))) waitingForBind = &edgeBugBind.key;
-        ImGui::SameLine();
-        ImGui::Checkbox("Toggle##eb", &edgeBugBind.toggleMode);
+        ImGui::TextDisabled("All feature hotkeys are configured in the BINDS tab.");
         
         ImGui::EndChild();
         
@@ -7926,7 +8033,27 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         
         ImGui::EndChild();
     }
-    else if (currentTab == 4) { // CONFIGS
+    else if (currentTab == 4) { // BINDS
+        ImGui::BeginChild("Binds", ImVec2(0, 0), true);
+        ImGui::TextColored(accent, "Feature Binds");
+        ImGui::Separator();
+        ImGui::TextDisabled("Click a key, press ESC to cancel. Every bind supports Hold or Toggle.");
+        ImGui::Spacing();
+        size_t bindCount = 0;
+        BindEntry* bindEntries = GetBindEntries(bindCount);
+        const char* lastCategory = nullptr;
+        for (size_t i = 0; i < bindCount; ++i) {
+            if (!lastCategory || strcmp(lastCategory, bindEntries[i].category) != 0) {
+                if (lastCategory) ImGui::Spacing();
+                ImGui::TextColored(accent, "%s", bindEntries[i].category);
+                ImGui::Separator();
+                lastCategory = bindEntries[i].category;
+            }
+            DrawBindRow(bindEntries[i], static_cast<int>(i));
+        }
+        ImGui::EndChild();
+    }
+    else if (currentTab == 5) { // CONFIGS
         ImGui::BeginChild("Configs", ImVec2(0, 0), true);
         ImGui::TextColored(accent, "Configs");
         ImGui::Separator();
