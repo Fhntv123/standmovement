@@ -298,6 +298,7 @@ struct Matrix16 {
 #define OFFSET_PLAYER_HIT_CONFIRMED_B                  0xC2ACD0  // PlayerHitController.obm(bai)
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xB4A790
 #define OFFSET_AIMINGDATA_NEV                       0xC1CEF0  // AimingData.nev(gfk), verified outgoing serializer
+#define OFFSET_AIMSNAPSHOT_NEV                      0xC1C940  // AimSnapshot.nev(gfk), verified authoritative outbound aim serializer
 #define OFFSET_PLAYERCONTROLS_UPDATE                 0xB4CFB0
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_UPDATE       0xB5C790
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_FIXEDUPDATE 0xB5C700
@@ -2074,6 +2075,7 @@ void(__fastcall* o_HitMarkerView_LocalHit)(uintptr_t, void*, uintptr_t, const Il
 void(__fastcall* o_PlayerController_Command)(uintptr_t, uintptr_t, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_KeyboardControl_BuildCommand)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimingData_nev)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_AimSnapshot_nev)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_PlayerControls_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CameraMovementController_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CameraMovementController_FixedUpdate)(uintptr_t, const Il2CppMethod*) = nullptr;
@@ -3501,6 +3503,85 @@ static bool ApplyAimbotCounterStrafeUnsafe(uintptr_t player, uintptr_t command)
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+void __fastcall hk_AimSnapshot_nev(uintptr_t snapshot, uintptr_t writer, const Il2CppMethod* method)
+{
+    if (!o_AimSnapshot_nev) return;
+    // Live IDA shows remote aim is emitted here from AimSnapshot.AimBuffer, not
+    // solely from its AimingData clone. In the current non-buffered mode nev()
+    // takes the last sample from AimBuffer and serializes it as two quantized
+    // shorts, also storing those values in AimX (+0x54) / AimY (+0x58).
+    // Patch only this detached outgoing snapshot and its detached buffer. Live
+    // AimController.aimingData and all camera/input objects remain untouched.
+    const bool outgoing = silentAntiAimEnabled && snapshot && writer &&
+        silentAntiAimLatestInputValid && !silentAntiAimLatestFiring;
+    if (!outgoing) {
+        o_AimSnapshot_nev(snapshot, writer, method);
+        return;
+    }
+
+    uintptr_t aimBuffer = 0;
+    uintptr_t axisRows = 0;
+    uintptr_t pitchRow = 0;
+    uintptr_t yawRow = 0;
+    int lastSample = -1;
+    float savedPitch = 0.0f;
+    float savedYaw = 0.0f;
+    float savedAimX = 0.0f;
+    float savedAimY = 0.0f;
+    bool patched = false;
+    __try {
+        aimBuffer = *reinterpret_cast<uintptr_t*>(snapshot + 0x30);
+        if (aimBuffer) {
+            lastSample = *reinterpret_cast<int*>(aimBuffer + 0x20);
+            axisRows = *reinterpret_cast<uintptr_t*>(aimBuffer + 0x10);
+            // Managed float[][]: array data begins at +0x20. Axis 0 is AimX
+            // (pitch), axis 1 is AimY (yaw), as confirmed by mwq/ocj and
+            // AimBuffer.get(index, axis) in the live decompilation.
+            if (lastSample >= 0 && axisRows &&
+                *reinterpret_cast<int*>(axisRows + 0x18) >= 2) {
+                pitchRow = *reinterpret_cast<uintptr_t*>(axisRows + 0x20);
+                yawRow = *reinterpret_cast<uintptr_t*>(axisRows + 0x28);
+                if (pitchRow && yawRow &&
+                    lastSample < *reinterpret_cast<int*>(pitchRow + 0x18) &&
+                    lastSample < *reinterpret_cast<int*>(yawRow + 0x18)) {
+                    float* pitch = reinterpret_cast<float*>(
+                        pitchRow + 0x20 + sizeof(float) * lastSample);
+                    float* yaw = reinterpret_cast<float*>(
+                        yawRow + 0x20 + sizeof(float) * lastSample);
+                    savedPitch = *pitch;
+                    savedYaw = *yaw;
+                    savedAimX = *reinterpret_cast<float*>(snapshot + 0x54);
+                    savedAimY = *reinterpret_cast<float*>(snapshot + 0x58);
+                    const Vector3 fake = silentAntiAimLatestFakeAngles;
+                    *pitch = fake.x;
+                    *yaw = fake.y;
+                    *reinterpret_cast<float*>(snapshot + 0x54) = fake.x;
+                    *reinterpret_cast<float*>(snapshot + 0x58) = fake.y;
+                    patched = true;
+                }
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { patched = false; }
+
+    o_AimSnapshot_nev(snapshot, writer, method);
+
+    if (patched) {
+        __try {
+            float* pitch = reinterpret_cast<float*>(
+                pitchRow + 0x20 + sizeof(float) * lastSample);
+            float* yaw = reinterpret_cast<float*>(
+                yawRow + 0x20 + sizeof(float) * lastSample);
+            *pitch = savedPitch;
+            *yaw = savedYaw;
+            *reinterpret_cast<float*>(snapshot + 0x54) = savedAimX;
+            *reinterpret_cast<float*>(snapshot + 0x58) = savedAimY;
+            InterlockedIncrement(&silentAntiAimAppliedCalls);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
 }
 
 void __fastcall hk_AimingData_nev(uintptr_t aimingData, uintptr_t writer, const Il2CppMethod* method)
@@ -8695,6 +8776,14 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimNevCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_AIMINGDATA_NEV)) :
         antiAimNevCreateStatus;
+    const MH_STATUS antiAimSnapshotNevCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_AIMSNAPSHOT_NEV),
+        hk_AimSnapshot_nev,
+        (LPVOID*)&o_AimSnapshot_nev);
+    const MH_STATUS antiAimSnapshotNevEnableStatus =
+        antiAimSnapshotNevCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_AIMSNAPSHOT_NEV)) :
+        antiAimSnapshotNevCreateStatus;
     silentAntiAimHookReady = antiAimLateAimCreateStatus == MH_OK &&
         antiAimLateAimEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
@@ -8703,15 +8792,19 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimNetworkEnableStatus == MH_OK &&
         antiAimNevCreateStatus == MH_OK &&
         antiAimNevEnableStatus == MH_OK &&
+        antiAimSnapshotNevCreateStatus == MH_OK &&
+        antiAimSnapshotNevEnableStatus == MH_OK &&
         o_Transform_get_rotation_Injected &&
         o_Transform_set_rotation_Injected && o_Transform_get_forward &&
         o_Object_IsAlive;
 
-    LINDY_LOG("[anti-aim] input=%d/%d; outbound-mxc=%d/%d; nhi=%d/%d; outbound-nev=%d/%d; quaternion=%p/%p; ready=%d",
+    LINDY_LOG("[anti-aim] input=%d/%d; outbound-mxc=%d/%d; nhi=%d/%d; aiming-nev=%d/%d; snapshot-nev=%d/%d; quaternion=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
         (int)antiAimNetworkCreateStatus, (int)antiAimNetworkEnableStatus,
         (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
         (int)antiAimNevCreateStatus, (int)antiAimNevEnableStatus,
+        (int)antiAimSnapshotNevCreateStatus,
+        (int)antiAimSnapshotNevEnableStatus,
         (void*)o_Transform_get_rotation_Injected,
         (void*)o_Transform_set_rotation_Injected,
         silentAntiAimHookReady ? 1 : 0);
