@@ -282,7 +282,6 @@ struct Matrix16 {
 #define OFFSET_HITMARKERVIEW_LOCAL_HIT               0xB47B30  // HitMarkerView.bbru(PlayerController, ccv)
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xAEFED0
 #define OFFSET_CHEAT_RUNTIME_SET_BHOP              0xAF0760
-#define OFFSET_PLAYERCONTROLLER_SET_TPS             0xBD58A0  // PlayerController.mzy(bool)
 #define OFFSET_PLAYERCONTROLLER_COMMAND             0xBD6B50
 #define OFFSET_PLAYERCONTROLLER_GET_ACTOR           0xBD4730  // PlayerController.mzj() -> dwg
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_A          0xBEB260  // PlayerManager.ndb(PlayerController)
@@ -540,7 +539,9 @@ Il2CppClass* g_GameControllerClass = nullptr;
 Il2CppField* g_GameControllerInstanceField = nullptr;
 void(__fastcall* o_CheatRuntime_SetThirdPerson)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CheatRuntime_SetBhop)(uintptr_t, uintptr_t, bool) = nullptr;
-void(__fastcall* o_PlayerController_SetTps)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
+uintptr_t directAdminRuntime = 0;
+uintptr_t directAdminRuntimeController = 0;
+uint32_t directAdminRuntimeHandle = 0;
 char thirdPersonStatus[96] = "Disabled";
 bool worldColorEnabled = false;
 float worldColor[3] = { 0.35f, 0.55f, 1.0f };
@@ -2437,26 +2438,54 @@ static bool ApplyCustomizedThirdPersonOffsets()
     }
 }
 
+static uintptr_t GetDirectAdminRuntime()
+{
+    const uintptr_t controller = GetActiveGameController();
+    if (!controller || !g_il2cpp.object_new) return 0;
+    if (directAdminRuntime && directAdminRuntimeController == controller)
+        return directAdminRuntime;
+    Il2CppClass* runtimeClass = g_il2cpp.find_class("", "crk");
+    if (!runtimeClass) return 0;
+    const uintptr_t runtime = reinterpret_cast<uintptr_t>(
+        g_il2cpp.object_new(runtimeClass));
+    if (!runtime) return 0;
+    __try {
+        // dump1 crk.<cjjt>k__BackingField: the GameController consumed by baee.
+        *reinterpret_cast<uintptr_t*>(runtime + 0x20) = controller;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+    if (g_il2cpp.gchandle_new)
+        directAdminRuntimeHandle = g_il2cpp.gchandle_new(
+            reinterpret_cast<Il2CppObject*>(runtime), false);
+    directAdminRuntime = runtime;
+    directAdminRuntimeController = controller;
+    return runtime;
+}
+
 static bool ApplyNativeThirdPersonState()
 {
-    const uintptr_t player = liveHudLocalPlayer;
-    if (!player || !o_PlayerController_SetTps) {
+    if (!liveHudLocalPlayer || !o_CheatRuntime_SetThirdPerson) {
         strcpy_s(thirdPersonStatus, "Waiting for local PlayerController");
         return false;
     }
     if (!ApplyCustomizedThirdPersonOffsets()) return false;
+    const uintptr_t runtime = GetDirectAdminRuntime();
+    if (!runtime) {
+        strcpy_s(thirdPersonStatus, "Waiting for direct admin runtime");
+        return false;
+    }
     __try {
-        // crk.baee(bool) ultimately switches GameController.chna through this
-        // PlayerController transition. LAN exposes the same local controller.
-        o_PlayerController_SetTps(player, thirdPersonEnabled, nullptr);
+        // Use the actual admin implementation crk.baee(bool). Do not call mzy:
+        // mzy is the handedness transition that only moves the weapon left/right.
+        o_CheatRuntime_SetThirdPerson(runtime, thirdPersonEnabled, nullptr);
         if (!ApplyCustomizedThirdPersonOffsets()) return false;
         strcpy_s(thirdPersonStatus, thirdPersonEnabled ?
-            "Active; direct admin TPS logic" :
+            "Active; native admin TPS logic" :
             "Disabled; original offsets restored");
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        strcpy_s(thirdPersonStatus, "PlayerController TPS transition failed");
+        strcpy_s(thirdPersonStatus, "Native admin TPS transition failed");
         return false;
     }
 }
@@ -2490,6 +2519,9 @@ static bool ApplyAdminBhopState()
             adminBhopOriginalMaxSpeed = *reinterpret_cast<float*>(jump + 0x1C);
             adminBhopOriginalCaptured = true;
         }
+        const uintptr_t runtime = GetDirectAdminRuntime();
+        if (runtime && o_CheatRuntime_SetBhop)
+            o_CheatRuntime_SetBhop(runtime, movement, adminBhopEnabled);
         *reinterpret_cast<bool*>(jump + 0x10) = adminBhopEnabled;
         if (adminBhopEnabled) {
             const float scaledMultiplier = adminBhopSpeedMultiplier *
@@ -3475,15 +3507,17 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     InterlockedIncrement(&silentAntiAimInputBuildCalls);
 
     if (keyValidated && adminBhopEnabled && adminBhopCsStrafeMode && !jbActive &&
-        player && command && player == liveHudLocalPlayer && lastCharacterController &&
-        o_CC_get_isGrounded) {
+        player && command && player == liveHudLocalPlayer && o_CC_get_isGrounded) {
         __try {
-            const bool grounded = o_CC_get_isGrounded(lastCharacterController);
+            const uintptr_t movement = *reinterpret_cast<uintptr_t*>(player + 0xE0);
+            const uintptr_t characterController = movement ?
+                *reinterpret_cast<uintptr_t*>(movement + 0xD0) : 0;
+            const bool grounded = !characterController ||
+                o_CC_get_isGrounded(characterController);
             if (!grounded) {
                 float& strafeInput = *reinterpret_cast<float*>(command + 0x10);
                 float& forwardInput = *reinterpret_cast<float*>(command + 0x14);
                 const float manualStrafe = strafeInput;
-                const float originalForwardInput = forwardInput;
                 float currentYaw = adminBhopPreviousCameraYaw;
                 bool currentYawValid = false;
                 const uintptr_t aimController = *reinterpret_cast<uintptr_t*>(player + 0xC8);
@@ -3504,16 +3538,15 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
                 const bool matchingCameraTurn = hasManualStrafe &&
                     fabsf(yawDelta) > 0.001f && manualStrafe * yawDelta > 0.0f;
                 InterlockedExchange(&adminBhopManualStrafeHeld,
-                    matchingCameraTurn ? 1 : 0);
-                if (matchingCameraTurn) {
+                    hasManualStrafe ? 1 : 0);
+                if (hasManualStrafe) {
                     InterlockedExchange64(&adminBhopManualStrafeGraceUntil,
                         static_cast<LONG64>(GetTickCount64()) + 180);
-                    forwardInput = fabsf(manualStrafe);
-                    strafeInput = 0.0f;
-                } else {
-                    forwardInput = originalForwardInput < -0.01f ?
-                        originalForwardInput : 0.0f;
-                    strafeInput = 0.0f;
+                    // Preserve the real A/D axis. The old code zeroed it and moved
+                    // the value to W, so the game received no lateral air strafe.
+                    strafeInput = matchingCameraTurn ?
+                        (manualStrafe > 0.0f ? 1.0f : -1.0f) : manualStrafe;
+                    if (forwardInput > 0.01f) forwardInput = 0.0f;
                 }
             } else {
                 InterlockedExchange(&adminBhopManualStrafeHeld, 0);
@@ -8397,7 +8430,6 @@ DWORD WINAPI HackThread(LPVOID)
 
     o_CheatRuntime_SetThirdPerson = (void(__fastcall*)(uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON);
     o_CheatRuntime_SetBhop = (void(__fastcall*)(uintptr_t, uintptr_t, bool))(base + OFFSET_CHEAT_RUNTIME_SET_BHOP);
-    o_PlayerController_SetTps = (void(__fastcall*)(uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_PLAYERCONTROLLER_SET_TPS);
     o_GetPlayerController = (uintptr_t(__fastcall*)())(base + OFFSET_GET_PLAYERCONTROLLER);
 
     const MH_STATUS playerEventACreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYERMANAGER_PLAYER_EVENT_A),
