@@ -297,9 +297,10 @@ struct Matrix16 {
 #define OFFSET_PLAYER_HIT_CONFIRMED_A                  0xC2AB10  // PlayerHitController.obl(bai)
 #define OFFSET_PLAYER_HIT_CONFIRMED_B                  0xC2ACD0  // PlayerHitController.obm(bai)
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xB4A790
-#define OFFSET_AIMINGDATA_NEV                       0xC1CEF0  // AimingData.nev(gfk), verified outgoing serializer
+// OFFSET_AIMINGDATA_NEV removed: replaced with InputFilter delegate hook
 #define OFFSET_AIMSNAPSHOT_NEV                      0xC1C940  // AimSnapshot.nev(gfk), verified authoritative outbound aim serializer
 #define OFFSET_PLAYERCONTROLS_UPDATE                 0xB4CFB0
+#define OFFSET_PLAYERCONTROLS_INPUTFILTER_DELEGATE   0x88  // Action<xl> <ckqt>k__BackingField
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_UPDATE       0xB5C790
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_FIXEDUPDATE 0xB5C700
 #define OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT         0xC19440  // AimController.mwp(AimSnapshot)
@@ -515,6 +516,8 @@ Vector3 silentAntiAimLatestRealAimEuler;
 Vector3 silentAntiAimLatestFakeAngles;
 Vector3 silentAntiAimRealCameraAngles;
 bool silentAntiAimRealCameraValid = false;
+Vector3 silentAntiAimOriginalAngles;  // Real angles from DeltaAimAngles
+Vector3 silentAntiAimOriginalEulerAngles;  // Real euler angles
 volatile LONG silentAntiAimCameraRestoreCalls = 0;
 ULONGLONG silentAntiAimSpinEpoch = 0;
 float silentAntiAimSpinYaw = 0.0f;
@@ -2074,9 +2077,11 @@ void(__fastcall* o_HitMarkerView_Show)(uintptr_t, bool, bool, const Il2CppMethod
 void(__fastcall* o_HitMarkerView_LocalHit)(uintptr_t, void*, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_PlayerController_Command)(uintptr_t, uintptr_t, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_KeyboardControl_BuildCommand)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
-void(__fastcall* o_AimingData_nev)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimSnapshot_nev)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_PlayerControls_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
+// InputFilter delegate hook: void(xl*)
+typedef void(__fastcall* t_InputFilter)(uintptr_t, const Il2CppMethod*);
+t_InputFilter o_InputFilter = nullptr;
 void(__fastcall* o_CameraMovementController_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CameraMovementController_FixedUpdate)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
@@ -3584,44 +3589,93 @@ void __fastcall hk_AimSnapshot_nev(uintptr_t snapshot, uintptr_t writer, const I
     }
 }
 
-void __fastcall hk_AimingData_nev(uintptr_t aimingData, uintptr_t writer, const Il2CppMethod* method)
+// hk_AimingData_nev removed: replaced with InputFilter delegate hook
+
+// InputFilter delegate hook: patches fake angles into AimingData before original InputFilter runs
+void __fastcall hk_InputFilter(uintptr_t inputsPtr, const Il2CppMethod* method)
 {
-    if (!o_AimingData_nev) return;
-    // Live GameAssembly: nev(gfk) writes outbound fields via gfk.bpvg;
-    // neu(gfh) is the incoming reader. AimController.mwq() creates a detached
-    // AimingData clone for the outgoing snapshot, so patch only a non-live
-    // object. The controller-owned object at +0x80 is never modified; therefore
-    // the local camera remains independent even if rendering runs concurrently.
-    const bool outgoingClone = silentAntiAimEnabled && aimingData && writer &&
-        silentAntiAimLatestInputValid && !silentAntiAimLatestFiring &&
-        aimingData != silentAntiAimLatestAimingData;
-    if (!outgoingClone) {
-        o_AimingData_nev(aimingData, writer, method);
-        return;
-    }
-    Vector3 savedAim{};
-    Vector3 savedEuler{};
-    bool patched = false;
-    __try {
-        savedAim = *reinterpret_cast<Vector3*>(aimingData + 0x18);
-        savedEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
-        const Vector3 fake = silentAntiAimLatestFakeAngles;
-        *reinterpret_cast<Vector3*>(aimingData + 0x18) = fake;
-        *reinterpret_cast<Vector3*>(aimingData + 0x24) = fake;
-        patched = true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { patched = false; }
-
-    o_AimingData_nev(aimingData, writer, method);
-
-    if (patched) {
+    if (!o_InputFilter) return;
+    
+    // inputsPtr points to xl struct (input data)
+    // Before calling original InputFilter, we need to patch AimingData if antiaim is active
+    
+    if (silentAntiAimEnabled && silentAntiAimLatestInputValid && !silentAntiAimLatestFiring &&
+        silentAntiAimLatestAimingData) {
+        
+        // Save original angles from AimingData
+        Vector3 savedAim{};
+        Vector3 savedEuler{};
+        bool patched = false;
+        
         __try {
-            *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAim;
-            *reinterpret_cast<Vector3*>(aimingData + 0x24) = savedEuler;
-            InterlockedIncrement(&silentAntiAimAppliedCalls);
+            savedAim = *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x18);
+            savedEuler = *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x24);
+            
+            // Store real angles for LateUpdate camera restore
+            silentAntiAimOriginalAngles = savedAim;
+            silentAntiAimOriginalEulerAngles = savedEuler;
+            
+            // Patch with fake angles
+            const Vector3 fake = silentAntiAimLatestFakeAngles;
+            *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x18) = fake;
+            *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x24) = fake;
+            patched = true;
         }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        __except (EXCEPTION_EXECUTE_HANDLER) { patched = false; }
+        
+        // Call original InputFilter with fake angles
+        o_InputFilter(inputsPtr, method);
+        
+        // Restore real angles after original InputFilter runs
+        if (patched) {
+            __try {
+                *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x18) = savedAim;
+                *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x24) = savedEuler;
+                InterlockedIncrement(&silentAntiAimAppliedCalls);
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+    } else {
+        // No antiaim: just call original
+        o_InputFilter(inputsPtr, method);
     }
+}
+
+// Initialize InputFilter delegate hook from PlayerControls instance
+static bool InitializeInputFilterHook(uintptr_t playerControls)
+{
+    if (!playerControls || o_InputFilter) return o_InputFilter != nullptr;
+    
+    // Get the Action<xl> delegate at offset 0x88
+    uintptr_t delegatePtr = 0;
+    __try {
+        delegatePtr = *(uintptr_t*)(playerControls + OFFSET_PLAYERCONTROLS_INPUTFILTER_DELEGATE);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    
+    if (!delegatePtr) return false;
+    
+    // Delegate structure: method_ptr is at offset 0x18 in System.Delegate
+    uintptr_t methodPtr = 0;
+    __try {
+        methodPtr = *(uintptr_t*)(delegatePtr + 0x18);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    
+    if (!methodPtr) return false;
+    
+    // Hook the method_ptr
+    const MH_STATUS createStatus = MH_CreateHook(
+        (LPVOID)methodPtr,
+        hk_InputFilter,
+        (LPVOID*)&o_InputFilter);
+    
+    if (createStatus != MH_OK && createStatus != MH_ERROR_ALREADY_CREATED) {
+        return false;
+    }
+    
+    const MH_STATUS enableStatus = MH_EnableHook((LPVOID)methodPtr);
+    return enableStatus == MH_OK || enableStatus == MH_ERROR_ALREADY_CREATED;
 }
 
 uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
@@ -3759,9 +3813,8 @@ void __fastcall hk_NetworkController_WriteSnapshot(
     if (!o_NetworkController_WriteSnapshot) return;
     // Live GameAssembly: mxc(gfk) is the authoritative outbound path. It creates
     // a new PlayerSnapshot and calls AimController.mwq(), which clones current
-    // AimingData before virtual nev(gfk) serialization. Keep this outer hook
-    // observational only; hk_AimingData_nev patches the detached clone while it
-    // is written. No command, live AimingData, transform, or camera is touched.
+    // AimingData before virtual nev(gfk) serialization. InputFilter delegate hook
+    // now patches fake angles before original InputFilter runs.
     o_NetworkController_WriteSnapshot(networkController, writer, method);
     if (silentAntiAimEnabled && networkController && writer &&
         silentAntiAimLatestInputValid && !silentAntiAimLatestFiring)
@@ -4143,6 +4196,27 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
         liveHitMarkerView = instance ? *(uintptr_t*)(instance + 0x48) : 0;
         liveHudLocalPlayer = instance ? *(uintptr_t*)(instance + 0xD0) : 0;
         sniperSightObject = liveAimView ? *(uintptr_t*)(liveAimView + 0x50) : 0;
+        
+        // Try to initialize InputFilter hook if not already done
+        if (!o_InputFilter && instance) {
+            // Get PlayerControls singleton: PlayerControls.ckqr (static property at 0x0)
+            uintptr_t playerControlsClass = 0;
+            __try {
+                // Find PlayerControls class
+                Il2CppClass* pcClass = g_il2cpp.find_class("", "PlayerControls");
+                if (pcClass) {
+                    Il2CppField* instanceField = g_il2cpp.class_get_field_from_name(pcClass, "ckqr");
+                    if (instanceField) {
+                        uintptr_t playerControlsInstance = 0;
+                        g_il2cpp.field_static_get_value(instanceField, &playerControlsInstance);
+                        if (playerControlsInstance) {
+                            InitializeInputFilterHook(playerControlsInstance);
+                        }
+                    }
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
@@ -8768,14 +8842,7 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimInputCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND)) :
         antiAimInputCreateStatus;
-    const MH_STATUS antiAimNevCreateStatus = MH_CreateHook(
-        (LPVOID)(base + OFFSET_AIMINGDATA_NEV),
-        hk_AimingData_nev,
-        (LPVOID*)&o_AimingData_nev);
-    const MH_STATUS antiAimNevEnableStatus =
-        antiAimNevCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_AIMINGDATA_NEV)) :
-        antiAimNevCreateStatus;
+    // AimingData.nev hook removed: replaced with InputFilter delegate hook
     const MH_STATUS antiAimSnapshotNevCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_AIMSNAPSHOT_NEV),
         hk_AimSnapshot_nev,
