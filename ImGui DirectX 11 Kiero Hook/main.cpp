@@ -8857,19 +8857,16 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimInputEnableStatus == MH_OK &&
         antiAimNetworkCreateStatus == MH_OK &&
         antiAimNetworkEnableStatus == MH_OK &&
-        antiAimNevCreateStatus == MH_OK &&
-        antiAimNevEnableStatus == MH_OK &&
         antiAimSnapshotNevCreateStatus == MH_OK &&
         antiAimSnapshotNevEnableStatus == MH_OK &&
         o_Transform_get_rotation_Injected &&
         o_Transform_set_rotation_Injected && o_Transform_get_forward &&
         o_Object_IsAlive;
 
-    LINDY_LOG("[anti-aim] input=%d/%d; outbound-mxc=%d/%d; nhi=%d/%d; aiming-nev=%d/%d; snapshot-nev=%d/%d; quaternion=%p/%p; ready=%d",
+    LINDY_LOG("[anti-aim] input=%d/%d; outbound-mxc=%d/%d; nhi=%d/%d; snapshot-nev=%d/%d; quaternion=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
         (int)antiAimNetworkCreateStatus, (int)antiAimNetworkEnableStatus,
         (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
-        (int)antiAimNevCreateStatus, (int)antiAimNevEnableStatus,
         (int)antiAimSnapshotNevCreateStatus,
         (int)antiAimSnapshotNevEnableStatus,
         (void*)o_Transform_get_rotation_Injected,
