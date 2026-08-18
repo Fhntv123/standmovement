@@ -283,6 +283,7 @@ struct Matrix16 {
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xAEFED0
 #define OFFSET_CHEAT_RUNTIME_SET_BHOP              0xAF0760
 #define OFFSET_PLAYERCONTROLLER_COMMAND             0xBD6B50
+#define OFFSET_AIMINGDATA_SERIALIZE                  0xC1CC50  // AimingData.neu(gfh), outgoing writer
 #define OFFSET_PLAYERCONTROLLER_GET_ACTOR           0xBD4730  // PlayerController.mzj() -> dwg
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_A          0xBEB260  // PlayerManager.ndb(PlayerController)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_B          0xBEB430  // PlayerManager.ndc(PlayerController)
@@ -2075,6 +2076,7 @@ void(__fastcall* o_PlayerControls_Update)(uintptr_t, const Il2CppMethod*) = null
 void(__fastcall* o_CameraMovementController_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CameraMovementController_FixedUpdate)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_AimingData_Serialize)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 Vector3(__fastcall* o_AimController_GetHeadDirective)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_LateAim)(uintptr_t, const Il2CppMethod*) = nullptr;
 
@@ -3612,11 +3614,66 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
             }
             __except (EXCEPTION_EXECUTE_HANDLER) { jumpProfile = false; }
         }
+        __try {
+            // dump1 xl fire flag. Shots keep real network angles; anti-aim is
+            // applied only to non-firing outgoing snapshots.
+            silentAntiAimLatestFiring =
+                *reinterpret_cast<bool*>(command + 0x21);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            silentAntiAimLatestFiring = false;
+        }
         UpdateRotationAntiAimTarget(player, jumpProfile);
     }
     else if (silentAntiAimLatestPlayer == player || !silentAntiAimEnabled)
         ClearRotationAntiAimTargetUnsafe();
     return command;
+}
+
+void __fastcall hk_AimingData_Serialize(
+    uintptr_t aimingData, uintptr_t writer, const Il2CppMethod* method)
+{
+    if (!o_AimingData_Serialize) return;
+    const ULONGLONG now = GetTickCount64();
+    const bool recentLocalCommand = silentAntiAimLatestCommandTick &&
+        now >= silentAntiAimLatestCommandTick &&
+        now - silentAntiAimLatestCommandTick <= 250ULL;
+    if (!aimingData || !writer || !keyValidated || !silentAntiAimEnabled ||
+        !silentAntiAimLatestInputValid || silentAntiAimLatestFiring ||
+        !recentLocalCommand) {
+        o_AimingData_Serialize(aimingData, writer, method);
+        return;
+    }
+
+    Vector3 savedAim = {};
+    Vector3 savedEuler = {};
+    bool patched = false;
+    __try {
+        // AimController may clone AimingData for AimSnapshot, so pointer equality
+        // with the live object is intentionally not required. Scope by the fresh
+        // local BuildCommand publication and restore synchronously after writing.
+        savedAim = *reinterpret_cast<Vector3*>(aimingData + 0x18);
+        savedEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
+        *reinterpret_cast<Vector3*>(aimingData + 0x18) =
+            silentAntiAimLatestFakeAngles;
+        *reinterpret_cast<Vector3*>(aimingData + 0x24) =
+            silentAntiAimLatestFakeAngles;
+        patched = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { patched = false; }
+
+    o_AimingData_Serialize(aimingData, writer, method);
+
+    if (patched) {
+        __try {
+            *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAim;
+            *reinterpret_cast<Vector3*>(aimingData + 0x24) = savedEuler;
+            InterlockedIncrement(&silentAntiAimCommandCalls);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            silentAntiAimLatestInputValid = false;
+        }
+    }
 }
 
 static Quaternion QuaternionFromAxisAngle(float axisX, float axisY,
@@ -7954,7 +8011,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             silentAntiAimActiveJumpProfile ? "Jump" : "Default");
         const char* antiAimRuntimeStatus = !silentAntiAimEnabled ? "Disabled" :
             (!silentAntiAimHookReady ? "Rotation anti-aim hook failed" :
-            (InterlockedCompareExchange(&silentAntiAimBonePasses, 0, 0) > 0 ?
+            (InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0) > 0 ?
                 ((silentAntiAimActiveJumpProfile ?
                     silentAntiAimJumpMode : silentAntiAimMode) == 3 ?
                     (silentAntiAimEdgeFound ? "Working: Edge Yaw locked" :
@@ -7962,7 +8019,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                  "Working: rotation applied") :
                 "Waiting for local live rig"));
         ImGui::TextWrapped("Status: %s", antiAimRuntimeStatus);
-        ImGui::TextDisabled("late:%ld bones:%ld yaw:%.1f",
+        ImGui::TextDisabled("net:%ld late:%ld bones:%ld yaw:%.1f",
+            InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimLateAimCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimBonePasses, 0, 0),
             silentAntiAimRenderYaw);
@@ -8602,6 +8660,14 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimLateAimCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM)) :
         antiAimLateAimCreateStatus;
+    const MH_STATUS antiAimSerializeCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_AIMINGDATA_SERIALIZE),
+        hk_AimingData_Serialize,
+        (LPVOID*)&o_AimingData_Serialize);
+    const MH_STATUS antiAimSerializeEnableStatus =
+        antiAimSerializeCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_AIMINGDATA_SERIALIZE)) :
+        antiAimSerializeCreateStatus;
     const MH_STATUS antiAimInputCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND),
         hk_KeyboardControl_BuildCommand,
@@ -8614,12 +8680,15 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimLateAimEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
         antiAimInputEnableStatus == MH_OK &&
+        antiAimSerializeCreateStatus == MH_OK &&
+        antiAimSerializeEnableStatus == MH_OK &&
         o_Transform_get_rotation_Injected &&
         o_Transform_set_rotation_Injected && o_Transform_get_forward &&
         o_Object_IsAlive;
 
-    LINDY_LOG("[anti-aim] rotation input=%d/%d; nhi=%d/%d; quaternion=%p/%p; ready=%d",
+    LINDY_LOG("[anti-aim] input=%d/%d; network=%d/%d; nhi=%d/%d; quaternion=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
+        (int)antiAimSerializeCreateStatus, (int)antiAimSerializeEnableStatus,
         (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
         (void*)o_Transform_get_rotation_Injected,
         (void*)o_Transform_set_rotation_Injected,
