@@ -2443,17 +2443,27 @@ static bool ApplyNativeThirdPersonState()
     }
     if (!ApplyCustomizedThirdPersonOffsets()) return false;
     const uintptr_t runtime = GetNativeCheatRuntime();
-    if (!runtime) {
-        strcpy_s(thirdPersonStatus, "Waiting for native cheat runtime");
-        return false;
-    }
     __try {
-        o_CheatRuntime_SetThirdPerson(runtime, thirdPersonEnabled, nullptr);
+        if (runtime) {
+            o_CheatRuntime_SetThirdPerson(runtime, thirdPersonEnabled, nullptr);
+        } else {
+            // LAN game controllers do not own the offline/admin crk runtime. The
+            // PlayerController native TPS state is cavn at +0x78 in dump1/il2cpp.h;
+            // use that authoritative per-player state when no crk exists.
+            const uintptr_t player = liveHudLocalPlayer;
+            if (!player) {
+                strcpy_s(thirdPersonStatus, "Waiting for LAN local player");
+                return false;
+            }
+            *reinterpret_cast<bool*>(player + 0x78) = thirdPersonEnabled;
+        }
         // The native transition can rewrite camera tuning during death/respawn.
         // Apply the scene-stable offsets after it, not only before it.
         if (!ApplyCustomizedThirdPersonOffsets()) return false;
         strcpy_s(thirdPersonStatus, thirdPersonEnabled ?
-            "Active; death-safe custom TPS camera" : "Disabled; original offsets restored");
+            (runtime ? "Active; death-safe custom TPS camera" :
+                       "Active; LAN PlayerController TPS fallback") :
+            "Disabled; original offsets restored");
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -2486,6 +2496,41 @@ static bool ApplyAdminBhopState()
         if (runtime && o_CheatRuntime_SetBhop)
             o_CheatRuntime_SetBhop(runtime, movement, adminBhopEnabled);
         *reinterpret_cast<bool*>(jump + 0x10) = adminBhopEnabled;
+
+        // Offline/admin crk is absent in LAN. MovementController keeps its active
+        // jump-state module (zp) in cbhk (+0x68); zp.cbla (+0x80) is the live
+        // JumpParameters reference. Keep it synchronized with the source parameters
+        // so LAN movement cannot continue using a pre-toggle BHop value.
+        const uintptr_t states = *reinterpret_cast<uintptr_t*>(movement + 0x68);
+        const size_t stateCount = states ?
+            *reinterpret_cast<size_t*>(states + 0x18) : 0;
+        if (states && stateCount > 0 && stateCount <= 32 &&
+            g_il2cpp.class_get_name) {
+            for (size_t i = 0; i < stateCount; ++i) {
+                const uintptr_t state = *reinterpret_cast<uintptr_t*>(
+                    states + 0x20 + i * sizeof(uintptr_t));
+                if (!state) continue;
+                Il2CppClass* stateClass =
+                    *reinterpret_cast<Il2CppClass**>(state);
+                const char* stateName = stateClass ?
+                    g_il2cpp.class_get_name(stateClass) : nullptr;
+                if (!stateName || strcmp(stateName, "zp") != 0) continue;
+                const uintptr_t liveJump =
+                    *reinterpret_cast<uintptr_t*>(state + 0x80);
+                if (liveJump) {
+                    *reinterpret_cast<bool*>(liveJump + 0x10) =
+                        adminBhopEnabled;
+                    *reinterpret_cast<float*>(liveJump + 0x14) =
+                        adminBhopEnabled ? adminBhopSpeedMultiplier *
+                            (adminBhopMaxSpeed / 6.50f) :
+                            adminBhopOriginalSpeedMultiplier;
+                    *reinterpret_cast<float*>(liveJump + 0x1C) =
+                        adminBhopEnabled ? adminBhopMaxSpeed :
+                            adminBhopOriginalMaxSpeed;
+                }
+                break;
+            }
+        }
         if (adminBhopEnabled) {
             // Keep native propulsion continuous. Toggling this multiplier to
             // zero on brief A/D gaps caused the visible stop-then-resume jerk and
@@ -2497,7 +2542,7 @@ static bool ApplyAdminBhopState()
             strcpy_s(adminBhopStatus, adminBhopCsStrafeMode ?
                 "Native admin BHop active; CS air strafe" :
                 (runtime ? "Native admin BHop active" :
-                    "Native jump BHop active; runtime pending"));
+                    "LAN jump-state BHop fallback active"));
         } else if (adminBhopOriginalCaptured) {
             *reinterpret_cast<bool*>(jump + 0x10) = adminBhopOriginalEnabled;
             *reinterpret_cast<float*>(jump + 0x14) = adminBhopOriginalSpeedMultiplier;
