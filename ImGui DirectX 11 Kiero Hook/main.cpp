@@ -283,7 +283,7 @@ struct Matrix16 {
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xAEFED0
 #define OFFSET_CHEAT_RUNTIME_SET_BHOP              0xAF0760
 #define OFFSET_PLAYERCONTROLLER_COMMAND             0xBD6B50
-#define OFFSET_AIMINGDATA_SERIALIZE                  0xC1CC50  // AimingData.neu(gfh), outgoing writer
+#define OFFSET_PLAYERSNAPSHOT_SERIALIZE             0xBED5D0  // PlayerSnapshot.neu(gfh), final outgoing packet
 #define OFFSET_PLAYERCONTROLLER_GET_ACTOR           0xBD4730  // PlayerController.mzj() -> dwg
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_A          0xBEB260  // PlayerManager.ndb(PlayerController)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_B          0xBEB430  // PlayerManager.ndc(PlayerController)
@@ -2076,7 +2076,7 @@ void(__fastcall* o_PlayerControls_Update)(uintptr_t, const Il2CppMethod*) = null
 void(__fastcall* o_CameraMovementController_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CameraMovementController_FixedUpdate)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
-void(__fastcall* o_AimingData_Serialize)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_PlayerSnapshot_Serialize)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 Vector3(__fastcall* o_AimController_GetHeadDirective)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_LateAim)(uintptr_t, const Il2CppMethod*) = nullptr;
 
@@ -3630,49 +3630,115 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     return command;
 }
 
-void __fastcall hk_AimingData_Serialize(
-    uintptr_t aimingData, uintptr_t writer, const Il2CppMethod* method)
+static bool IsAuthoritativeLocalPlayerSnapshot(uintptr_t snapshot)
 {
-    if (!o_AimingData_Serialize) return;
+    if (!snapshot || !liveHudLocalPlayer) return false;
+    __try {
+        // dump.cs + il2cpp.h verified chain:
+        // PlayerController.NetworkController +0x108 -> NetworkController.cavb +0x70.
+        // This is the complete local outgoing PlayerSnapshot, not a child clone.
+        const uintptr_t networkController =
+            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0x108);
+        const uintptr_t outgoingSnapshot = networkController ?
+            *reinterpret_cast<uintptr_t*>(networkController + 0x70) : 0;
+        return outgoingSnapshot && outgoingSnapshot == snapshot;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+void __fastcall hk_PlayerSnapshot_Serialize(
+    uintptr_t snapshot, uintptr_t writer, const Il2CppMethod* method)
+{
+    if (!o_PlayerSnapshot_Serialize) return;
     const ULONGLONG now = GetTickCount64();
     const bool recentLocalCommand = silentAntiAimLatestCommandTick &&
         now >= silentAntiAimLatestCommandTick &&
         now - silentAntiAimLatestCommandTick <= 250ULL;
-    if (!aimingData || !writer || !keyValidated || !silentAntiAimEnabled ||
+    if (!snapshot || !writer || !keyValidated || !silentAntiAimEnabled ||
         !silentAntiAimLatestInputValid || silentAntiAimLatestFiring ||
-        !recentLocalCommand) {
-        o_AimingData_Serialize(aimingData, writer, method);
+        !recentLocalCommand || !IsAuthoritativeLocalPlayerSnapshot(snapshot)) {
+        o_PlayerSnapshot_Serialize(snapshot, writer, method);
         return;
     }
 
+    uintptr_t movement = 0;
+    uintptr_t aim = 0;
+    uintptr_t aimingData = 0;
+    Vector3 savedCharacterRotation = {};
+    Vector3 savedEulerAngles = {};
     Vector3 savedAim = {};
-    Vector3 savedEuler = {};
-    bool patched = false;
+    Vector3 savedAimEuler = {};
+    float savedAimX = 0.0f;
+    float savedAimY = 0.0f;
+    bool patchedMovement = false;
+    bool patchedAim = false;
     __try {
-        // AimController may clone AimingData for AimSnapshot, so pointer equality
-        // with the live object is intentionally not required. Scope by the fresh
-        // local BuildCommand publication and restore synchronously after writing.
-        savedAim = *reinterpret_cast<Vector3*>(aimingData + 0x18);
-        savedEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
-        *reinterpret_cast<Vector3*>(aimingData + 0x18) =
-            silentAntiAimLatestFakeAngles;
-        *reinterpret_cast<Vector3*>(aimingData + 0x24) =
-            silentAntiAimLatestFakeAngles;
-        patched = true;
+        // PlayerSnapshot: MovementSnapshot +0x18, AimSnapshot +0x28.
+        movement = *reinterpret_cast<uintptr_t*>(snapshot + 0x18);
+        aim = *reinterpret_cast<uintptr_t*>(snapshot + 0x28);
+        const Vector3 fake = silentAntiAimLatestFakeAngles;
+
+        if (movement) {
+            // MovementSnapshot.characterRotation +0x58 and eulerAng +0x98 are
+            // the replicated body/radar heading other clients consume.
+            savedCharacterRotation =
+                *reinterpret_cast<Vector3*>(movement + 0x58);
+            savedEulerAngles = *reinterpret_cast<Vector3*>(movement + 0x98);
+            Vector3 fakeCharacterRotation = savedCharacterRotation;
+            Vector3 fakeEulerAngles = savedEulerAngles;
+            fakeCharacterRotation.y = fake.y;
+            fakeEulerAngles.y = fake.y;
+            *reinterpret_cast<Vector3*>(movement + 0x58) =
+                fakeCharacterRotation;
+            *reinterpret_cast<Vector3*>(movement + 0x98) = fakeEulerAngles;
+            patchedMovement = true;
+        }
+
+        if (aim) {
+            // AimSnapshot carries both scalar AimX/Y and cloned AimingData.
+            savedAimX = *reinterpret_cast<float*>(aim + 0x54);
+            savedAimY = *reinterpret_cast<float*>(aim + 0x58);
+            aimingData = *reinterpret_cast<uintptr_t*>(aim + 0x18);
+            *reinterpret_cast<float*>(aim + 0x54) = fake.x;
+            *reinterpret_cast<float*>(aim + 0x58) = fake.y;
+            if (aimingData) {
+                savedAim = *reinterpret_cast<Vector3*>(aimingData + 0x18);
+                savedAimEuler =
+                    *reinterpret_cast<Vector3*>(aimingData + 0x24);
+                *reinterpret_cast<Vector3*>(aimingData + 0x18) = fake;
+                *reinterpret_cast<Vector3*>(aimingData + 0x24) = fake;
+            }
+            patchedAim = true;
+        }
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { patched = false; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        patchedMovement = false;
+        patchedAim = false;
+    }
 
-    o_AimingData_Serialize(aimingData, writer, method);
+    // Serialize the complete packet while both body heading and aim are fake.
+    o_PlayerSnapshot_Serialize(snapshot, writer, method);
 
-    if (patched) {
-        __try {
-            *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAim;
-            *reinterpret_cast<Vector3*>(aimingData + 0x24) = savedEuler;
+    __try {
+        if (patchedMovement && movement) {
+            *reinterpret_cast<Vector3*>(movement + 0x58) =
+                savedCharacterRotation;
+            *reinterpret_cast<Vector3*>(movement + 0x98) = savedEulerAngles;
+        }
+        if (patchedAim && aim) {
+            *reinterpret_cast<float*>(aim + 0x54) = savedAimX;
+            *reinterpret_cast<float*>(aim + 0x58) = savedAimY;
+            if (aimingData) {
+                *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAim;
+                *reinterpret_cast<Vector3*>(aimingData + 0x24) =
+                    savedAimEuler;
+            }
+        }
+        if (patchedMovement || patchedAim)
             InterlockedIncrement(&silentAntiAimCommandCalls);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            silentAntiAimLatestInputValid = false;
-        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        silentAntiAimLatestInputValid = false;
     }
 }
 
@@ -8017,7 +8083,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     (silentAntiAimEdgeFound ? "Working: Edge Yaw locked" :
                                               "Edge Yaw: no nearby wall") :
                  "Working: rotation applied") :
-                "Waiting for local live rig"));
+                "Waiting for outgoing player packet"));
         ImGui::TextWrapped("Status: %s", antiAimRuntimeStatus);
         ImGui::TextDisabled("net:%ld late:%ld bones:%ld yaw:%.1f",
             InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
@@ -8660,14 +8726,14 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimLateAimCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM)) :
         antiAimLateAimCreateStatus;
-    const MH_STATUS antiAimSerializeCreateStatus = MH_CreateHook(
-        (LPVOID)(base + OFFSET_AIMINGDATA_SERIALIZE),
-        hk_AimingData_Serialize,
-        (LPVOID*)&o_AimingData_Serialize);
-    const MH_STATUS antiAimSerializeEnableStatus =
-        antiAimSerializeCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_AIMINGDATA_SERIALIZE)) :
-        antiAimSerializeCreateStatus;
+    const MH_STATUS antiAimPacketCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_PLAYERSNAPSHOT_SERIALIZE),
+        hk_PlayerSnapshot_Serialize,
+        (LPVOID*)&o_PlayerSnapshot_Serialize);
+    const MH_STATUS antiAimPacketEnableStatus =
+        antiAimPacketCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_PLAYERSNAPSHOT_SERIALIZE)) :
+        antiAimPacketCreateStatus;
     const MH_STATUS antiAimInputCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND),
         hk_KeyboardControl_BuildCommand,
@@ -8680,15 +8746,15 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimLateAimEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
         antiAimInputEnableStatus == MH_OK &&
-        antiAimSerializeCreateStatus == MH_OK &&
-        antiAimSerializeEnableStatus == MH_OK &&
+        antiAimPacketCreateStatus == MH_OK &&
+        antiAimPacketEnableStatus == MH_OK &&
         o_Transform_get_rotation_Injected &&
         o_Transform_set_rotation_Injected && o_Transform_get_forward &&
         o_Object_IsAlive;
 
-    LINDY_LOG("[anti-aim] input=%d/%d; network=%d/%d; nhi=%d/%d; quaternion=%p/%p; ready=%d",
+    LINDY_LOG("[anti-aim] input=%d/%d; packet=%d/%d; nhi=%d/%d; quaternion=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
-        (int)antiAimSerializeCreateStatus, (int)antiAimSerializeEnableStatus,
+        (int)antiAimPacketCreateStatus, (int)antiAimPacketEnableStatus,
         (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
         (void*)o_Transform_get_rotation_Injected,
         (void*)o_Transform_set_rotation_Injected,
