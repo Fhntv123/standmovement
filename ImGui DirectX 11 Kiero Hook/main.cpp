@@ -283,7 +283,6 @@ struct Matrix16 {
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xAEFED0
 #define OFFSET_CHEAT_RUNTIME_SET_BHOP              0xAF0760
 #define OFFSET_PLAYERCONTROLLER_COMMAND             0xBD6B50
-#define OFFSET_NETWORKCONTROLLER_WRITE_SNAPSHOT    0xBD3EE0  // NetworkController.mxe(gfh), outer outgoing writer
 #define OFFSET_PLAYERCONTROLLER_GET_ACTOR           0xBD4730  // PlayerController.mzj() -> dwg
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_A          0xBEB260  // PlayerManager.ndb(PlayerController)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_B          0xBEB430  // PlayerManager.ndc(PlayerController)
@@ -2076,7 +2075,6 @@ void(__fastcall* o_PlayerControls_Update)(uintptr_t, const Il2CppMethod*) = null
 void(__fastcall* o_CameraMovementController_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CameraMovementController_FixedUpdate)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
-void(__fastcall* o_NetworkController_WriteSnapshot)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 Vector3(__fastcall* o_AimController_GetHeadDirective)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_LateAim)(uintptr_t, const Il2CppMethod*) = nullptr;
 
@@ -3501,6 +3499,56 @@ static bool ApplyAimbotCounterStrafeUnsafe(uintptr_t player, uintptr_t command)
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+static void FixRotationAntiAimMovementUnsafe(
+    uintptr_t command, float realYaw, float fakeYaw)
+{
+    if (!command) return;
+    __try {
+        const float horizontal = *reinterpret_cast<float*>(command + 0x10);
+        const float vertical = *reinterpret_cast<float*>(command + 0x14);
+        if (fabsf(horizontal) < 0.0001f && fabsf(vertical) < 0.0001f) return;
+        const float radians = NormalizeAngle180(fakeYaw - realYaw) *
+            0.017453292519943295f;
+        const float cosine = cosf(radians);
+        const float sine = sinf(radians);
+        float fixedHorizontal = cosine * horizontal - sine * vertical;
+        float fixedVertical = sine * horizontal + cosine * vertical;
+        const float length = sqrtf(fixedHorizontal * fixedHorizontal +
+            fixedVertical * fixedVertical);
+        if (length > 1.0f) {
+            fixedHorizontal /= length;
+            fixedVertical /= length;
+        }
+        *reinterpret_cast<float*>(command + 0x10) = fixedHorizontal;
+        *reinterpret_cast<float*>(command + 0x14) = fixedVertical;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+static void RestoreRotationAntiAimAimingDataUnsafe()
+{
+    if (!silentAntiAimEnabled || !silentAntiAimLatestInputValid ||
+        !silentAntiAimLatestAimingData) return;
+    __try {
+        // PlayerControls has already consumed the fake xl command. Restore the
+        // live camera-owned AimingData immediately; the command itself remains
+        // fake for native simulation/network replication.
+        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x18) =
+            silentAntiAimLatestRealAimAngle;
+        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x24) =
+            silentAntiAimLatestRealAimAngle;
+        InterlockedIncrement(&silentAntiAimCameraRestoreCalls);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+void __fastcall hk_PlayerControls_Update(
+    uintptr_t controls, const Il2CppMethod* method)
+{
+    o_PlayerControls_Update(controls, method);
+    RestoreRotationAntiAimAimingDataUnsafe();
+}
+
 uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     uintptr_t keyboardControl, uintptr_t player, const Il2CppMethod* method)
 {
@@ -3624,112 +3672,26 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
             silentAntiAimLatestFiring = false;
         }
         UpdateRotationAntiAimTarget(player, jumpProfile);
+        if (!silentAntiAimLatestFiring && silentAntiAimLatestInputValid) {
+            __try {
+                const float realYaw = silentAntiAimLatestRealAimAngle.y;
+                // dump.cs xl: caxo +0x29 is bbb (TargetAngle = 0),
+                // caxp +0x2C is the authoritative command angle Vector3.
+                *reinterpret_cast<uint8_t*>(command + 0x29) = 0;
+                *reinterpret_cast<Vector3*>(command + 0x2C) =
+                    silentAntiAimLatestFakeAngles;
+                FixRotationAntiAimMovementUnsafe(command, realYaw,
+                    silentAntiAimLatestFakeAngles.y);
+                InterlockedIncrement(&silentAntiAimCommandCalls);
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {
+                silentAntiAimLatestInputValid = false;
+            }
+        }
     }
     else if (silentAntiAimLatestPlayer == player || !silentAntiAimEnabled)
         ClearRotationAntiAimTargetUnsafe();
     return command;
-}
-
-void __fastcall hk_NetworkController_WriteSnapshot(
-    uintptr_t networkController, uintptr_t writer, const Il2CppMethod* method)
-{
-    if (!o_NetworkController_WriteSnapshot) return;
-    uintptr_t owner = 0;
-    uintptr_t snapshot = 0;
-    __try {
-        // dump.cs: NetworkController.cava owner +0x68, cavb outgoing
-        // PlayerSnapshot +0x70. Hook the outer mxe(gfh) writer directly;
-        // nested virtual serializers were not the authoritative dispatch boundary.
-        owner = networkController ?
-            *reinterpret_cast<uintptr_t*>(networkController + 0x68) : 0;
-        snapshot = networkController ?
-            *reinterpret_cast<uintptr_t*>(networkController + 0x70) : 0;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        owner = 0;
-        snapshot = 0;
-    }
-    if (!networkController || !writer || !snapshot || !keyValidated ||
-        !silentAntiAimEnabled || !silentAntiAimLatestInputValid ||
-        silentAntiAimLatestFiring || !liveHudLocalPlayer ||
-        owner != liveHudLocalPlayer) {
-        o_NetworkController_WriteSnapshot(networkController, writer, method);
-        return;
-    }
-
-    uintptr_t movement = 0;
-    uintptr_t aim = 0;
-    uintptr_t aimingData = 0;
-    Vector3 savedCharacterRotation = {};
-    Vector3 savedEulerAngles = {};
-    Vector3 savedAim = {};
-    Vector3 savedAimEuler = {};
-    float savedAimX = 0.0f;
-    float savedAimY = 0.0f;
-    bool patchedMovement = false;
-    bool patchedAim = false;
-    __try {
-        movement = *reinterpret_cast<uintptr_t*>(snapshot + 0x18);
-        aim = *reinterpret_cast<uintptr_t*>(snapshot + 0x28);
-        const Vector3 fake = silentAntiAimLatestFakeAngles;
-        if (movement) {
-            savedCharacterRotation =
-                *reinterpret_cast<Vector3*>(movement + 0x58);
-            savedEulerAngles = *reinterpret_cast<Vector3*>(movement + 0x98);
-            Vector3 fakeCharacterRotation = savedCharacterRotation;
-            Vector3 fakeEulerAngles = savedEulerAngles;
-            fakeCharacterRotation.y = fake.y;
-            fakeEulerAngles.y = fake.y;
-            *reinterpret_cast<Vector3*>(movement + 0x58) =
-                fakeCharacterRotation;
-            *reinterpret_cast<Vector3*>(movement + 0x98) = fakeEulerAngles;
-            patchedMovement = true;
-        }
-        if (aim) {
-            savedAimX = *reinterpret_cast<float*>(aim + 0x54);
-            savedAimY = *reinterpret_cast<float*>(aim + 0x58);
-            aimingData = *reinterpret_cast<uintptr_t*>(aim + 0x18);
-            *reinterpret_cast<float*>(aim + 0x54) = fake.x;
-            *reinterpret_cast<float*>(aim + 0x58) = fake.y;
-            if (aimingData) {
-                savedAim = *reinterpret_cast<Vector3*>(aimingData + 0x18);
-                savedAimEuler =
-                    *reinterpret_cast<Vector3*>(aimingData + 0x24);
-                *reinterpret_cast<Vector3*>(aimingData + 0x18) = fake;
-                *reinterpret_cast<Vector3*>(aimingData + 0x24) = fake;
-            }
-            patchedAim = true;
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        patchedMovement = false;
-        patchedAim = false;
-    }
-
-    // mxe serializes/queues this exact controller-owned PlayerSnapshot.
-    o_NetworkController_WriteSnapshot(networkController, writer, method);
-
-    __try {
-        if (patchedMovement && movement) {
-            *reinterpret_cast<Vector3*>(movement + 0x58) =
-                savedCharacterRotation;
-            *reinterpret_cast<Vector3*>(movement + 0x98) = savedEulerAngles;
-        }
-        if (patchedAim && aim) {
-            *reinterpret_cast<float*>(aim + 0x54) = savedAimX;
-            *reinterpret_cast<float*>(aim + 0x58) = savedAimY;
-            if (aimingData) {
-                *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAim;
-                *reinterpret_cast<Vector3*>(aimingData + 0x24) =
-                    savedAimEuler;
-            }
-        }
-        if (patchedMovement || patchedAim)
-            InterlockedIncrement(&silentAntiAimCommandCalls);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        silentAntiAimLatestInputValid = false;
-    }
 }
 
 static Quaternion QuaternionFromAxisAngle(float axisX, float axisY,
@@ -8073,7 +8035,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     (silentAntiAimEdgeFound ? "Working: Edge Yaw locked" :
                                               "Edge Yaw: no nearby wall") :
                  "Working: rotation applied") :
-                "Waiting for outgoing player packet"));
+                "Waiting for fake command consumption"));
         ImGui::TextWrapped("Status: %s", antiAimRuntimeStatus);
         ImGui::TextDisabled("net:%ld late:%ld bones:%ld yaw:%.1f",
             InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
@@ -8716,14 +8678,14 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimLateAimCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM)) :
         antiAimLateAimCreateStatus;
-    const MH_STATUS antiAimNetworkCreateStatus = MH_CreateHook(
-        (LPVOID)(base + OFFSET_NETWORKCONTROLLER_WRITE_SNAPSHOT),
-        hk_NetworkController_WriteSnapshot,
-        (LPVOID*)&o_NetworkController_WriteSnapshot);
-    const MH_STATUS antiAimNetworkEnableStatus =
-        antiAimNetworkCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_NETWORKCONTROLLER_WRITE_SNAPSHOT)) :
-        antiAimNetworkCreateStatus;
+    const MH_STATUS antiAimConsumeCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_PLAYERCONTROLS_UPDATE),
+        hk_PlayerControls_Update,
+        (LPVOID*)&o_PlayerControls_Update);
+    const MH_STATUS antiAimConsumeEnableStatus =
+        antiAimConsumeCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_PLAYERCONTROLS_UPDATE)) :
+        antiAimConsumeCreateStatus;
     const MH_STATUS antiAimInputCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND),
         hk_KeyboardControl_BuildCommand,
@@ -8736,15 +8698,15 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimLateAimEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
         antiAimInputEnableStatus == MH_OK &&
-        antiAimNetworkCreateStatus == MH_OK &&
-        antiAimNetworkEnableStatus == MH_OK &&
+        antiAimConsumeCreateStatus == MH_OK &&
+        antiAimConsumeEnableStatus == MH_OK &&
         o_Transform_get_rotation_Injected &&
         o_Transform_set_rotation_Injected && o_Transform_get_forward &&
         o_Object_IsAlive;
 
-    LINDY_LOG("[anti-aim] input=%d/%d; network-writer=%d/%d; nhi=%d/%d; quaternion=%p/%p; ready=%d",
+    LINDY_LOG("[anti-aim] command=%d/%d; consume=%d/%d; nhi=%d/%d; quaternion=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
-        (int)antiAimNetworkCreateStatus, (int)antiAimNetworkEnableStatus,
+        (int)antiAimConsumeCreateStatus, (int)antiAimConsumeEnableStatus,
         (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
         (void*)o_Transform_get_rotation_Injected,
         (void*)o_Transform_set_rotation_Injected,
