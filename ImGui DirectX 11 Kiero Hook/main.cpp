@@ -297,6 +297,7 @@ struct Matrix16 {
 #define OFFSET_PLAYER_HIT_CONFIRMED_A                  0xC2AB10  // PlayerHitController.obl(bai)
 #define OFFSET_PLAYER_HIT_CONFIRMED_B                  0xC2ACD0  // PlayerHitController.obm(bai)
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xB4A790
+#define OFFSET_AIMINGDATA_NEU                       0xC1CC50  // AimingData.neu(gfh)
 #define OFFSET_PLAYERCONTROLS_UPDATE                 0xB4CFB0
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_UPDATE       0xB5C790
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_FIXEDUPDATE 0xB5C700
@@ -2072,6 +2073,7 @@ void(__fastcall* o_HitMarkerView_Show)(uintptr_t, bool, bool, const Il2CppMethod
 void(__fastcall* o_HitMarkerView_LocalHit)(uintptr_t, void*, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_PlayerController_Command)(uintptr_t, uintptr_t, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_KeyboardControl_BuildCommand)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_AimingData_neu)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_PlayerControls_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CameraMovementController_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CameraMovementController_FixedUpdate)(uintptr_t, const Il2CppMethod*) = nullptr;
@@ -3499,6 +3501,32 @@ static bool ApplyAimbotCounterStrafeUnsafe(uintptr_t player, uintptr_t command)
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+void __fastcall hk_AimingData_neu(uintptr_t aimingData, uintptr_t writer, const Il2CppMethod* method)
+{
+    if (!o_AimingData_neu) return;
+    const bool localSerialization = silentAntiAimEnabled && aimingData &&
+        silentAntiAimLatestInputValid && !silentAntiAimLatestFiring &&
+        aimingData == silentAntiAimLatestAimingData;
+    if (localSerialization) {
+        __try {
+            // Capture real angles to restore them immediately after serialization
+            const Vector3 realAngles = *reinterpret_cast<Vector3*>(aimingData + 0x18);
+            const Vector3 realEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
+            // Temporarily write fake angles into AimingData for the outgoing packet
+            *reinterpret_cast<Vector3*>(aimingData + 0x18) = silentAntiAimLatestFakeAngles;
+            *reinterpret_cast<Vector3*>(aimingData + 0x24) = silentAntiAimLatestFakeAngles;
+            o_AimingData_neu(aimingData, writer, method);
+            // Restore real angles immediately so local camera and rendering are unaffected
+            *reinterpret_cast<Vector3*>(aimingData + 0x18) = realAngles;
+            *reinterpret_cast<Vector3*>(aimingData + 0x24) = realEuler;
+            InterlockedIncrement(&silentAntiAimAppliedCalls);
+            return;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    o_AimingData_neu(aimingData, writer, method);
 }
 
 uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
@@ -8732,6 +8760,14 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimInputCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_KEYBOARDCONTROL_BUILD_COMMAND)) :
         antiAimInputCreateStatus;
+    const MH_STATUS antiAimNeuCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_AIMINGDATA_NEU),
+        hk_AimingData_neu,
+        (LPVOID*)&o_AimingData_neu);
+    const MH_STATUS antiAimNeuEnableStatus =
+        antiAimNeuCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_AIMINGDATA_NEU)) :
+        antiAimNeuCreateStatus;
     silentAntiAimHookReady = antiAimLateAimCreateStatus == MH_OK &&
         antiAimLateAimEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
@@ -8742,9 +8778,11 @@ DWORD WINAPI HackThread(LPVOID)
         o_Transform_set_rotation_Injected && o_Transform_get_forward &&
         o_Object_IsAlive;
 
-    LINDY_LOG("[anti-aim] input=%d/%d; network-writer=%d/%d; nhi=%d/%d; quaternion=%p/%p; ready=%d",
+    LINDY_LOG("[anti-aim] input=%d/%d; network-writer=%d/%d; nhi=%d/%d; neu=%d/%d; quaternion=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
         (int)antiAimNetworkCreateStatus, (int)antiAimNetworkEnableStatus,
+        (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
+        (int)antiAimNeuCreateStatus, (int)antiAimNeuEnableStatus,
         (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
         (void*)o_Transform_get_rotation_Injected,
         (void*)o_Transform_set_rotation_Injected,
