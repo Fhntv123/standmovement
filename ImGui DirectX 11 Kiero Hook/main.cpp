@@ -282,6 +282,7 @@ struct Matrix16 {
 #define OFFSET_HITMARKERVIEW_LOCAL_HIT               0xB47B30  // HitMarkerView.bbru(PlayerController, ccv)
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xAEFED0
 #define OFFSET_CHEAT_RUNTIME_SET_BHOP              0xAF0760
+#define OFFSET_PLAYERCONTROLLER_SET_TPS             0xBD58A0  // PlayerController.mzy(bool)
 #define OFFSET_PLAYERCONTROLLER_COMMAND             0xBD6B50
 #define OFFSET_PLAYERCONTROLLER_GET_ACTOR           0xBD4730  // PlayerController.mzj() -> dwg
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_A          0xBEB260  // PlayerManager.ndb(PlayerController)
@@ -539,6 +540,7 @@ Il2CppClass* g_GameControllerClass = nullptr;
 Il2CppField* g_GameControllerInstanceField = nullptr;
 void(__fastcall* o_CheatRuntime_SetThirdPerson)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CheatRuntime_SetBhop)(uintptr_t, uintptr_t, bool) = nullptr;
+void(__fastcall* o_PlayerController_SetTps)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
 char thirdPersonStatus[96] = "Disabled";
 bool worldColorEnabled = false;
 float worldColor[3] = { 0.35f, 0.55f, 1.0f };
@@ -2447,22 +2449,22 @@ static bool ApplyNativeThirdPersonState()
         if (runtime) {
             o_CheatRuntime_SetThirdPerson(runtime, thirdPersonEnabled, nullptr);
         } else {
-            // LAN game controllers do not own the offline/admin crk runtime. The
-            // PlayerController native TPS state is cavn at +0x78 in dump1/il2cpp.h;
-            // use that authoritative per-player state when no crk exists.
+            // LAN controllers do not own offline/admin crk. A passive write to
+            // PlayerController.cavn does not run the camera/arms transition, so call
+            // the PlayerController native TPS method itself (dump1: mzy(bool)).
             const uintptr_t player = liveHudLocalPlayer;
-            if (!player) {
-                strcpy_s(thirdPersonStatus, "Waiting for LAN local player");
+            if (!player || !o_PlayerController_SetTps) {
+                strcpy_s(thirdPersonStatus, "Waiting for LAN TPS transition");
                 return false;
             }
-            *reinterpret_cast<bool*>(player + 0x78) = thirdPersonEnabled;
+            o_PlayerController_SetTps(player, thirdPersonEnabled, nullptr);
         }
         // The native transition can rewrite camera tuning during death/respawn.
         // Apply the scene-stable offsets after it, not only before it.
         if (!ApplyCustomizedThirdPersonOffsets()) return false;
         strcpy_s(thirdPersonStatus, thirdPersonEnabled ?
             (runtime ? "Active; death-safe custom TPS camera" :
-                       "Active; LAN PlayerController TPS fallback") :
+                       "Active; LAN native TPS transition") :
             "Disabled; original offsets restored");
         return true;
     }
@@ -2542,7 +2544,7 @@ static bool ApplyAdminBhopState()
             strcpy_s(adminBhopStatus, adminBhopCsStrafeMode ?
                 "Native admin BHop active; CS air strafe" :
                 (runtime ? "Native admin BHop active" :
-                    "LAN jump-state BHop fallback active"));
+                    "LAN hold-Space BHop active"));
         } else if (adminBhopOriginalCaptured) {
             *reinterpret_cast<bool*>(jump + 0x10) = adminBhopOriginalEnabled;
             *reinterpret_cast<float*>(jump + 0x14) = adminBhopOriginalSpeedMultiplier;
@@ -5183,6 +5185,14 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
     if (!localController || instance != localController) return grounded;
 
     if (airJump) return true;
+
+    // Native admin BHop normally reaches MovementController through crk. LAN has no
+    // crk, so while Space is held expose a grounded pulse to the local jump state.
+    // The real command still owns jump input; this only permits the next hop and is
+    // restricted to the exact local CharacterController.
+    if (adminBhopEnabled && !jbActive &&
+        (GetAsyncKeyState(VK_SPACE) & 0x8000))
+        return true;
 
     const LONG64 releaseGraceUntil = InterlockedCompareExchange64(
         &pixelSurfReleaseGraceUntil, 0, 0);
@@ -8437,6 +8447,7 @@ DWORD WINAPI HackThread(LPVOID)
 
     o_CheatRuntime_SetThirdPerson = (void(__fastcall*)(uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON);
     o_CheatRuntime_SetBhop = (void(__fastcall*)(uintptr_t, uintptr_t, bool))(base + OFFSET_CHEAT_RUNTIME_SET_BHOP);
+    o_PlayerController_SetTps = (void(__fastcall*)(uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_PLAYERCONTROLLER_SET_TPS);
     o_GetPlayerController = (uintptr_t(__fastcall*)())(base + OFFSET_GET_PLAYERCONTROLLER);
 
     const MH_STATUS playerEventACreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYERMANAGER_PLAYER_EVENT_A),
