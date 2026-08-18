@@ -282,7 +282,8 @@ struct Matrix16 {
 #define OFFSET_HITMARKERVIEW_LOCAL_HIT               0xB47B30  // HitMarkerView.bbru(PlayerController, ccv)
 #define OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON       0xAEFED0
 #define OFFSET_CHEAT_RUNTIME_SET_BHOP              0xAF0760
-#define OFFSET_PLAYERCONTROLLER_SET_TPS             0xBD58A0  // PlayerController.mzy(bool)
+#define OFFSET_LAN_ADMIN_PANEL_CREATE              0xB1A380  // cth.batz(PauseHud,cji,CheatParameters)
+#define OFFSET_ADMIN_PANEL_SHOW                    0xB0EFC0  // AdminPanelController.lpq()
 #define OFFSET_PLAYERCONTROLLER_COMMAND             0xBD6B50
 #define OFFSET_PLAYERCONTROLLER_GET_ACTOR           0xBD4730  // PlayerController.mzj() -> dwg
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_A          0xBEB260  // PlayerManager.ndb(PlayerController)
@@ -540,7 +541,18 @@ Il2CppClass* g_GameControllerClass = nullptr;
 Il2CppField* g_GameControllerInstanceField = nullptr;
 void(__fastcall* o_CheatRuntime_SetThirdPerson)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CheatRuntime_SetBhop)(uintptr_t, uintptr_t, bool) = nullptr;
-void(__fastcall* o_PlayerController_SetTps)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
+uintptr_t(__fastcall* o_LanAdminPanel_Create)(uintptr_t, uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_AdminPanel_Show)(uintptr_t, const Il2CppMethod*) = nullptr;
+volatile LONG pendingLanAdminPanelOpen = 0;
+uintptr_t lanAdminPanel = 0;
+uintptr_t lanAdminParameters = 0;
+uintptr_t lanAdminRuntime = 0;
+uintptr_t lanAdminGameController = 0;
+uint32_t lanAdminPanelHandle = 0;
+uint32_t lanAdminParametersHandle = 0;
+uint32_t lanAdminRuntimeHandle = 0;
+uint32_t lanAdminAdapterHandle = 0;
+char lanAdminPanelStatus[128] = "Ready in a LAN match";
 char thirdPersonStatus[96] = "Disabled";
 bool worldColorEnabled = false;
 float worldColor[3] = { 0.35f, 0.55f, 1.0f };
@@ -2364,6 +2376,8 @@ static uintptr_t GetNativeCheatRuntime()
                 return *reinterpret_cast<uintptr_t*>(controller + field.offset);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (lanAdminRuntime && controller == lanAdminGameController)
+        return lanAdminRuntime;
     return 0;
 }
 
@@ -2437,6 +2451,146 @@ static bool ApplyCustomizedThirdPersonOffsets()
     }
 }
 
+static uintptr_t CreateLanAdminObject(const char* namespaze, const char* name)
+{
+    if (!g_il2cpp.object_new) return 0;
+    Il2CppClass* klass = g_il2cpp.find_class(namespaze, name);
+    return klass ? reinterpret_cast<uintptr_t>(g_il2cpp.object_new(klass)) : 0;
+}
+
+static bool OpenLanAdminPanel()
+{
+    const uintptr_t controller = GetActiveGameController();
+    if (!controller || !o_LanAdminPanel_Create || !o_AdminPanel_Show) {
+        strcpy_s(lanAdminPanelStatus, "Waiting for active LAN match");
+        return false;
+    }
+    __try {
+        if (lanAdminPanel && controller == lanAdminGameController &&
+            IsUnityObjectAliveUnsafe(lanAdminPanel)) {
+            o_AdminPanel_Show(lanAdminPanel, nullptr);
+            strcpy_s(lanAdminPanelStatus, "Native LAN admin panel opened");
+            return true;
+        }
+        const uintptr_t pauseHud = *reinterpret_cast<uintptr_t*>(controller + 0xC8);
+        if (!pauseHud) {
+            strcpy_s(lanAdminPanelStatus, "Open after the LAN match HUD loads");
+            return false;
+        }
+        const uintptr_t adapter = CreateLanAdminObject(
+            "Chillow.StandChillow.Test", "AdminPanelTesting");
+        const uintptr_t parameters = CreateLanAdminObject(
+            "Chillow.StandChillow.Game.Cheats", "CheatParameters");
+        const uintptr_t player = CreateLanAdminObject(
+            "Chillow.StandChillow.Game.Cheats", "PlayerCheatParameters");
+        const uintptr_t esp = CreateLanAdminObject(
+            "Chillow.StandChillow.Game.Cheats", "EspCheatParameters");
+        const uintptr_t mannequins = CreateLanAdminObject(
+            "Chillow.StandChillow.Game.Cheats", "MannequinsCheatParameters");
+        const uintptr_t bots = CreateLanAdminObject(
+            "Chillow.StandChillow.Game.Cheats", "BotsCheatParameters");
+        const uintptr_t weapon = CreateLanAdminObject(
+            "Chillow.StandChillow.Game.Cheats", "WeaponCheatParameters");
+        const uintptr_t other = CreateLanAdminObject(
+            "Chillow.StandChillow.Game.Cheats", "OtherCheatParameters");
+        const uintptr_t runtime = CreateLanAdminObject("", "crk");
+        if (!adapter || !parameters || !player || !esp || !mannequins ||
+            !bots || !weapon || !other || !runtime) {
+            strcpy_s(lanAdminPanelStatus, "LAN admin classes unavailable");
+            return false;
+        }
+
+        // dump1/il2cpp.h: build the same CheatParameters object graph the native
+        // offline admin panel receives. Defaults mirror crj and normal gameplay.
+        *reinterpret_cast<uintptr_t*>(parameters + 0x10) = player;
+        *reinterpret_cast<uintptr_t*>(parameters + 0x18) = esp;
+        *reinterpret_cast<uintptr_t*>(parameters + 0x20) = mannequins;
+        *reinterpret_cast<uintptr_t*>(parameters + 0x28) = bots;
+        *reinterpret_cast<uintptr_t*>(parameters + 0x30) = weapon;
+        *reinterpret_cast<uintptr_t*>(parameters + 0x38) = other;
+        *reinterpret_cast<float*>(player + 0x10) = 1.5900002f;
+        *reinterpret_cast<float*>(player + 0x14) = 17.49f;
+        *reinterpret_cast<float*>(player + 0x18) = 5.30f;
+        *reinterpret_cast<float*>(player + 0x1C) = 1.0f;
+        *reinterpret_cast<bool*>(player + 0x20) = adminBhopEnabled;
+        *reinterpret_cast<int*>(player + 0x24) = 100;
+        *reinterpret_cast<float*>(esp + 0x14) = 1.0f;
+        *reinterpret_cast<int*>(mannequins + 0x10) = 100;
+        *reinterpret_cast<float*>(other + 0x10) = 1.0f;
+        *reinterpret_cast<bool*>(other + 0x15) = thirdPersonEnabled;
+
+        // crk.baee/baem need the active GameController but not the offline
+        // controller's panel/subscription fields. This gives LAN the same native
+        // TPS/BHop handlers without pretending a LAN runner owns an offline crk.
+        *reinterpret_cast<uintptr_t*>(runtime + 0x20) = controller;
+
+        const uintptr_t panel = o_LanAdminPanel_Create(
+            pauseHud, adapter, parameters, nullptr);
+        if (!panel) {
+            strcpy_s(lanAdminPanelStatus, "Native LAN admin panel creation failed");
+            return false;
+        }
+        if (g_il2cpp.gchandle_new) {
+            lanAdminPanelHandle = g_il2cpp.gchandle_new(
+                reinterpret_cast<Il2CppObject*>(panel), false);
+            lanAdminParametersHandle = g_il2cpp.gchandle_new(
+                reinterpret_cast<Il2CppObject*>(parameters), false);
+            lanAdminRuntimeHandle = g_il2cpp.gchandle_new(
+                reinterpret_cast<Il2CppObject*>(runtime), false);
+            lanAdminAdapterHandle = g_il2cpp.gchandle_new(
+                reinterpret_cast<Il2CppObject*>(adapter), false);
+        }
+        lanAdminPanel = panel;
+        lanAdminParameters = parameters;
+        lanAdminRuntime = runtime;
+        lanAdminGameController = controller;
+        o_AdminPanel_Show(panel, nullptr);
+        strcpy_s(lanAdminPanelStatus, "Native LAN admin panel opened");
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        strcpy_s(lanAdminPanelStatus, "LAN admin panel transition failed");
+        return false;
+    }
+}
+
+static void SyncLanAdminPanel()
+{
+    if (!lanAdminPanel || !lanAdminParameters) return;
+    const uintptr_t controller = GetActiveGameController();
+    if (!controller || controller != lanAdminGameController) {
+        lanAdminPanel = lanAdminParameters = lanAdminRuntime = 0;
+        lanAdminGameController = 0;
+        strcpy_s(lanAdminPanelStatus, "Ready in a LAN match");
+        return;
+    }
+    __try {
+        // AdminPanelController.cjrc is its editable clone after batm(). Prefer it
+        // once initialized, otherwise use the source graph passed to cth.batz().
+        uintptr_t values = *reinterpret_cast<uintptr_t*>(lanAdminPanel + 0xB8);
+        if (!values) values = lanAdminParameters;
+        const uintptr_t player = *reinterpret_cast<uintptr_t*>(values + 0x10);
+        const uintptr_t other = *reinterpret_cast<uintptr_t*>(values + 0x38);
+        if (!player || !other) return;
+        const bool requestedBhop = *reinterpret_cast<bool*>(player + 0x20);
+        const bool requestedTps = *reinterpret_cast<bool*>(other + 0x15);
+        if (requestedBhop != adminBhopEnabled) {
+            adminBhopEnabled = requestedBhop;
+            ApplyAdminBhopState();
+        }
+        if (requestedTps != thirdPersonEnabled) {
+            thirdPersonEnabled = requestedTps;
+            strcpy_s(thirdPersonStatus, requestedTps ?
+                "LAN admin TPS transition queued" :
+                "LAN admin FPS transition queued");
+            InterlockedExchange(&pendingThirdPersonCommand, 1);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        strcpy_s(lanAdminPanelStatus, "Waiting for native panel values");
+    }
+}
+
 static bool ApplyNativeThirdPersonState()
 {
     if (!o_CheatRuntime_SetThirdPerson) {
@@ -2445,27 +2599,17 @@ static bool ApplyNativeThirdPersonState()
     }
     if (!ApplyCustomizedThirdPersonOffsets()) return false;
     const uintptr_t runtime = GetNativeCheatRuntime();
+    if (!runtime) {
+        strcpy_s(thirdPersonStatus, "Waiting for native cheat runtime");
+        return false;
+    }
     __try {
-        if (runtime) {
-            o_CheatRuntime_SetThirdPerson(runtime, thirdPersonEnabled, nullptr);
-        } else {
-            // LAN controllers do not own offline/admin crk. A passive write to
-            // PlayerController.cavn does not run the camera/arms transition, so call
-            // the PlayerController native TPS method itself (dump1: mzy(bool)).
-            const uintptr_t player = liveHudLocalPlayer;
-            if (!player || !o_PlayerController_SetTps) {
-                strcpy_s(thirdPersonStatus, "Waiting for LAN TPS transition");
-                return false;
-            }
-            o_PlayerController_SetTps(player, thirdPersonEnabled, nullptr);
-        }
+        o_CheatRuntime_SetThirdPerson(runtime, thirdPersonEnabled, nullptr);
         // The native transition can rewrite camera tuning during death/respawn.
         // Apply the scene-stable offsets after it, not only before it.
         if (!ApplyCustomizedThirdPersonOffsets()) return false;
         strcpy_s(thirdPersonStatus, thirdPersonEnabled ?
-            (runtime ? "Active; death-safe custom TPS camera" :
-                       "Active; LAN native TPS transition") :
-            "Disabled; original offsets restored");
+            "Active; death-safe custom TPS camera" : "Disabled; original offsets restored");
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -2498,41 +2642,6 @@ static bool ApplyAdminBhopState()
         if (runtime && o_CheatRuntime_SetBhop)
             o_CheatRuntime_SetBhop(runtime, movement, adminBhopEnabled);
         *reinterpret_cast<bool*>(jump + 0x10) = adminBhopEnabled;
-
-        // Offline/admin crk is absent in LAN. MovementController keeps its active
-        // jump-state module (zp) in cbhk (+0x68); zp.cbla (+0x80) is the live
-        // JumpParameters reference. Keep it synchronized with the source parameters
-        // so LAN movement cannot continue using a pre-toggle BHop value.
-        const uintptr_t states = *reinterpret_cast<uintptr_t*>(movement + 0x68);
-        const size_t stateCount = states ?
-            *reinterpret_cast<size_t*>(states + 0x18) : 0;
-        if (states && stateCount > 0 && stateCount <= 32 &&
-            g_il2cpp.class_get_name) {
-            for (size_t i = 0; i < stateCount; ++i) {
-                const uintptr_t state = *reinterpret_cast<uintptr_t*>(
-                    states + 0x20 + i * sizeof(uintptr_t));
-                if (!state) continue;
-                Il2CppClass* stateClass =
-                    *reinterpret_cast<Il2CppClass**>(state);
-                const char* stateName = stateClass ?
-                    g_il2cpp.class_get_name(stateClass) : nullptr;
-                if (!stateName || strcmp(stateName, "zp") != 0) continue;
-                const uintptr_t liveJump =
-                    *reinterpret_cast<uintptr_t*>(state + 0x80);
-                if (liveJump) {
-                    *reinterpret_cast<bool*>(liveJump + 0x10) =
-                        adminBhopEnabled;
-                    *reinterpret_cast<float*>(liveJump + 0x14) =
-                        adminBhopEnabled ? adminBhopSpeedMultiplier *
-                            (adminBhopMaxSpeed / 6.50f) :
-                            adminBhopOriginalSpeedMultiplier;
-                    *reinterpret_cast<float*>(liveJump + 0x1C) =
-                        adminBhopEnabled ? adminBhopMaxSpeed :
-                            adminBhopOriginalMaxSpeed;
-                }
-                break;
-            }
-        }
         if (adminBhopEnabled) {
             // Keep native propulsion continuous. Toggling this multiplier to
             // zero on brief A/D gaps caused the visible stop-then-resume jerk and
@@ -2544,7 +2653,7 @@ static bool ApplyAdminBhopState()
             strcpy_s(adminBhopStatus, adminBhopCsStrafeMode ?
                 "Native admin BHop active; CS air strafe" :
                 (runtime ? "Native admin BHop active" :
-                    "LAN hold-Space BHop active"));
+                    "Native jump BHop active; runtime pending"));
         } else if (adminBhopOriginalCaptured) {
             *reinterpret_cast<bool*>(jump + 0x10) = adminBhopOriginalEnabled;
             *reinterpret_cast<float*>(jump + 0x14) = adminBhopOriginalSpeedMultiplier;
@@ -4006,6 +4115,9 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
+    if (InterlockedExchange(&pendingLanAdminPanelOpen, 0))
+        OpenLanAdminPanel();
+    SyncLanAdminPanel();
     if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
         SendPendingPixelSurfChatMessageUnsafe();
     UpdateFrozenCorpses();
@@ -5185,14 +5297,6 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
     if (!localController || instance != localController) return grounded;
 
     if (airJump) return true;
-
-    // Native admin BHop normally reaches MovementController through crk. LAN has no
-    // crk, so while Space is held expose a grounded pulse to the local jump state.
-    // The real command still owns jump input; this only permits the next hop and is
-    // restricted to the exact local CharacterController.
-    if (adminBhopEnabled && !jbActive &&
-        (GetAsyncKeyState(VK_SPACE) & 0x8000))
-        return true;
 
     const LONG64 releaseGraceUntil = InterlockedCompareExchange64(
         &pixelSurfReleaseGraceUntil, 0, 0);
@@ -7820,6 +7924,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Pixel Surf Speed", &surfSpeed, 0.5f, 3.0f, "%.2f");
         }
         ImGui::Checkbox("Release Hop", &pixelSurfReleaseHop);
+        if (ImGui::Button("Open Native LAN Admin Panel")) {
+            strcpy_s(lanAdminPanelStatus, "LAN admin panel queued");
+            InterlockedExchange(&pendingLanAdminPanelOpen, 1);
+        }
+        ImGui::TextDisabled("%s", lanAdminPanelStatus);
         if (ImGui::Checkbox("Admin Panel BHop", &adminBhopEnabled)) ApplyAdminBhopState();
         if (adminBhopEnabled) {
             if (ImGui::SliderFloat("Admin BHop Speed", &adminBhopMaxSpeed,
@@ -8447,7 +8556,8 @@ DWORD WINAPI HackThread(LPVOID)
 
     o_CheatRuntime_SetThirdPerson = (void(__fastcall*)(uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON);
     o_CheatRuntime_SetBhop = (void(__fastcall*)(uintptr_t, uintptr_t, bool))(base + OFFSET_CHEAT_RUNTIME_SET_BHOP);
-    o_PlayerController_SetTps = (void(__fastcall*)(uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_PLAYERCONTROLLER_SET_TPS);
+    o_LanAdminPanel_Create = (uintptr_t(__fastcall*)(uintptr_t, uintptr_t, uintptr_t, const Il2CppMethod*))(base + OFFSET_LAN_ADMIN_PANEL_CREATE);
+    o_AdminPanel_Show = (void(__fastcall*)(uintptr_t, const Il2CppMethod*))(base + OFFSET_ADMIN_PANEL_SHOW);
     o_GetPlayerController = (uintptr_t(__fastcall*)())(base + OFFSET_GET_PLAYERCONTROLLER);
 
     const MH_STATUS playerEventACreate = MH_CreateHook((LPVOID)(base + OFFSET_PLAYERMANAGER_PLAYER_EVENT_A),
