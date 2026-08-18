@@ -3529,72 +3529,6 @@ void __fastcall hk_AimingData_neu(uintptr_t aimingData, uintptr_t writer, const 
     o_AimingData_neu(aimingData, writer, method);
 }
 
-static void FixRotationAntiAimMovementUnsafe(
-    uintptr_t command, float realYaw, float fakeYaw)
-{
-    if (!command) return;
-    __try {
-        const float horizontal = *reinterpret_cast<float*>(command + 0x10);
-        const float vertical = *reinterpret_cast<float*>(command + 0x14);
-        if (fabsf(horizontal) < 0.0001f && fabsf(vertical) < 0.0001f) return;
-        const float radians = NormalizeAngle180(fakeYaw - realYaw) *
-            0.017453292519943295f;
-        const float cosine = cosf(radians);
-        const float sine = sinf(radians);
-        float fixedHorizontal = cosine * horizontal - sine * vertical;
-        float fixedVertical = sine * horizontal + cosine * vertical;
-        const float length = sqrtf(fixedHorizontal * fixedHorizontal +
-            fixedVertical * fixedVertical);
-        if (length > 1.0f) {
-            fixedHorizontal /= length;
-            fixedVertical /= length;
-        }
-        *reinterpret_cast<float*>(command + 0x10) = fixedHorizontal;
-        *reinterpret_cast<float*>(command + 0x14) = fixedVertical;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-}
-
-void __fastcall hk_PlayerController_Command(
-    uintptr_t player, uintptr_t command, float deltaTime,
-    const Il2CppMethod* method)
-{
-    // Split-command design: the outgoing xl command is written with the fake
-    // TargetAngle by hk_KeyboardControl_BuildCommand below. naq(xl,float) is
-    // the exact boundary where THIS client applies that same command object
-    // to its own local simulation/camera. Feed naq the real camera angle so
-    // local view/physics never see the fake value, then put the fake value
-    // straight back so anything that reads this command object afterwards
-    // (outgoing replication) still observes it.
-    const bool localCommand = silentAntiAimEnabled && player && command &&
-        liveHudLocalPlayer && player == liveHudLocalPlayer &&
-        silentAntiAimLatestInputValid && !silentAntiAimLatestFiring;
-    bool swapped = false;
-    uint8_t savedMode = 0;
-    Vector3 savedAngles{};
-    if (localCommand) {
-        __try {
-            savedMode = *reinterpret_cast<uint8_t*>(command + 0x29);
-            savedAngles = *reinterpret_cast<Vector3*>(command + 0x2C);
-            *reinterpret_cast<uint8_t*>(command + 0x29) = 0; // bbb.TargetAngle
-            *reinterpret_cast<Vector3*>(command + 0x2C) =
-                silentAntiAimLatestRealAimAngle;
-            swapped = true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) { swapped = false; }
-    }
-    if (o_PlayerController_Command)
-        o_PlayerController_Command(player, command, deltaTime, method);
-    if (swapped) {
-        __try {
-            *reinterpret_cast<uint8_t*>(command + 0x29) = savedMode;
-            *reinterpret_cast<Vector3*>(command + 0x2C) = savedAngles;
-            InterlockedIncrement(&silentAntiAimAppliedCalls);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
-}
-
 uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
     uintptr_t keyboardControl, uintptr_t player, const Il2CppMethod* method)
 {
@@ -3718,26 +3652,6 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
             silentAntiAimLatestFiring = false;
         }
         UpdateRotationAntiAimTarget(player, jumpProfile);
-        if (!silentAntiAimLatestFiring && silentAntiAimLatestInputValid) {
-            __try {
-                const float realYaw = silentAntiAimLatestRealAimAngle.y;
-                // dump.cs xl: caxo +0x29 is bbb (TargetAngle = 0), caxp +0x2C
-                // is the authoritative command angle Vector3. naq(xl,float)
-                // consumes this exact object; hk_PlayerController_Command
-                // temporarily substitutes the real angle for that one call so
-                // local simulation/camera stay untouched, then restores this
-                // fake value immediately afterwards for replication.
-                *reinterpret_cast<uint8_t*>(command + 0x29) = 0;
-                *reinterpret_cast<Vector3*>(command + 0x2C) =
-                    silentAntiAimLatestFakeAngles;
-                FixRotationAntiAimMovementUnsafe(command, realYaw,
-                    silentAntiAimLatestFakeAngles.y);
-                InterlockedIncrement(&silentAntiAimCommandCalls);
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) {
-                silentAntiAimLatestInputValid = false;
-            }
-        }
     }
     else if (silentAntiAimLatestPlayer == player || !silentAntiAimEnabled)
         ClearRotationAntiAimTargetUnsafe();
@@ -8854,34 +8768,22 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimNeuCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_AIMINGDATA_NEU)) :
         antiAimNeuCreateStatus;
-    const MH_STATUS antiAimConsumeCreateStatus = MH_CreateHook(
-        (LPVOID)(base + OFFSET_PLAYERCONTROLLER_COMMAND),
-        hk_PlayerController_Command,
-        (LPVOID*)&o_PlayerController_Command);
-    const MH_STATUS antiAimConsumeEnableStatus =
-        antiAimConsumeCreateStatus == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_PLAYERCONTROLLER_COMMAND)) :
-        antiAimConsumeCreateStatus;
     silentAntiAimHookReady = antiAimLateAimCreateStatus == MH_OK &&
         antiAimLateAimEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
         antiAimInputEnableStatus == MH_OK &&
         antiAimNetworkCreateStatus == MH_OK &&
         antiAimNetworkEnableStatus == MH_OK &&
-        antiAimNeuCreateStatus == MH_OK &&
-        antiAimNeuEnableStatus == MH_OK &&
-        antiAimConsumeCreateStatus == MH_OK &&
-        antiAimConsumeEnableStatus == MH_OK &&
         o_Transform_get_rotation_Injected &&
         o_Transform_set_rotation_Injected && o_Transform_get_forward &&
         o_Object_IsAlive;
 
-    LINDY_LOG("[anti-aim] input=%d/%d; network-writer=%d/%d; nhi=%d/%d; neu=%d/%d; consume=%d/%d; quaternion=%p/%p; ready=%d",
+    LINDY_LOG("[anti-aim] input=%d/%d; network-writer=%d/%d; nhi=%d/%d; neu=%d/%d; quaternion=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
         (int)antiAimNetworkCreateStatus, (int)antiAimNetworkEnableStatus,
         (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
         (int)antiAimNeuCreateStatus, (int)antiAimNeuEnableStatus,
-        (int)antiAimConsumeCreateStatus, (int)antiAimConsumeEnableStatus,
+        (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
         (void*)o_Transform_get_rotation_Injected,
         (void*)o_Transform_set_rotation_Injected,
         silentAntiAimHookReady ? 1 : 0);
