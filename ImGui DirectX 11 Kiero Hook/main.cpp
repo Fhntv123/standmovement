@@ -2137,6 +2137,11 @@ HitCasterCer(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float,
 thread_local bool insideLocalGunFire = false;
 thread_local bool insideAutoFireRequest = false;
 thread_local int activeLocalHitCastDepth = 0;
+
+static bool NeedsLocalHitCastTracking()
+{
+    return hitSoundEnabled || hitLogEnabled || bulletImpactsEnabled;
+}
 thread_local HitCasterCeq aimbotLastCeq = {};
 thread_local bool aimbotLastCeqValid = false;
 thread_local uintptr_t aimbotLastCeqGun = 0;
@@ -4942,7 +4947,8 @@ HitCasterCer __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction,
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
 
-    const bool markLocalHitCast = keyValidated && hitLogEnabled && insideLocalGunFire;
+    const bool markLocalHitCast = keyValidated &&
+        NeedsLocalHitCastTracking() && insideLocalGunFire;
     if (markLocalHitCast) ++activeLocalHitCastDepth;
     const HitCasterCer result = o_HitCaster_Cast(
         origin, direction, maxDistance, hitParameters, method);
@@ -5227,15 +5233,16 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { capturedDoubleTapRecoil = false; }
     }
-    if (isLocalGun && hitLogEnabled) ++activeLocalHitCastDepth;
+    const bool trackLocalHitCast = isLocalGun && NeedsLocalHitCastTracking();
+    if (trackLocalHitCast) ++activeLocalHitCastDepth;
     o_GunController_Fire(instance, playSound, method);
-    if (isLocalGun && hitLogEnabled) --activeLocalHitCastDepth;
+    if (trackLocalHitCast) --activeLocalHitCastDepth;
     if (fireSecondShot) {
         // Keep the real second cast/damage/ammo path, then restore only the native
         // recoil accumulator. Never lock or rewrite camera aim after the shot.
-        if (isLocalGun && hitLogEnabled) ++activeLocalHitCastDepth;
+        if (trackLocalHitCast) ++activeLocalHitCastDepth;
         o_GunController_Fire(instance, playSound, method);
-        if (isLocalGun && hitLogEnabled) --activeLocalHitCastDepth;
+        if (trackLocalHitCast) --activeLocalHitCastDepth;
         if (capturedDoubleTapRecoil) {
             __try {
                 memcpy(reinterpret_cast<void*>(doubleTapRecoilController + 0x10),
