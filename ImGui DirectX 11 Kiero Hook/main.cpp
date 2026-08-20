@@ -488,6 +488,10 @@ bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool armsFovEnabled = false;
 float armsFov = 45.0f;
+bool weaponViewModelEnabled = false;
+float weaponViewModelOffsetX = 0.0f;
+float weaponViewModelOffsetY = 0.0f;
+float weaponViewModelOffsetZ = 0.0f;
 bool viewModelEnabled = false;
 float viewModelOffsetX = 0.0f;
 float viewModelOffsetY = 0.0f;
@@ -498,7 +502,8 @@ struct ViewModelTransformState {
     bool nativePositionCaptured;
     bool positionApplied;
 };
-ViewModelTransformState viewModelTransforms[2] = {};
+ViewModelTransformState weaponViewModelTransform = {};
+ViewModelTransformState fullViewModelTransform = {};
 bool silentAntiAimEnabled = false;
 int silentAntiAimMode = 0; // 0 = Static, 1 = Jitter, 2 = Spin, 3 = Edge Yaw
 int silentAntiAimPitch = 0; // 0 = Neutral, 1 = Down, 2 = Up
@@ -1686,6 +1691,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(bulletImpactsEnabled); SAVE_FLOAT(bulletImpactsDuration); SAVE_FLOAT(bulletImpactsSize);
     SAVE_BOOL(showVelocity); SAVE_BOOL(showTrail); SAVE_INT(maxTrailPoints); SAVE_FLOAT(trailMinDistance);
     SAVE_BOOL(cameraFovEnabled); SAVE_FLOAT(cameraFov); SAVE_BOOL(armsFovEnabled); SAVE_FLOAT(armsFov);
+    SAVE_BOOL(weaponViewModelEnabled); SAVE_FLOAT(weaponViewModelOffsetX); SAVE_FLOAT(weaponViewModelOffsetY); SAVE_FLOAT(weaponViewModelOffsetZ);
     SAVE_BOOL(viewModelEnabled); SAVE_FLOAT(viewModelOffsetX); SAVE_FLOAT(viewModelOffsetY); SAVE_FLOAT(viewModelOffsetZ);
     SAVE_FLOAT(aimbotFov); SAVE_FLOAT(visibleAimbotHoldMs);
     SAVE_BOOL(espHealthGradient);
@@ -1775,6 +1781,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(bulletImpactsEnabled); LOAD_FLOAT(bulletImpactsDuration); LOAD_FLOAT(bulletImpactsSize);
     LOAD_BOOL(showVelocity); LOAD_BOOL(showTrail); LOAD_INT(maxTrailPoints); LOAD_FLOAT(trailMinDistance);
     LOAD_BOOL(cameraFovEnabled); LOAD_FLOAT(cameraFov); LOAD_BOOL(armsFovEnabled); LOAD_FLOAT(armsFov);
+    LOAD_BOOL(weaponViewModelEnabled); LOAD_FLOAT(weaponViewModelOffsetX); LOAD_FLOAT(weaponViewModelOffsetY); LOAD_FLOAT(weaponViewModelOffsetZ);
     LOAD_BOOL(viewModelEnabled); LOAD_FLOAT(viewModelOffsetX); LOAD_FLOAT(viewModelOffsetY); LOAD_FLOAT(viewModelOffsetZ);
     LOAD_FLOAT(aimbotFov); LOAD_FLOAT(visibleAimbotHoldMs);
     LOAD_BOOL(espHealthGradient);
@@ -1818,6 +1825,15 @@ static bool LoadConfig(const char* requestedName)
     if (cameraFov > 150.0f) cameraFov = 150.0f;
     if (!isfinite(armsFov) || armsFov < 20.0f) armsFov = 20.0f;
     if (armsFov > 120.0f) armsFov = 120.0f;
+    if (!isfinite(weaponViewModelOffsetX)) weaponViewModelOffsetX = 0.0f;
+    if (!isfinite(weaponViewModelOffsetY)) weaponViewModelOffsetY = 0.0f;
+    if (!isfinite(weaponViewModelOffsetZ)) weaponViewModelOffsetZ = 0.0f;
+    if (weaponViewModelOffsetX < -1.0f) weaponViewModelOffsetX = -1.0f;
+    if (weaponViewModelOffsetX > 1.0f) weaponViewModelOffsetX = 1.0f;
+    if (weaponViewModelOffsetY < -1.0f) weaponViewModelOffsetY = -1.0f;
+    if (weaponViewModelOffsetY > 1.0f) weaponViewModelOffsetY = 1.0f;
+    if (weaponViewModelOffsetZ < -1.0f) weaponViewModelOffsetZ = -1.0f;
+    if (weaponViewModelOffsetZ > 1.0f) weaponViewModelOffsetZ = 1.0f;
     if (!isfinite(viewModelOffsetX)) viewModelOffsetX = 0.0f;
     if (!isfinite(viewModelOffsetY)) viewModelOffsetY = 0.0f;
     if (!isfinite(viewModelOffsetZ)) viewModelOffsetZ = 0.0f;
@@ -2681,117 +2697,125 @@ static bool ApplyAdminBhopState()
     }
 }
 
-static bool GetLocalViewModelTransformsUnsafe(uintptr_t* armsTransform,
-    uintptr_t* weaponTransform)
+static uintptr_t GetLocalWeaponViewModelTransformUnsafe()
 {
-    if (!armsTransform || !weaponTransform) return false;
-    *armsTransform = 0;
-    *weaponTransform = 0;
     const uintptr_t player = liveHudLocalPlayer;
-    if (!player || !o_Component_get_transform) return false;
+    if (!player || !o_Component_get_transform) return 0;
     __try {
-        // Use the components that own the actual visible meshes, not camera helpers,
-        // BipedMap itself, or an animation bone that skinning can overwrite.
-        const uintptr_t armsLod = *reinterpret_cast<uintptr_t*>(player + 0x138);
-        const uintptr_t armsRenderer = armsLod ?
-            *reinterpret_cast<uintptr_t*>(armsLod + 0x60) : 0;
-        if (armsRenderer)
-            *armsTransform = o_Component_get_transform(armsRenderer);
-
         const uintptr_t weaponry = *reinterpret_cast<uintptr_t*>(
             player + OFFSET_WEAPONRYCONTROLLER);
         const uintptr_t weapon = weaponry ? *reinterpret_cast<uintptr_t*>(
             weaponry + OFFSET_WEAPONCONTROLLER) : 0;
         const uintptr_t weaponLod = weapon ?
             *reinterpret_cast<uintptr_t*>(weapon + 0x80) : 0;
-        if (weaponLod)
-            *weaponTransform = o_Component_get_transform(weaponLod);
-        if (*weaponTransform == *armsTransform) *weaponTransform = 0;
-        return *armsTransform || *weaponTransform;
+        return weaponLod ? o_Component_get_transform(weaponLod) : 0;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        *armsTransform = 0;
-        *weaponTransform = 0;
-        return false;
-    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
-static Vector3 AddViewModelOffset(const Vector3& nativePosition)
+static uintptr_t GetLocalFullViewModelTransformUnsafe()
 {
-    return Vector3(
-        nativePosition.x + viewModelOffsetX,
-        nativePosition.y + viewModelOffsetY,
-        nativePosition.z + viewModelOffsetZ);
+    const uintptr_t player = liveHudLocalPlayer;
+    if (!player || !o_Component_get_transform || !o_Transform_get_parent) return 0;
+    __try {
+        // ArmsLodGroup::_armsMeshRenderer is the verified visible hands mesh.
+        // Walk its hierarchy upward, stopping before the FPS camera holder. The
+        // highest child below that holder owns hands, gloves and attached weapon.
+        const uintptr_t armsLod = *reinterpret_cast<uintptr_t*>(player + 0x138);
+        const uintptr_t armsRenderer = armsLod ?
+            *reinterpret_cast<uintptr_t*>(armsLod + 0x60) : 0;
+        uintptr_t current = armsRenderer ?
+            o_Component_get_transform(armsRenderer) : 0;
+        const uintptr_t fpsCameraHolder = *reinterpret_cast<uintptr_t*>(player + 0x28);
+        const uintptr_t holderTransform = fpsCameraHolder ?
+            o_Component_get_transform(fpsCameraHolder) : 0;
+        uintptr_t candidate = current;
+        for (int depth = 0; current && depth < 16; ++depth) {
+            const uintptr_t parent = o_Transform_get_parent(current, nullptr);
+            if (!parent || parent == holderTransform) break;
+            candidate = parent;
+            current = parent;
+        }
+        return candidate;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
-static int GetViewModelTransformIndexUnsafe(uintptr_t transform)
+static Vector3 AddOffset(const Vector3& nativePosition, float x, float y, float z)
 {
-    uintptr_t armsTransform = 0;
-    uintptr_t weaponTransform = 0;
-    if (!transform || !GetLocalViewModelTransformsUnsafe(
-        &armsTransform, &weaponTransform)) return -1;
-    if (transform == armsTransform) return 0;
-    if (transform == weaponTransform) return 1;
-    return -1;
+    return Vector3(nativePosition.x + x, nativePosition.y + y, nativePosition.z + z);
+}
+
+static void TrackViewModelWrite(uintptr_t transform, Vector3* value,
+    uintptr_t target, ViewModelTransformState* state, bool enabled,
+    float x, float y, float z)
+{
+    if (!value || !state || !transform || transform != target) return;
+    state->transform = transform;
+    state->nativePosition = *value;
+    state->nativePositionCaptured = true;
+    if (enabled) {
+        *value = AddOffset(*value, x, y, z);
+        state->positionApplied = true;
+    }
+    else state->positionApplied = false;
 }
 
 void __fastcall hk_Transform_set_localPosition(uintptr_t transform, Vector3 value)
 {
-    const int index = GetViewModelTransformIndexUnsafe(transform);
-    if (keyValidated && index >= 0 && index < 2) {
-        ViewModelTransformState& state = viewModelTransforms[index];
-        state.transform = transform;
-        state.nativePosition = value;
-        state.nativePositionCaptured = true;
-        if (viewModelEnabled) {
-            value = AddViewModelOffset(value);
-            state.positionApplied = true;
-        }
-        else {
-            state.positionApplied = false;
-        }
+    if (keyValidated && transform) {
+        const uintptr_t fullTarget = GetLocalFullViewModelTransformUnsafe();
+        const uintptr_t weaponTarget = GetLocalWeaponViewModelTransformUnsafe();
+        TrackViewModelWrite(transform, &value, fullTarget, &fullViewModelTransform,
+            viewModelEnabled, viewModelOffsetX, viewModelOffsetY, viewModelOffsetZ);
+        if (weaponTarget != fullTarget)
+            TrackViewModelWrite(transform, &value, weaponTarget, &weaponViewModelTransform,
+                weaponViewModelEnabled, weaponViewModelOffsetX,
+                weaponViewModelOffsetY, weaponViewModelOffsetZ);
     }
     o_Transform_set_localPosition(transform, value);
+}
+
+static void ApplyTrackedViewModelPosition(uintptr_t transform,
+    ViewModelTransformState* state, bool enabled, float x, float y, float z)
+{
+    if (!state) return;
+    if (!transform) { *state = {}; return; }
+    if (transform != state->transform) {
+        state->transform = transform;
+        state->nativePosition = o_Transform_get_localPosition(transform);
+        state->nativePositionCaptured = true;
+        state->positionApplied = false;
+    }
+    if (enabled && state->nativePositionCaptured) {
+        o_Transform_set_localPosition(transform,
+            AddOffset(state->nativePosition, x, y, z));
+        state->positionApplied = true;
+    }
+    else if (!enabled && state->positionApplied && state->nativePositionCaptured) {
+        o_Transform_set_localPosition(transform, state->nativePosition);
+        state->positionApplied = false;
+    }
 }
 
 static void ApplyViewModelPosition()
 {
     if (!o_Transform_get_localPosition || !o_Transform_set_localPosition) return;
-    uintptr_t transforms[2] = {};
-    if (!GetLocalViewModelTransformsUnsafe(&transforms[0], &transforms[1])) {
-        viewModelTransforms[0] = {};
-        viewModelTransforms[1] = {};
-        return;
-    }
+    const uintptr_t fullTarget = GetLocalFullViewModelTransformUnsafe();
+    const uintptr_t weaponTarget = GetLocalWeaponViewModelTransformUnsafe();
     __try {
-        for (int i = 0; i < 2; ++i) {
-            ViewModelTransformState& state = viewModelTransforms[i];
-            const uintptr_t transform = transforms[i];
-            if (!transform) {
-                state = {};
-                continue;
-            }
-            if (transform != state.transform) {
-                state.transform = transform;
-                state.nativePosition = o_Transform_get_localPosition(transform);
-                state.nativePositionCaptured = true;
-                state.positionApplied = false;
-            }
-            if (viewModelEnabled && state.nativePositionCaptured) {
-                o_Transform_set_localPosition(
-                    transform, AddViewModelOffset(state.nativePosition));
-                state.positionApplied = true;
-            }
-            else if (!viewModelEnabled && state.positionApplied &&
-                state.nativePositionCaptured) {
-                o_Transform_set_localPosition(transform, state.nativePosition);
-                state.positionApplied = false;
-            }
-        }
+        ApplyTrackedViewModelPosition(fullTarget, &fullViewModelTransform,
+            viewModelEnabled, viewModelOffsetX, viewModelOffsetY, viewModelOffsetZ);
+        if (weaponTarget != fullTarget)
+            ApplyTrackedViewModelPosition(weaponTarget, &weaponViewModelTransform,
+                weaponViewModelEnabled, weaponViewModelOffsetX,
+                weaponViewModelOffsetY, weaponViewModelOffsetZ);
+        else
+            weaponViewModelTransform = {};
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        viewModelTransforms[0] = {};
-        viewModelTransforms[1] = {};
+        fullViewModelTransform = {};
+        weaponViewModelTransform = {};
     }
 }
 
@@ -8126,6 +8150,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     if (keyValidated) {
         ApplyCameraFov();
+        ApplyViewModelPosition();
         ApplyCustomSkybox();
     }
 
@@ -8641,7 +8666,18 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 if (armsFov > 120.0f) armsFov = 120.0f;
             }
         }
-        ImGui::Checkbox("View Model", &viewModelEnabled);
+        ImGui::Checkbox("Weapon Position", &weaponViewModelEnabled);
+        if (weaponViewModelEnabled) {
+            ImGui::SliderFloat("Weapon Position X", &weaponViewModelOffsetX, -1.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Weapon Position Y", &weaponViewModelOffsetY, -1.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Weapon Position Z", &weaponViewModelOffsetZ, -1.0f, 1.0f, "%.2f");
+            if (ImGui::Button("Reset Weapon Position")) {
+                weaponViewModelOffsetX = 0.0f;
+                weaponViewModelOffsetY = 0.0f;
+                weaponViewModelOffsetZ = 0.0f;
+            }
+        }
+        ImGui::Checkbox("View Model (Hands + Gloves + Weapon)", &viewModelEnabled);
         if (viewModelEnabled) {
             ImGui::SliderFloat("View Model X", &viewModelOffsetX, -1.0f, 1.0f, "%.2f");
             ImGui::SliderFloat("View Model Y", &viewModelOffsetY, -1.0f, 1.0f, "%.2f");
