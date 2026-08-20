@@ -209,8 +209,11 @@ struct Matrix16 {
 #define OFFSET_TIME_GET_DELTATIME                   0x3489450
 
 #define OFFSET_TRANSFORM_GET_POSITION              0x348B9F0
+#define OFFSET_TRANSFORM_SET_POSITION              0x348C190
 #define OFFSET_TRANSFORM_GET_LOCALPOSITION         0x348B6C0
 #define OFFSET_TRANSFORM_SET_LOCALPOSITION         0x348BEF0
+#define OFFSET_TRANSFORM_GET_RIGHT                 0x348BA40
+#define OFFSET_TRANSFORM_GET_UP                    0x348BBB0
 #define OFFSET_TRANSFORM_GET_FORWARD               0x348B490
 
 #define OFFSET_COMPONENT_GET_TRANSFORM             0x34747D0
@@ -503,7 +506,13 @@ struct ViewModelTransformState {
     bool positionApplied;
 };
 ViewModelTransformState weaponViewModelTransform = {};
-ViewModelTransformState fullViewModelTransform = {};
+struct FullViewModelState {
+    uintptr_t transforms[14];
+    Vector3 nativePositions[14];
+    int count;
+    bool applied;
+};
+FullViewModelState fullViewModelState = {};
 bool silentAntiAimEnabled = false;
 int silentAntiAimMode = 0; // 0 = Static, 1 = Jitter, 2 = Spin, 3 = Edge Yaw
 int silentAntiAimPitch = 0; // 0 = Neutral, 1 = Down, 2 = Up
@@ -2009,8 +2018,11 @@ Vector3(__fastcall* o_CC_get_velocity)(uintptr_t) = nullptr;
 float(__fastcall* o_Time_get_deltaTime)() = nullptr;
 
 Vector3(__fastcall* o_Transform_get_position)(uintptr_t) = nullptr;
+void(__fastcall* o_Transform_set_position)(uintptr_t, Vector3) = nullptr;
 Vector3(__fastcall* o_Transform_get_localPosition)(uintptr_t) = nullptr;
 void(__fastcall* o_Transform_set_localPosition)(uintptr_t, Vector3) = nullptr;
+Vector3(__fastcall* o_Transform_get_right)(uintptr_t) = nullptr;
+Vector3(__fastcall* o_Transform_get_up)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_forward)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_eulerAngles)(uintptr_t) = nullptr;
 void(__fastcall* o_Transform_set_eulerAngles)(uintptr_t, Vector3) = nullptr;
@@ -2713,32 +2725,45 @@ static uintptr_t GetLocalWeaponViewModelTransformUnsafe()
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
-static uintptr_t GetLocalFullViewModelTransformUnsafe()
+static int GetLocalFullViewModelTransformsUnsafe(uintptr_t* transforms, int capacity,
+    uintptr_t* orientationTransform)
 {
+    if (!transforms || capacity < 14 || !orientationTransform) return 0;
+    *orientationTransform = 0;
+    for (int i = 0; i < capacity; ++i) transforms[i] = 0;
     const uintptr_t player = liveHudLocalPlayer;
-    if (!player || !o_Component_get_transform || !o_Transform_get_parent) return 0;
+    if (!player || !o_Component_get_transform) return 0;
     __try {
-        // ArmsLodGroup::_armsMeshRenderer is the verified visible hands mesh.
-        // Walk its hierarchy upward, stopping before the FPS camera holder. The
-        // highest child below that holder owns hands, gloves and attached weapon.
+        const uintptr_t armsBiped = *reinterpret_cast<uintptr_t*>(player + 0x38);
+        if (!armsBiped) return 0;
+        // Read all positions before writing any of them. Applying the same world-space
+        // delta to every main FPS bone shifts the skinned hands/gloves as one rig.
+        const uintptr_t offsets[] = {
+            0x20, 0x28, 0x30, 0x38, 0x40,
+            0x48, 0x50, 0x58, 0x60,
+            0x68, 0x70, 0x78, 0x80, 0x250
+        };
+        int count = 0;
+        for (int i = 0; i < 14; ++i) {
+            const uintptr_t transform = *reinterpret_cast<uintptr_t*>(
+                armsBiped + offsets[i]);
+            if (!transform) continue;
+            bool duplicate = false;
+            for (int j = 0; j < count; ++j)
+                if (transforms[j] == transform) { duplicate = true; break; }
+            if (!duplicate) transforms[count++] = transform;
+        }
         const uintptr_t armsLod = *reinterpret_cast<uintptr_t*>(player + 0x138);
         const uintptr_t armsRenderer = armsLod ?
             *reinterpret_cast<uintptr_t*>(armsLod + 0x60) : 0;
-        uintptr_t current = armsRenderer ?
-            o_Component_get_transform(armsRenderer) : 0;
-        const uintptr_t fpsCameraHolder = *reinterpret_cast<uintptr_t*>(player + 0x28);
-        const uintptr_t holderTransform = fpsCameraHolder ?
-            o_Component_get_transform(fpsCameraHolder) : 0;
-        uintptr_t candidate = current;
-        for (int depth = 0; current && depth < 16; ++depth) {
-            const uintptr_t parent = o_Transform_get_parent(current, nullptr);
-            if (!parent || parent == holderTransform) break;
-            candidate = parent;
-            current = parent;
-        }
-        return candidate;
+        if (armsRenderer)
+            *orientationTransform = o_Component_get_transform(armsRenderer);
+        return count;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        *orientationTransform = 0;
+        return 0;
+    }
 }
 
 static Vector3 AddOffset(const Vector3& nativePosition, float x, float y, float z)
@@ -2764,14 +2789,10 @@ static void TrackViewModelWrite(uintptr_t transform, Vector3* value,
 void __fastcall hk_Transform_set_localPosition(uintptr_t transform, Vector3 value)
 {
     if (keyValidated && transform) {
-        const uintptr_t fullTarget = GetLocalFullViewModelTransformUnsafe();
         const uintptr_t weaponTarget = GetLocalWeaponViewModelTransformUnsafe();
-        TrackViewModelWrite(transform, &value, fullTarget, &fullViewModelTransform,
-            viewModelEnabled, viewModelOffsetX, viewModelOffsetY, viewModelOffsetZ);
-        if (weaponTarget != fullTarget)
-            TrackViewModelWrite(transform, &value, weaponTarget, &weaponViewModelTransform,
-                weaponViewModelEnabled, weaponViewModelOffsetX,
-                weaponViewModelOffsetY, weaponViewModelOffsetZ);
+        TrackViewModelWrite(transform, &value, weaponTarget, &weaponViewModelTransform,
+            weaponViewModelEnabled, weaponViewModelOffsetX,
+            weaponViewModelOffsetY, weaponViewModelOffsetZ);
     }
     o_Transform_set_localPosition(transform, value);
 }
@@ -2798,23 +2819,73 @@ static void ApplyTrackedViewModelPosition(uintptr_t transform,
     }
 }
 
+static void RestoreFullViewModelPositionUnsafe()
+{
+    if (!fullViewModelState.applied || !o_Transform_set_position) {
+        fullViewModelState = {};
+        return;
+    }
+    for (int i = 0; i < fullViewModelState.count; ++i)
+        if (fullViewModelState.transforms[i])
+            o_Transform_set_position(fullViewModelState.transforms[i],
+                fullViewModelState.nativePositions[i]);
+    fullViewModelState = {};
+}
+
+static void ApplyFullViewModelPositionUnsafe()
+{
+    if (!o_Transform_get_position || !o_Transform_set_position ||
+        !o_Transform_get_right || !o_Transform_get_up || !o_Transform_get_forward)
+        return;
+    // Remove the previous render-only offset before sampling this frame. This prevents
+    // offsets from accumulating when native animation did not rewrite a bone.
+    RestoreFullViewModelPositionUnsafe();
+    uintptr_t transforms[14] = {};
+    uintptr_t orientation = 0;
+    const int count = GetLocalFullViewModelTransformsUnsafe(
+        transforms, 14, &orientation);
+    if (!viewModelEnabled || count <= 0 || !orientation) {
+        fullViewModelState = {};
+        return;
+    }
+    const Vector3 right = o_Transform_get_right(orientation);
+    const Vector3 up = o_Transform_get_up(orientation);
+    const Vector3 forward = o_Transform_get_forward(orientation);
+    const Vector3 delta(
+        right.x * viewModelOffsetX + up.x * viewModelOffsetY + forward.x * viewModelOffsetZ,
+        right.y * viewModelOffsetX + up.y * viewModelOffsetY + forward.y * viewModelOffsetZ,
+        right.z * viewModelOffsetX + up.z * viewModelOffsetY + forward.z * viewModelOffsetZ);
+    fullViewModelState = {};
+    fullViewModelState.count = count;
+    for (int i = 0; i < count; ++i) {
+        const Vector3 nativePosition = o_Transform_get_position(transforms[i]);
+        fullViewModelState.transforms[i] = transforms[i];
+        fullViewModelState.nativePositions[i] = nativePosition;
+    }
+    // All native world positions were captured first, so parent/child bones receive
+    // exactly one common delta instead of accumulating it through the hierarchy.
+    for (int i = 0; i < count; ++i) {
+        const Vector3 nativePosition = fullViewModelState.nativePositions[i];
+        o_Transform_set_position(transforms[i], Vector3(
+            nativePosition.x + delta.x,
+            nativePosition.y + delta.y,
+            nativePosition.z + delta.z));
+    }
+    fullViewModelState.applied = true;
+}
+
 static void ApplyViewModelPosition()
 {
     if (!o_Transform_get_localPosition || !o_Transform_set_localPosition) return;
-    const uintptr_t fullTarget = GetLocalFullViewModelTransformUnsafe();
     const uintptr_t weaponTarget = GetLocalWeaponViewModelTransformUnsafe();
     __try {
-        ApplyTrackedViewModelPosition(fullTarget, &fullViewModelTransform,
-            viewModelEnabled, viewModelOffsetX, viewModelOffsetY, viewModelOffsetZ);
-        if (weaponTarget != fullTarget)
-            ApplyTrackedViewModelPosition(weaponTarget, &weaponViewModelTransform,
-                weaponViewModelEnabled, weaponViewModelOffsetX,
-                weaponViewModelOffsetY, weaponViewModelOffsetZ);
-        else
-            weaponViewModelTransform = {};
+        ApplyFullViewModelPositionUnsafe();
+        ApplyTrackedViewModelPosition(weaponTarget, &weaponViewModelTransform,
+            weaponViewModelEnabled, weaponViewModelOffsetX,
+            weaponViewModelOffsetY, weaponViewModelOffsetZ);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        fullViewModelTransform = {};
+        fullViewModelState = {};
         weaponViewModelTransform = {};
     }
 }
@@ -4497,7 +4568,6 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
-    ApplyViewModelPosition();
     MaintainChamsForCurrentScene();
     if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
         SendPendingPixelSurfChatMessageUnsafe();
@@ -9113,10 +9183,13 @@ DWORD WINAPI HackThread(LPVOID)
     if (hitConfirmedBCreate == MH_OK || hitConfirmedBCreate == MH_ERROR_ALREADY_CREATED) MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HIT_CONFIRMED_B));
 
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
+    o_Transform_set_position = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_POSITION);
     o_Transform_get_localPosition = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_LOCALPOSITION);
     MH_CreateHook((LPVOID)(base + OFFSET_TRANSFORM_SET_LOCALPOSITION),
         hk_Transform_set_localPosition, (LPVOID*)&o_Transform_set_localPosition);
     MH_EnableHook((LPVOID)(base + OFFSET_TRANSFORM_SET_LOCALPOSITION));
+    o_Transform_get_right = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_RIGHT);
+    o_Transform_get_up = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_UP);
     o_Transform_get_forward = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_FORWARD);
     o_Transform_get_eulerAngles = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_EULERANGLES);
     o_Transform_set_eulerAngles = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_EULERANGLES);
