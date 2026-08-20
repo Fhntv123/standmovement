@@ -19,6 +19,7 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>16.0</VCProjectVersion>
+    <TargetName>payload1</TargetName>
     <ProjectGuid>{04B17470-CB82-4724-904B-25445926AB86}</ProjectGuid>
     <RootNamespace>ImGuiDirectX11KieroHook</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
