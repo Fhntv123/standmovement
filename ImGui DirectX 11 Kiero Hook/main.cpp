@@ -267,6 +267,7 @@ struct Matrix16 {
 #define OFFSET_RENDERSETTINGS_GET_SKYBOX            0x345A600
 #define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x345A630
 #define OFFSET_GLOVES_SET_ARMS                    0x966490
+#define OFFSET_ARMS_ANIMATION_UPDATE              0xC1D8A0
 #define OFFSET_ARMSLOD_SET_VISIBLE                 0xBCCFA0
 #define OFFSET_ARMSLOD_SET_MESH_MATERIAL           0xBCD1C0
 #define OFFSET_ARMSLOD_SET_ARMS_MATERIALS          0xBCD260
@@ -503,15 +504,7 @@ struct ViewModelTransformState {
     bool positionApplied;
 };
 ViewModelTransformState weaponViewModelTransform = {};
-struct FullViewModelState {
-    uintptr_t armsController;
-    uintptr_t centerTransformData;
-    Vector3 nativePosition;
-    Vector3 appliedPosition;
-    bool nativePositionCaptured;
-    bool applied;
-};
-FullViewModelState fullViewModelState = {};
+ViewModelTransformState fullViewModelTransform = {};
 bool silentAntiAimEnabled = false;
 int silentAntiAimMode = 0; // 0 = Static, 1 = Jitter, 2 = Spin, 3 = Edge Yaw
 int silentAntiAimPitch = 0; // 0 = Neutral, 1 = Down, 2 = Up
@@ -2784,95 +2777,49 @@ static void ApplyTrackedViewModelPosition(uintptr_t transform,
     }
 }
 
-static bool NearlyEqualViewModelPosition(const Vector3& a, const Vector3& b)
-{
-    const float epsilon = 0.0001f;
-    return fabsf(a.x - b.x) <= epsilon &&
-        fabsf(a.y - b.y) <= epsilon &&
-        fabsf(a.z - b.z) <= epsilon;
-}
+using t_ArmsAnimationUpdate = void(__fastcall*)(uintptr_t, const Il2CppMethod*);
+t_ArmsAnimationUpdate o_ArmsAnimationUpdate = nullptr;
 
-static bool ResolveFullViewModelCenterUnsafe(uintptr_t* armsController,
-    uintptr_t* centerTransformData)
+static uintptr_t GetFullViewModelRootUnsafe(uintptr_t armsController)
 {
-    if (!armsController || !centerTransformData) return false;
-    *armsController = 0;
-    *centerTransformData = 0;
-    const uintptr_t player = liveHudLocalPlayer;
-    if (!player) return false;
+    if (!armsController) return 0;
     __try {
-        // dump1/dump.cs + il2cpp.h:
-        // PlayerController.ArmsAnimationController +0xE8
-        // ArmsAnimationController.offsetPoints +0x58
-        // OffsetPoints.centerTR +0x10
-        // TransformTRS.pos +0x10
-        const uintptr_t controller = *reinterpret_cast<uintptr_t*>(player + 0xE8);
-        const uintptr_t offsetPoints = controller ?
-            *reinterpret_cast<uintptr_t*>(controller + 0x58) : 0;
-        const uintptr_t centerTR = offsetPoints ?
-            *reinterpret_cast<uintptr_t*>(offsetPoints + 0x10) : 0;
-        if (!controller || !centerTR) return false;
-        *armsController = controller;
-        *centerTransformData = centerTR;
-        return true;
+        // dump1/il2cpp.h: ArmsAnimationController inherits Controller. Controller.cauh
+        // is the transform at +0x30 that the controller owns and updates as one unit.
+        return *reinterpret_cast<uintptr_t*>(armsController + 0x30);
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        *armsController = 0;
-        *centerTransformData = 0;
-        return false;
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+static void ApplyFullViewModelAfterNativeUpdateUnsafe(uintptr_t armsController)
+{
+    if (!o_Transform_get_localPosition || !o_Transform_set_localPosition) return;
+    const uintptr_t transform = GetFullViewModelRootUnsafe(armsController);
+    if (!transform) {
+        fullViewModelTransform = {};
+        return;
+    }
+    const Vector3 nativePosition = o_Transform_get_localPosition(transform);
+    fullViewModelTransform.transform = transform;
+    fullViewModelTransform.nativePosition = nativePosition;
+    fullViewModelTransform.nativePositionCaptured = true;
+    if (viewModelEnabled) {
+        o_Transform_set_localPosition(transform, AddOffset(nativePosition,
+            viewModelOffsetX, viewModelOffsetY, viewModelOffsetZ));
+        fullViewModelTransform.positionApplied = true;
+    }
+    else {
+        fullViewModelTransform.positionApplied = false;
     }
 }
 
-static void RestoreFullViewModelPositionUnsafe()
+void __fastcall hk_ArmsAnimationUpdate(uintptr_t instance,
+    const Il2CppMethod* method)
 {
-    if (fullViewModelState.applied && fullViewModelState.centerTransformData &&
-        fullViewModelState.nativePositionCaptured) {
-        *reinterpret_cast<Vector3*>(
-            fullViewModelState.centerTransformData + 0x10) =
-            fullViewModelState.nativePosition;
-    }
-    fullViewModelState = {};
-}
-
-static void ApplyFullViewModelPositionUnsafe()
-{
-    uintptr_t armsController = 0;
-    uintptr_t centerTR = 0;
-    if (!ResolveFullViewModelCenterUnsafe(&armsController, &centerTR)) {
-        fullViewModelState = {};
-        return;
-    }
-    Vector3 current = *reinterpret_cast<Vector3*>(centerTR + 0x10);
-    if (!viewModelEnabled) {
-        if (fullViewModelState.applied &&
-            fullViewModelState.armsController == armsController &&
-            fullViewModelState.centerTransformData == centerTR)
-            *reinterpret_cast<Vector3*>(centerTR + 0x10) =
-                fullViewModelState.nativePosition;
-        fullViewModelState = {};
-        return;
-    }
-    if (fullViewModelState.armsController != armsController ||
-        fullViewModelState.centerTransformData != centerTR ||
-        !fullViewModelState.nativePositionCaptured) {
-        fullViewModelState = {};
-        fullViewModelState.armsController = armsController;
-        fullViewModelState.centerTransformData = centerTR;
-        fullViewModelState.nativePosition = current;
-        fullViewModelState.nativePositionCaptured = true;
-    }
-    else if (fullViewModelState.applied &&
-        !NearlyEqualViewModelPosition(current, fullViewModelState.appliedPosition)) {
-        // The game changed the center preset (weapon/stance transition). Treat that
-        // value as the new native baseline instead of preserving stale coordinates.
-        fullViewModelState.nativePosition = current;
-    }
-    fullViewModelState.appliedPosition = AddOffset(
-        fullViewModelState.nativePosition,
-        viewModelOffsetX, viewModelOffsetY, viewModelOffsetZ);
-    *reinterpret_cast<Vector3*>(centerTR + 0x10) =
-        fullViewModelState.appliedPosition;
-    fullViewModelState.applied = true;
+    o_ArmsAnimationUpdate(instance, method);
+    if (!keyValidated || !instance) return;
+    __try { ApplyFullViewModelAfterNativeUpdateUnsafe(instance); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { fullViewModelTransform = {}; }
 }
 
 static void ApplyViewModelPosition()
@@ -2880,13 +2827,11 @@ static void ApplyViewModelPosition()
     if (!o_Transform_get_localPosition || !o_Transform_set_localPosition) return;
     const uintptr_t weaponTarget = GetLocalWeaponViewModelTransformUnsafe();
     __try {
-        ApplyFullViewModelPositionUnsafe();
         ApplyTrackedViewModelPosition(weaponTarget, &weaponViewModelTransform,
             weaponViewModelEnabled, weaponViewModelOffsetX,
             weaponViewModelOffsetY, weaponViewModelOffsetZ);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        fullViewModelState = {};
         weaponViewModelTransform = {};
     }
 }
@@ -9396,6 +9341,15 @@ DWORD WINAPI HackThread(LPVOID)
         (void*)o_Transform_get_rotation_Injected,
         (void*)o_Transform_set_rotation_Injected,
         silentAntiAimHookReady ? 1 : 0);
+
+    // Apply the full view-model offset immediately after the game's own arms tick.
+    // dump1: ArmsAnimationController.mvv/obw RVA 0xC1D8A0, signature void(instance, MethodInfo*).
+    const MH_STATUS armsAnimationUpdateCreate = MH_CreateHook(
+        (LPVOID)(base + OFFSET_ARMS_ANIMATION_UPDATE), hk_ArmsAnimationUpdate,
+        (LPVOID*)&o_ArmsAnimationUpdate);
+    if (armsAnimationUpdateCreate == MH_OK ||
+        armsAnimationUpdateCreate == MH_ERROR_ALREADY_CREATED)
+        MH_EnableHook((LPVOID)(base + OFFSET_ARMS_ANIMATION_UPDATE));
 
     // Capture the live ArmsLodGroup directly whenever its first-person visibility is enabled.
     MH_CreateHook((LPVOID)(base + OFFSET_ARMSLOD_SET_VISIBLE), hk_ArmsLod_SetVisible, (LPVOID*)&o_ArmsLod_SetVisible);
