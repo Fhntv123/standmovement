@@ -5873,10 +5873,24 @@ static void UpdatePenetrableSurfaceVisualization()
         penetrableSurfaceVisuals.size(), physicalHits, typedHits, rendererHits);
 }
 
+static uintptr_t GetLiveCachedChamsMaterial(uintptr_t* materialSlot,
+    uint32_t* handleSlot)
+{
+    if (!materialSlot || !handleSlot || !*materialSlot) return 0;
+    if (!o_Object_IsAlive || IsUnityObjectAliveUnsafe(*materialSlot)) return *materialSlot;
+    if (*handleSlot && g_il2cpp.gchandle_free)
+        g_il2cpp.gchandle_free(*handleSlot);
+    *handleSlot = 0;
+    *materialSlot = 0;
+    return 0;
+}
+
 static uintptr_t EnsureSelectedWeaponChamsMaterial()
 {
     const int mode = (weaponChamsMode >= 0 && weaponChamsMode < 8) ? weaponChamsMode : 0;
-    if (weaponChamsMaterials[mode]) return weaponChamsMaterials[mode];
+    if (const uintptr_t cached = GetLiveCachedChamsMaterial(
+        &weaponChamsMaterials[mode], &weaponChamsMaterialHandles[mode]))
+        return cached;
 
     static const char* shaderCandidates[8][5] = {
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
@@ -5944,7 +5958,9 @@ static void AnimateWeaponChamsColor()
 static uintptr_t EnsureSelectedArmChamsMaterial()
 {
     const int mode = (armChamsMode >= 0 && armChamsMode < 8) ? armChamsMode : 0;
-    if (armChamsMaterials[mode]) return armChamsMaterials[mode];
+    if (const uintptr_t cached = GetLiveCachedChamsMaterial(
+        &armChamsMaterials[mode], &armChamsMaterialHandles[mode]))
+        return cached;
     static const char* shaderCandidates[8][5] = {
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
         { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", "UI/Default", nullptr },
@@ -6099,7 +6115,9 @@ static void UpdateArmChams(uintptr_t knownArmsLodGroup)
 static uintptr_t EnsureSelectedGloveChamsMaterial()
 {
     const int mode = (gloveChamsMode >= 0 && gloveChamsMode < 8) ? gloveChamsMode : 0;
-    if (gloveChamsMaterials[mode]) return gloveChamsMaterials[mode];
+    if (const uintptr_t cached = GetLiveCachedChamsMaterial(
+        &gloveChamsMaterials[mode], &gloveChamsMaterialHandles[mode]))
+        return cached;
     static const char* shaderCandidates[8][5] = {
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
         { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", "UI/Default", nullptr },
@@ -6259,7 +6277,9 @@ static uintptr_t GetCurrentLocalCharacterLodGroup()
 static uintptr_t EnsureSelectedLocalPlayerChamsMaterial()
 {
     const int mode = (localPlayerChamsMode >= 0 && localPlayerChamsMode < 8) ? localPlayerChamsMode : 0;
-    if (localPlayerChamsMaterials[mode]) return localPlayerChamsMaterials[mode];
+    if (const uintptr_t cached = GetLiveCachedChamsMaterial(
+        &localPlayerChamsMaterials[mode], &localPlayerChamsMaterialHandles[mode]))
+        return cached;
     static const char* shaderCandidates[8][5] = {
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
         { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", "UI/Default", nullptr },
@@ -6410,7 +6430,9 @@ static void AnimateLocalPlayerChamsColor()
 static uintptr_t EnsureEnemyChamsMaterial(int requestedMode)
 {
     const int mode = (requestedMode >= 0 && requestedMode < 9) ? requestedMode : 0;
-    if (enemyChamsMaterials[mode]) return enemyChamsMaterials[mode];
+    if (const uintptr_t cached = GetLiveCachedChamsMaterial(
+        &enemyChamsMaterials[mode], &enemyChamsMaterialHandles[mode]))
+        return cached;
     static const char* shaderCandidates[9][5] = {
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
         { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", "UI/Default", nullptr },
