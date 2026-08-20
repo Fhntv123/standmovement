@@ -264,6 +264,9 @@ struct Matrix16 {
 #define OFFSET_RENDERSETTINGS_SET_SKYBOX            0x345A630
 #define OFFSET_GLOVES_SET_ARMS                    0x966490
 #define OFFSET_ARMSLOD_SET_VISIBLE                 0xBCCFA0
+#define OFFSET_ARMSLOD_SET_MESH_MATERIAL           0xBCD1C0
+#define OFFSET_ARMSLOD_SET_ARMS_MATERIALS          0xBCD260
+#define OFFSET_ARMSLOD_SET_GLOVE_MATERIALS         0xBCD2B0
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0xBFA0C0
 #define OFFSET_GUNCONTROLLER_FIRE                  0xA21040
 #define OFFSET_GUNCONTROLLER_COMMAND               0xA1E030
@@ -2044,6 +2047,9 @@ Matrix16(__fastcall* o_Camera_get_projectionMatrix)(uintptr_t) = nullptr;
 short(__fastcall* o_GunController_GetCurrentAmmo)(uintptr_t) = nullptr;
 void(__fastcall* o_Gloves_SetArms)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_ArmsLod_SetVisible)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_ArmsLod_SetMeshMaterial)(uintptr_t, uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_ArmsLod_SetArmsMaterials)(uintptr_t, uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_ArmsLod_SetGloveMaterials)(uintptr_t, uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_Weaponry_TakeWeapon)(uintptr_t, uint8_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Command)(uintptr_t, uintptr_t, float, float, const Il2CppMethod*) = nullptr;
@@ -4914,6 +4920,45 @@ void __fastcall hk_ArmsLod_SetVisible(uintptr_t instance, bool visible, const Il
     gloveChamsArmsLodGroup = instance;
     if (armChamsEnabled) InterlockedExchange(&pendingArmChamsRefresh, 1);
     if (gloveChamsEnabled) InterlockedExchange(&pendingGloveChamsRefresh, 1);
+}
+
+static bool IsCurrentLocalArmsLodGroupUnsafe(uintptr_t instance)
+{
+    __try {
+        return instance && liveHudLocalPlayer &&
+            instance == *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0x138);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static void ReapplyCurrentArmChamsAfterNativeMaterialChange(uintptr_t instance)
+{
+    if (!IsCurrentLocalArmsLodGroupUnsafe(instance)) return;
+    armChamsArmsLodGroup = instance;
+    gloveChamsArmsLodGroup = instance;
+    if (armChamsEnabled) UpdateArmChams(instance);
+    if (gloveChamsEnabled) UpdateGloveChams(instance);
+}
+
+void __fastcall hk_ArmsLod_SetMeshMaterial(uintptr_t instance, uintptr_t mesh,
+    uintptr_t material, const Il2CppMethod* method)
+{
+    o_ArmsLod_SetMeshMaterial(instance, mesh, material, method);
+    ReapplyCurrentArmChamsAfterNativeMaterialChange(instance);
+}
+
+void __fastcall hk_ArmsLod_SetArmsMaterials(uintptr_t instance, uintptr_t mesh,
+    uintptr_t materials, const Il2CppMethod* method)
+{
+    o_ArmsLod_SetArmsMaterials(instance, mesh, materials, method);
+    ReapplyCurrentArmChamsAfterNativeMaterialChange(instance);
+}
+
+void __fastcall hk_ArmsLod_SetGloveMaterials(uintptr_t instance, uintptr_t mesh,
+    uintptr_t materials, const Il2CppMethod* method)
+{
+    o_ArmsLod_SetGloveMaterials(instance, mesh, materials, method);
+    ReapplyCurrentArmChamsAfterNativeMaterialChange(instance);
 }
 
 void __fastcall hk_Gloves_SetArms(uintptr_t instance, uintptr_t armsLodGroup, const Il2CppMethod* method)
@@ -8883,6 +8928,15 @@ DWORD WINAPI HackThread(LPVOID)
     // Capture the live ArmsLodGroup directly whenever its first-person visibility is enabled.
     MH_CreateHook((LPVOID)(base + OFFSET_ARMSLOD_SET_VISIBLE), hk_ArmsLod_SetVisible, (LPVOID*)&o_ArmsLod_SetVisible);
     MH_EnableHook((LPVOID)(base + OFFSET_ARMSLOD_SET_VISIBLE));
+
+    // The game reapplies first-person meshes/materials while entering a new match.
+    // Run chams after those native writes so enabled arm/glove chams cannot be overwritten.
+    MH_CreateHook((LPVOID)(base + OFFSET_ARMSLOD_SET_MESH_MATERIAL), hk_ArmsLod_SetMeshMaterial, (LPVOID*)&o_ArmsLod_SetMeshMaterial);
+    MH_EnableHook((LPVOID)(base + OFFSET_ARMSLOD_SET_MESH_MATERIAL));
+    MH_CreateHook((LPVOID)(base + OFFSET_ARMSLOD_SET_ARMS_MATERIALS), hk_ArmsLod_SetArmsMaterials, (LPVOID*)&o_ArmsLod_SetArmsMaterials);
+    MH_EnableHook((LPVOID)(base + OFFSET_ARMSLOD_SET_ARMS_MATERIALS));
+    MH_CreateHook((LPVOID)(base + OFFSET_ARMSLOD_SET_GLOVE_MATERIALS), hk_ArmsLod_SetGloveMaterials, (LPVOID*)&o_ArmsLod_SetGloveMaterials);
+    MH_EnableHook((LPVOID)(base + OFFSET_ARMSLOD_SET_GLOVE_MATERIALS));
 
     // Reapply arm/glove chams when the local glove model changes.
     MH_CreateHook((LPVOID)(base + OFFSET_GLOVES_SET_ARMS), hk_Gloves_SetArms, (LPVOID*)&o_Gloves_SetArms);
