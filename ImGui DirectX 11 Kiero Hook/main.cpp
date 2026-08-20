@@ -209,6 +209,8 @@ struct Matrix16 {
 #define OFFSET_TIME_GET_DELTATIME                   0x3489450
 
 #define OFFSET_TRANSFORM_GET_POSITION              0x348B9F0
+#define OFFSET_TRANSFORM_GET_LOCALPOSITION         0x348B6C0
+#define OFFSET_TRANSFORM_SET_LOCALPOSITION         0x348BEF0
 #define OFFSET_TRANSFORM_GET_FORWARD               0x348B490
 
 #define OFFSET_COMPONENT_GET_TRANSFORM             0x34747D0
@@ -486,6 +488,14 @@ bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
 bool armsFovEnabled = false;
 float armsFov = 45.0f;
+bool viewModelEnabled = false;
+float viewModelOffsetX = 0.0f;
+float viewModelOffsetY = 0.0f;
+float viewModelOffsetZ = 0.0f;
+uintptr_t viewModelObservedTransform = 0;
+Vector3 viewModelNativePosition;
+bool viewModelNativePositionCaptured = false;
+bool viewModelPositionApplied = false;
 bool silentAntiAimEnabled = false;
 int silentAntiAimMode = 0; // 0 = Static, 1 = Jitter, 2 = Spin, 3 = Edge Yaw
 int silentAntiAimPitch = 0; // 0 = Neutral, 1 = Down, 2 = Up
@@ -1672,7 +1682,9 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(bulletTracerEnabled); SAVE_FLOAT(bulletTracerDuration); SAVE_FLOAT(bulletTracerThickness);
     SAVE_BOOL(bulletImpactsEnabled); SAVE_FLOAT(bulletImpactsDuration); SAVE_FLOAT(bulletImpactsSize);
     SAVE_BOOL(showVelocity); SAVE_BOOL(showTrail); SAVE_INT(maxTrailPoints); SAVE_FLOAT(trailMinDistance);
-    SAVE_BOOL(cameraFovEnabled); SAVE_FLOAT(cameraFov); SAVE_BOOL(armsFovEnabled); SAVE_FLOAT(armsFov); SAVE_FLOAT(aimbotFov); SAVE_FLOAT(visibleAimbotHoldMs);
+    SAVE_BOOL(cameraFovEnabled); SAVE_FLOAT(cameraFov); SAVE_BOOL(armsFovEnabled); SAVE_FLOAT(armsFov);
+    SAVE_BOOL(viewModelEnabled); SAVE_FLOAT(viewModelOffsetX); SAVE_FLOAT(viewModelOffsetY); SAVE_FLOAT(viewModelOffsetZ);
+    SAVE_FLOAT(aimbotFov); SAVE_FLOAT(visibleAimbotHoldMs);
     SAVE_BOOL(espHealthGradient);
     SAVE_FLOAT(worldColorMetallic); SAVE_FLOAT(worldColorSmoothness); SAVE_FLOAT(worldColorAnimationSpeed);
     SAVE_BOOL(customSkyboxEnabled);
@@ -1759,7 +1771,9 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(bulletTracerEnabled); LOAD_FLOAT(bulletTracerDuration); LOAD_FLOAT(bulletTracerThickness);
     LOAD_BOOL(bulletImpactsEnabled); LOAD_FLOAT(bulletImpactsDuration); LOAD_FLOAT(bulletImpactsSize);
     LOAD_BOOL(showVelocity); LOAD_BOOL(showTrail); LOAD_INT(maxTrailPoints); LOAD_FLOAT(trailMinDistance);
-    LOAD_BOOL(cameraFovEnabled); LOAD_FLOAT(cameraFov); LOAD_BOOL(armsFovEnabled); LOAD_FLOAT(armsFov); LOAD_FLOAT(aimbotFov); LOAD_FLOAT(visibleAimbotHoldMs);
+    LOAD_BOOL(cameraFovEnabled); LOAD_FLOAT(cameraFov); LOAD_BOOL(armsFovEnabled); LOAD_FLOAT(armsFov);
+    LOAD_BOOL(viewModelEnabled); LOAD_FLOAT(viewModelOffsetX); LOAD_FLOAT(viewModelOffsetY); LOAD_FLOAT(viewModelOffsetZ);
+    LOAD_FLOAT(aimbotFov); LOAD_FLOAT(visibleAimbotHoldMs);
     LOAD_BOOL(espHealthGradient);
     LOAD_FLOAT(worldColorMetallic); LOAD_FLOAT(worldColorSmoothness); LOAD_FLOAT(worldColorAnimationSpeed);
     LOAD_BOOL(customSkyboxEnabled);
@@ -1801,6 +1815,15 @@ static bool LoadConfig(const char* requestedName)
     if (cameraFov > 150.0f) cameraFov = 150.0f;
     if (!isfinite(armsFov) || armsFov < 20.0f) armsFov = 20.0f;
     if (armsFov > 120.0f) armsFov = 120.0f;
+    if (!isfinite(viewModelOffsetX)) viewModelOffsetX = 0.0f;
+    if (!isfinite(viewModelOffsetY)) viewModelOffsetY = 0.0f;
+    if (!isfinite(viewModelOffsetZ)) viewModelOffsetZ = 0.0f;
+    if (viewModelOffsetX < -1.0f) viewModelOffsetX = -1.0f;
+    if (viewModelOffsetX > 1.0f) viewModelOffsetX = 1.0f;
+    if (viewModelOffsetY < -1.0f) viewModelOffsetY = -1.0f;
+    if (viewModelOffsetY > 1.0f) viewModelOffsetY = 1.0f;
+    if (viewModelOffsetZ < -1.0f) viewModelOffsetZ = -1.0f;
+    if (viewModelOffsetZ > 1.0f) viewModelOffsetZ = 1.0f;
     if (hitSoundSelectedIndex < 0 ||
         hitSoundSelectedIndex >= static_cast<int>(hitSoundFiles.size()))
         hitSoundSelectedIndex = 0;
@@ -1967,6 +1990,8 @@ Vector3(__fastcall* o_CC_get_velocity)(uintptr_t) = nullptr;
 float(__fastcall* o_Time_get_deltaTime)() = nullptr;
 
 Vector3(__fastcall* o_Transform_get_position)(uintptr_t) = nullptr;
+Vector3(__fastcall* o_Transform_get_localPosition)(uintptr_t) = nullptr;
+void(__fastcall* o_Transform_set_localPosition)(uintptr_t, Vector3) = nullptr;
 Vector3(__fastcall* o_Transform_get_forward)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_eulerAngles)(uintptr_t) = nullptr;
 void(__fastcall* o_Transform_set_eulerAngles)(uintptr_t, Vector3) = nullptr;
@@ -2650,6 +2675,78 @@ static bool ApplyAdminBhopState()
     __except (EXCEPTION_EXECUTE_HANDLER) {
         strcpy_s(adminBhopStatus, "Direct admin BHop apply failed");
         return false;
+    }
+}
+
+static uintptr_t GetLocalViewModelTransformUnsafe()
+{
+    const uintptr_t player = liveHudLocalPlayer;
+    if (!player) return 0;
+    __try {
+        // dump1: PlayerController::ArmsAnimationController +0xE8, then
+        // ArmsAnimationController::fpsDirective Transform +0x68.
+        const uintptr_t armsController = *reinterpret_cast<uintptr_t*>(player + 0xE8);
+        return armsController ? *reinterpret_cast<uintptr_t*>(armsController + 0x68) : 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+static Vector3 AddViewModelOffset(const Vector3& nativePosition)
+{
+    return Vector3(
+        nativePosition.x + viewModelOffsetX,
+        nativePosition.y + viewModelOffsetY,
+        nativePosition.z + viewModelOffsetZ);
+}
+
+void __fastcall hk_Transform_set_localPosition(uintptr_t transform, Vector3 value)
+{
+    const uintptr_t viewModelTransform = GetLocalViewModelTransformUnsafe();
+    if (keyValidated && transform && transform == viewModelTransform) {
+        viewModelObservedTransform = transform;
+        viewModelNativePosition = value;
+        viewModelNativePositionCaptured = true;
+        if (viewModelEnabled) {
+            value = AddViewModelOffset(value);
+            viewModelPositionApplied = true;
+        }
+        else {
+            viewModelPositionApplied = false;
+        }
+    }
+    o_Transform_set_localPosition(transform, value);
+}
+
+static void ApplyViewModelPosition()
+{
+    if (!o_Transform_get_localPosition || !o_Transform_set_localPosition) return;
+    const uintptr_t transform = GetLocalViewModelTransformUnsafe();
+    if (!transform) {
+        viewModelObservedTransform = 0;
+        viewModelNativePositionCaptured = false;
+        viewModelPositionApplied = false;
+        return;
+    }
+    __try {
+        if (transform != viewModelObservedTransform) {
+            viewModelObservedTransform = transform;
+            viewModelNativePosition = o_Transform_get_localPosition(transform);
+            viewModelNativePositionCaptured = true;
+            viewModelPositionApplied = false;
+        }
+        if (viewModelEnabled && viewModelNativePositionCaptured) {
+            o_Transform_set_localPosition(transform, AddViewModelOffset(viewModelNativePosition));
+            viewModelPositionApplied = true;
+        }
+        else if (!viewModelEnabled && viewModelPositionApplied && viewModelNativePositionCaptured) {
+            o_Transform_set_localPosition(transform, viewModelNativePosition);
+            viewModelPositionApplied = false;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        viewModelObservedTransform = 0;
+        viewModelNativePositionCaptured = false;
+        viewModelPositionApplied = false;
     }
 }
 
@@ -4331,6 +4428,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
+    ApplyViewModelPosition();
     MaintainChamsForCurrentScene();
     if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
         SendPendingPixelSurfChatMessageUnsafe();
@@ -8498,6 +8596,17 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 if (armsFov > 120.0f) armsFov = 120.0f;
             }
         }
+        ImGui::Checkbox("View Model", &viewModelEnabled);
+        if (viewModelEnabled) {
+            ImGui::SliderFloat("View Model X", &viewModelOffsetX, -1.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("View Model Y", &viewModelOffsetY, -1.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("View Model Z", &viewModelOffsetZ, -1.0f, 1.0f, "%.2f");
+            if (ImGui::Button("Reset View Model")) {
+                viewModelOffsetX = 0.0f;
+                viewModelOffsetY = 0.0f;
+                viewModelOffsetZ = 0.0f;
+            }
+        }
         if (ImGui::Checkbox("Fog", &fogEnabled))
             InterlockedExchange(&pendingFogCommand, fogEnabled ? 1 : 2);
         if (fogEnabled) {
@@ -8923,6 +9032,10 @@ DWORD WINAPI HackThread(LPVOID)
     if (hitConfirmedBCreate == MH_OK || hitConfirmedBCreate == MH_ERROR_ALREADY_CREATED) MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HIT_CONFIRMED_B));
 
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
+    o_Transform_get_localPosition = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_LOCALPOSITION);
+    MH_CreateHook((LPVOID)(base + OFFSET_TRANSFORM_SET_LOCALPOSITION),
+        hk_Transform_set_localPosition, (LPVOID*)&o_Transform_set_localPosition);
+    MH_EnableHook((LPVOID)(base + OFFSET_TRANSFORM_SET_LOCALPOSITION));
     o_Transform_get_forward = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_FORWARD);
     o_Transform_get_eulerAngles = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_EULERANGLES);
     o_Transform_set_eulerAngles = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_EULERANGLES);
