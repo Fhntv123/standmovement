@@ -209,11 +209,8 @@ struct Matrix16 {
 #define OFFSET_TIME_GET_DELTATIME                   0x3489450
 
 #define OFFSET_TRANSFORM_GET_POSITION              0x348B9F0
-#define OFFSET_TRANSFORM_SET_POSITION              0x348C190
 #define OFFSET_TRANSFORM_GET_LOCALPOSITION         0x348B6C0
 #define OFFSET_TRANSFORM_SET_LOCALPOSITION         0x348BEF0
-#define OFFSET_TRANSFORM_GET_RIGHT                 0x348BA40
-#define OFFSET_TRANSFORM_GET_UP                    0x348BBB0
 #define OFFSET_TRANSFORM_GET_FORWARD               0x348B490
 
 #define OFFSET_COMPONENT_GET_TRANSFORM             0x34747D0
@@ -507,9 +504,11 @@ struct ViewModelTransformState {
 };
 ViewModelTransformState weaponViewModelTransform = {};
 struct FullViewModelState {
-    uintptr_t transforms[14];
-    Vector3 nativePositions[14];
-    int count;
+    uintptr_t armsController;
+    uintptr_t centerTransformData;
+    Vector3 nativePosition;
+    Vector3 appliedPosition;
+    bool nativePositionCaptured;
     bool applied;
 };
 FullViewModelState fullViewModelState = {};
@@ -2018,11 +2017,8 @@ Vector3(__fastcall* o_CC_get_velocity)(uintptr_t) = nullptr;
 float(__fastcall* o_Time_get_deltaTime)() = nullptr;
 
 Vector3(__fastcall* o_Transform_get_position)(uintptr_t) = nullptr;
-void(__fastcall* o_Transform_set_position)(uintptr_t, Vector3) = nullptr;
 Vector3(__fastcall* o_Transform_get_localPosition)(uintptr_t) = nullptr;
 void(__fastcall* o_Transform_set_localPosition)(uintptr_t, Vector3) = nullptr;
-Vector3(__fastcall* o_Transform_get_right)(uintptr_t) = nullptr;
-Vector3(__fastcall* o_Transform_get_up)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_forward)(uintptr_t) = nullptr;
 Vector3(__fastcall* o_Transform_get_eulerAngles)(uintptr_t) = nullptr;
 void(__fastcall* o_Transform_set_eulerAngles)(uintptr_t, Vector3) = nullptr;
@@ -2734,46 +2730,6 @@ static uintptr_t GetLocalWeaponViewModelTransformUnsafe()
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
-static int GetLocalFullViewModelTransformsUnsafe(uintptr_t* transforms, int capacity,
-    uintptr_t* orientationTransform)
-{
-    if (!transforms || capacity < 14 || !orientationTransform) return 0;
-    *orientationTransform = 0;
-    for (int i = 0; i < capacity; ++i) transforms[i] = 0;
-    const uintptr_t player = liveHudLocalPlayer;
-    if (!player || !o_Component_get_transform) return 0;
-    __try {
-        const uintptr_t armsBiped = *reinterpret_cast<uintptr_t*>(player + 0x38);
-        if (!armsBiped) return 0;
-        // Read all positions before writing any of them. Applying the same world-space
-        // delta to every main FPS bone shifts the skinned hands/gloves as one rig.
-        const uintptr_t offsets[] = {
-            0x20, 0x28, 0x30, 0x38, 0x40,
-            0x48, 0x50, 0x58, 0x60,
-            0x68, 0x70, 0x78, 0x80, 0x250
-        };
-        int count = 0;
-        for (int i = 0; i < 14; ++i) {
-            const uintptr_t transform = *reinterpret_cast<uintptr_t*>(
-                armsBiped + offsets[i]);
-            if (!transform) continue;
-            bool duplicate = false;
-            for (int j = 0; j < count; ++j)
-                if (transforms[j] == transform) { duplicate = true; break; }
-            if (!duplicate) transforms[count++] = transform;
-        }
-        const uintptr_t armsLod = *reinterpret_cast<uintptr_t*>(player + 0x138);
-        const uintptr_t armsRenderer = armsLod ?
-            *reinterpret_cast<uintptr_t*>(armsLod + 0x60) : 0;
-        if (armsRenderer)
-            *orientationTransform = o_Component_get_transform(armsRenderer);
-        return count;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        *orientationTransform = 0;
-        return 0;
-    }
-}
 
 static Vector3 AddOffset(const Vector3& nativePosition, float x, float y, float z)
 {
@@ -2828,58 +2784,94 @@ static void ApplyTrackedViewModelPosition(uintptr_t transform,
     }
 }
 
+static bool NearlyEqualViewModelPosition(const Vector3& a, const Vector3& b)
+{
+    const float epsilon = 0.0001f;
+    return fabsf(a.x - b.x) <= epsilon &&
+        fabsf(a.y - b.y) <= epsilon &&
+        fabsf(a.z - b.z) <= epsilon;
+}
+
+static bool ResolveFullViewModelCenterUnsafe(uintptr_t* armsController,
+    uintptr_t* centerTransformData)
+{
+    if (!armsController || !centerTransformData) return false;
+    *armsController = 0;
+    *centerTransformData = 0;
+    const uintptr_t player = liveHudLocalPlayer;
+    if (!player) return false;
+    __try {
+        // dump1/dump.cs + il2cpp.h:
+        // PlayerController.ArmsAnimationController +0xE8
+        // ArmsAnimationController.offsetPoints +0x58
+        // OffsetPoints.centerTR +0x10
+        // TransformTRS.pos +0x10
+        const uintptr_t controller = *reinterpret_cast<uintptr_t*>(player + 0xE8);
+        const uintptr_t offsetPoints = controller ?
+            *reinterpret_cast<uintptr_t*>(controller + 0x58) : 0;
+        const uintptr_t centerTR = offsetPoints ?
+            *reinterpret_cast<uintptr_t*>(offsetPoints + 0x10) : 0;
+        if (!controller || !centerTR) return false;
+        *armsController = controller;
+        *centerTransformData = centerTR;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        *armsController = 0;
+        *centerTransformData = 0;
+        return false;
+    }
+}
+
 static void RestoreFullViewModelPositionUnsafe()
 {
-    if (!fullViewModelState.applied || !o_Transform_set_position) {
-        fullViewModelState = {};
-        return;
+    if (fullViewModelState.applied && fullViewModelState.centerTransformData &&
+        fullViewModelState.nativePositionCaptured) {
+        *reinterpret_cast<Vector3*>(
+            fullViewModelState.centerTransformData + 0x10) =
+            fullViewModelState.nativePosition;
     }
-    for (int i = 0; i < fullViewModelState.count; ++i)
-        if (fullViewModelState.transforms[i])
-            o_Transform_set_position(fullViewModelState.transforms[i],
-                fullViewModelState.nativePositions[i]);
     fullViewModelState = {};
 }
 
 static void ApplyFullViewModelPositionUnsafe()
 {
-    if (!o_Transform_get_position || !o_Transform_set_position ||
-        !o_Transform_get_right || !o_Transform_get_up || !o_Transform_get_forward)
-        return;
-    // Remove the previous render-only offset before sampling this frame. This prevents
-    // offsets from accumulating when native animation did not rewrite a bone.
-    RestoreFullViewModelPositionUnsafe();
-    uintptr_t transforms[14] = {};
-    uintptr_t orientation = 0;
-    const int count = GetLocalFullViewModelTransformsUnsafe(
-        transforms, 14, &orientation);
-    if (!viewModelEnabled || count <= 0 || !orientation) {
+    uintptr_t armsController = 0;
+    uintptr_t centerTR = 0;
+    if (!ResolveFullViewModelCenterUnsafe(&armsController, &centerTR)) {
         fullViewModelState = {};
         return;
     }
-    const Vector3 right = o_Transform_get_right(orientation);
-    const Vector3 up = o_Transform_get_up(orientation);
-    const Vector3 forward = o_Transform_get_forward(orientation);
-    const Vector3 delta(
-        right.x * viewModelOffsetX + up.x * viewModelOffsetY + forward.x * viewModelOffsetZ,
-        right.y * viewModelOffsetX + up.y * viewModelOffsetY + forward.y * viewModelOffsetZ,
-        right.z * viewModelOffsetX + up.z * viewModelOffsetY + forward.z * viewModelOffsetZ);
-    fullViewModelState = {};
-    fullViewModelState.count = count;
-    for (int i = 0; i < count; ++i) {
-        const Vector3 nativePosition = o_Transform_get_position(transforms[i]);
-        fullViewModelState.transforms[i] = transforms[i];
-        fullViewModelState.nativePositions[i] = nativePosition;
+    Vector3 current = *reinterpret_cast<Vector3*>(centerTR + 0x10);
+    if (!viewModelEnabled) {
+        if (fullViewModelState.applied &&
+            fullViewModelState.armsController == armsController &&
+            fullViewModelState.centerTransformData == centerTR)
+            *reinterpret_cast<Vector3*>(centerTR + 0x10) =
+                fullViewModelState.nativePosition;
+        fullViewModelState = {};
+        return;
     }
-    // All native world positions were captured first, so parent/child bones receive
-    // exactly one common delta instead of accumulating it through the hierarchy.
-    for (int i = 0; i < count; ++i) {
-        const Vector3 nativePosition = fullViewModelState.nativePositions[i];
-        o_Transform_set_position(transforms[i], Vector3(
-            nativePosition.x + delta.x,
-            nativePosition.y + delta.y,
-            nativePosition.z + delta.z));
+    if (fullViewModelState.armsController != armsController ||
+        fullViewModelState.centerTransformData != centerTR ||
+        !fullViewModelState.nativePositionCaptured) {
+        fullViewModelState = {};
+        fullViewModelState.armsController = armsController;
+        fullViewModelState.centerTransformData = centerTR;
+        fullViewModelState.nativePosition = current;
+        fullViewModelState.nativePositionCaptured = true;
     }
+    else if (fullViewModelState.applied &&
+        !NearlyEqualViewModelPosition(current, fullViewModelState.appliedPosition)) {
+        // The game changed the center preset (weapon/stance transition). Treat that
+        // value as the new native baseline instead of preserving stale coordinates.
+        fullViewModelState.nativePosition = current;
+    }
+    fullViewModelState.appliedPosition = AddOffset(
+        fullViewModelState.nativePosition,
+        viewModelOffsetX, viewModelOffsetY, viewModelOffsetZ);
+    *reinterpret_cast<Vector3*>(centerTR + 0x10) =
+        fullViewModelState.appliedPosition;
     fullViewModelState.applied = true;
 }
 
@@ -4412,6 +4404,7 @@ static void UpdateLocalPlayerChams(uintptr_t knownCharacterLodGroup = 0);
 static void UpdateEnemyChams();
 static void MaintainChamsForCurrentScene();
 static void UpdatePenetrableSurfaceVisualization();
+static void ApplyViewModelPosition();
 
 static Vector3 DirectionToCameraEuler(const Vector3& direction)
 {
@@ -4577,6 +4570,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
+    ApplyViewModelPosition();
     MaintainChamsForCurrentScene();
     if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
         SendPendingPixelSurfChatMessageUnsafe();
@@ -8251,7 +8245,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     if (keyValidated) {
         ApplyCameraFov();
-        ApplyViewModelPosition();
         ApplyCustomSkybox();
     }
 
@@ -9214,13 +9207,10 @@ DWORD WINAPI HackThread(LPVOID)
     if (hitConfirmedBCreate == MH_OK || hitConfirmedBCreate == MH_ERROR_ALREADY_CREATED) MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HIT_CONFIRMED_B));
 
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
-    o_Transform_set_position = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_POSITION);
     o_Transform_get_localPosition = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_LOCALPOSITION);
     MH_CreateHook((LPVOID)(base + OFFSET_TRANSFORM_SET_LOCALPOSITION),
         hk_Transform_set_localPosition, (LPVOID*)&o_Transform_set_localPosition);
     MH_EnableHook((LPVOID)(base + OFFSET_TRANSFORM_SET_LOCALPOSITION));
-    o_Transform_get_right = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_RIGHT);
-    o_Transform_get_up = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_UP);
     o_Transform_get_forward = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_FORWARD);
     o_Transform_get_eulerAngles = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_EULERANGLES);
     o_Transform_set_eulerAngles = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_EULERANGLES);
