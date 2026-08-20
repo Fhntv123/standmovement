@@ -484,6 +484,8 @@ bool showTrail = false;
 
 bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
+bool armsFovEnabled = false;
+float armsFov = 45.0f;
 bool silentAntiAimEnabled = false;
 int silentAntiAimMode = 0; // 0 = Static, 1 = Jitter, 2 = Spin, 3 = Edge Yaw
 int silentAntiAimPitch = 0; // 0 = Neutral, 1 = Down, 2 = Up
@@ -1670,7 +1672,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(bulletTracerEnabled); SAVE_FLOAT(bulletTracerDuration); SAVE_FLOAT(bulletTracerThickness);
     SAVE_BOOL(bulletImpactsEnabled); SAVE_FLOAT(bulletImpactsDuration); SAVE_FLOAT(bulletImpactsSize);
     SAVE_BOOL(showVelocity); SAVE_BOOL(showTrail); SAVE_INT(maxTrailPoints); SAVE_FLOAT(trailMinDistance);
-    SAVE_BOOL(cameraFovEnabled); SAVE_FLOAT(cameraFov); SAVE_FLOAT(aimbotFov); SAVE_FLOAT(visibleAimbotHoldMs);
+    SAVE_BOOL(cameraFovEnabled); SAVE_FLOAT(cameraFov); SAVE_BOOL(armsFovEnabled); SAVE_FLOAT(armsFov); SAVE_FLOAT(aimbotFov); SAVE_FLOAT(visibleAimbotHoldMs);
     SAVE_BOOL(espHealthGradient);
     SAVE_FLOAT(worldColorMetallic); SAVE_FLOAT(worldColorSmoothness); SAVE_FLOAT(worldColorAnimationSpeed);
     SAVE_BOOL(customSkyboxEnabled);
@@ -1757,7 +1759,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(bulletTracerEnabled); LOAD_FLOAT(bulletTracerDuration); LOAD_FLOAT(bulletTracerThickness);
     LOAD_BOOL(bulletImpactsEnabled); LOAD_FLOAT(bulletImpactsDuration); LOAD_FLOAT(bulletImpactsSize);
     LOAD_BOOL(showVelocity); LOAD_BOOL(showTrail); LOAD_INT(maxTrailPoints); LOAD_FLOAT(trailMinDistance);
-    LOAD_BOOL(cameraFovEnabled); LOAD_FLOAT(cameraFov); LOAD_FLOAT(aimbotFov); LOAD_FLOAT(visibleAimbotHoldMs);
+    LOAD_BOOL(cameraFovEnabled); LOAD_FLOAT(cameraFov); LOAD_BOOL(armsFovEnabled); LOAD_FLOAT(armsFov); LOAD_FLOAT(aimbotFov); LOAD_FLOAT(visibleAimbotHoldMs);
     LOAD_BOOL(espHealthGradient);
     LOAD_FLOAT(worldColorMetallic); LOAD_FLOAT(worldColorSmoothness); LOAD_FLOAT(worldColorAnimationSpeed);
     LOAD_BOOL(customSkyboxEnabled);
@@ -1795,6 +1797,10 @@ static bool LoadConfig(const char* requestedName)
     if (localPlayerChamsMode < 0 || localPlayerChamsMode > 7)
         localPlayerChamsMode = 0;
     if (enemyChamsMode < 0 || enemyChamsMode > 8) enemyChamsMode = 0;
+    if (!isfinite(cameraFov) || cameraFov < 30.0f) cameraFov = 30.0f;
+    if (cameraFov > 150.0f) cameraFov = 150.0f;
+    if (!isfinite(armsFov) || armsFov < 20.0f) armsFov = 20.0f;
+    if (armsFov > 120.0f) armsFov = 120.0f;
     if (hitSoundSelectedIndex < 0 ||
         hitSoundSelectedIndex >= static_cast<int>(hitSoundFiles.size()))
         hitSoundSelectedIndex = 0;
@@ -2659,28 +2665,42 @@ uintptr_t GetCamera() {
 
 
 
-void __fastcall hk_Camera_set_fieldOfView(uintptr_t camera, float value) {
-
-    if (keyValidated && cameraFovEnabled) value = cameraFov;
-
-    o_Camera_set_fieldOfView(camera, value);
-
+static uintptr_t GetLocalArmsCameraUnsafe()
+{
+    const uintptr_t player = liveHudLocalPlayer;
+    if (!player) return 0;
+    __try {
+        // dump1 PlayerController::PlayerFPSCamera +0x88. Its inherited
+        // CameraMovementController Camera backing field is +0x20.
+        const uintptr_t fpsCamera = *reinterpret_cast<uintptr_t*>(player + 0x88);
+        return fpsCamera ? *reinterpret_cast<uintptr_t*>(fpsCamera + 0x20) : 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
+void __fastcall hk_Camera_set_fieldOfView(uintptr_t camera, float value)
+{
+    if (keyValidated && camera) {
+        const uintptr_t armsCamera = GetLocalArmsCameraUnsafe();
+        if (armsFovEnabled && camera == armsCamera)
+            value = armsFov;
+        else if (cameraFovEnabled && camera == GetCamera())
+            value = cameraFov;
+    }
+    o_Camera_set_fieldOfView(camera, value);
+}
 
-
-void ApplyCameraFov() {
-
-    if (!cameraFovEnabled || !o_Camera_set_fieldOfView) return;
-
-    const uintptr_t camera = GetCamera();
-
-    if (!camera) return;
-
-    __try { o_Camera_set_fieldOfView(camera, cameraFov); }
-
+void ApplyCameraFov()
+{
+    if (!o_Camera_set_fieldOfView) return;
+    const uintptr_t mainCamera = cameraFovEnabled ? GetCamera() : 0;
+    const uintptr_t armsCamera = armsFovEnabled ? GetLocalArmsCameraUnsafe() : 0;
+    __try {
+        if (mainCamera) o_Camera_set_fieldOfView(mainCamera, cameraFov);
+        if (armsCamera && armsCamera != mainCamera)
+            o_Camera_set_fieldOfView(armsCamera, armsFov);
+    }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
-
 }
 
 
@@ -8467,6 +8487,15 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (ImGui::InputFloat("Camera FOV Value", &cameraFov, 1.0f, 10.0f, "%.1f")) {
                 if (cameraFov < 30.0f) cameraFov = 30.0f;
                 if (cameraFov > 150.0f) cameraFov = 150.0f;
+            }
+        }
+        ImGui::Checkbox("Arms FOV", &armsFovEnabled);
+        if (armsFovEnabled) {
+            ImGui::SliderFloat("Arms FOV Slider", &armsFov, 20.0f, 120.0f, "%.1f");
+            ImGui::SetNextItemWidth(120.0f);
+            if (ImGui::InputFloat("Arms FOV Value", &armsFov, 1.0f, 10.0f, "%.1f")) {
+                if (armsFov < 20.0f) armsFov = 20.0f;
+                if (armsFov > 120.0f) armsFov = 120.0f;
             }
         }
         if (ImGui::Checkbox("Fog", &fogEnabled))
