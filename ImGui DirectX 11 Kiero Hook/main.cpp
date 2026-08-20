@@ -4054,6 +4054,7 @@ static void UpdateArmChams(uintptr_t knownArmsLodGroup = 0);
 static void UpdateGloveChams(uintptr_t knownArmsLodGroup = 0);
 static void UpdateLocalPlayerChams(uintptr_t knownCharacterLodGroup = 0);
 static void UpdateEnemyChams();
+static void MaintainChamsForCurrentScene();
 static void UpdatePenetrableSurfaceVisualization();
 
 static Vector3 DirectionToCameraEuler(const Vector3& direction)
@@ -4220,6 +4221,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
+    MaintainChamsForCurrentScene();
     if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
         SendPendingPixelSurfChatMessageUnsafe();
     UpdateFrozenCorpses();
@@ -6695,34 +6697,8 @@ static void UpdateWeaponChams(uintptr_t knownWeaponController)
     strcpy_s(weaponChamsStatus, "Active");
 }
 
-static uintptr_t GetLocalCharacterControllerUnsafe()
+static void MaintainChamsForCurrentScene()
 {
-    const uintptr_t player = liveHudLocalPlayer;
-    if (!player) return 0;
-    __try {
-        if (!IsUnityObjectAliveUnsafe(player)) return 0;
-        // dump1: PlayerController::MovementController +0xE0, then its
-        // CharacterController backing field +0xD0.
-        const uintptr_t movement =
-            *reinterpret_cast<uintptr_t*>(player + 0xE0);
-        if (!movement || !IsUnityObjectAliveUnsafe(movement)) return 0;
-        const uintptr_t controller =
-            *reinterpret_cast<uintptr_t*>(movement + 0xD0);
-        return controller && IsUnityObjectAliveUnsafe(controller) ? controller : 0;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
-}
-
-int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
-{
-    const uintptr_t localCharacterController =
-        GetLocalCharacterControllerUnsafe();
-    // CharacterController.Move runs for local player, enemies, bots and other
-    // scene actors. All feature maintenance and movement changes are local-only.
-    if (!instance || instance != localCharacterController)
-        return o_CC_Move(instance, motion);
-    if (keyValidated) lastCharacterController = instance;
-
     const uintptr_t currentLocalPlayer = liveHudLocalPlayer;
     const bool localPlayerChanged = currentLocalPlayer && currentLocalPlayer != chamsObservedLocalPlayer;
     if (localPlayerChanged) {
@@ -6787,6 +6763,37 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     AnimateLocalPlayerChamsColor();
     AnimateEnemyChamsColor();
     AnimateWorldColor();
+}
+
+static uintptr_t GetLocalCharacterControllerUnsafe()
+{
+    const uintptr_t player = liveHudLocalPlayer;
+    if (!player) return 0;
+    __try {
+        if (!IsUnityObjectAliveUnsafe(player)) return 0;
+        // dump1: PlayerController::MovementController +0xE0, then its
+        // CharacterController backing field +0xD0.
+        const uintptr_t movement =
+            *reinterpret_cast<uintptr_t*>(player + 0xE0);
+        if (!movement || !IsUnityObjectAliveUnsafe(movement)) return 0;
+        const uintptr_t controller =
+            *reinterpret_cast<uintptr_t*>(movement + 0xD0);
+        return controller && IsUnityObjectAliveUnsafe(controller) ? controller : 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
+{
+    const uintptr_t localCharacterController =
+        GetLocalCharacterControllerUnsafe();
+    // CharacterController.Move runs for local player, enemies, bots and other
+    // scene actors. All feature maintenance and movement changes are local-only.
+    if (!instance || instance != localCharacterController)
+        return o_CC_Move(instance, motion);
+    if (keyValidated) lastCharacterController = instance;
+    const ULONGLONG chamsNow = GetTickCount64();
+
     if (adminBhopEnabled || adminBhopOriginalCaptured) ApplyAdminBhopState();
     UpdateAimbotAutoFire();
 
