@@ -498,7 +498,7 @@ struct ViewModelTransformState {
     bool nativePositionCaptured;
     bool positionApplied;
 };
-ViewModelTransformState viewModelTransform = {};
+ViewModelTransformState viewModelTransforms[2] = {};
 bool silentAntiAimEnabled = false;
 int silentAntiAimMode = 0; // 0 = Static, 1 = Jitter, 2 = Spin, 3 = Edge Yaw
 int silentAntiAimPitch = 0; // 0 = Neutral, 1 = Down, 2 = Up
@@ -2681,18 +2681,39 @@ static bool ApplyAdminBhopState()
     }
 }
 
-static uintptr_t GetLocalViewModelTransformUnsafe()
+static bool GetLocalViewModelTransformsUnsafe(uintptr_t* armsTransform,
+    uintptr_t* weaponTransform)
 {
+    if (!armsTransform || !weaponTransform) return false;
+    *armsTransform = 0;
+    *weaponTransform = 0;
     const uintptr_t player = liveHudLocalPlayer;
-    if (!player) return 0;
+    if (!player || !o_Component_get_transform) return false;
     __try {
-        // dump1: PlayerController::_armsBiped +0x38 is the FPS skeleton map.
-        // BipedMap::Spine +0x30 is the visible rig root; the weapon attachment is
-        // below this hierarchy, so moving Spine shifts hands and weapon together.
-        const uintptr_t armsBiped = *reinterpret_cast<uintptr_t*>(player + 0x38);
-        return armsBiped ? *reinterpret_cast<uintptr_t*>(armsBiped + 0x30) : 0;
+        // Use the components that own the actual visible meshes, not camera helpers,
+        // BipedMap itself, or an animation bone that skinning can overwrite.
+        const uintptr_t armsLod = *reinterpret_cast<uintptr_t*>(player + 0x138);
+        const uintptr_t armsRenderer = armsLod ?
+            *reinterpret_cast<uintptr_t*>(armsLod + 0x60) : 0;
+        if (armsRenderer)
+            *armsTransform = o_Component_get_transform(armsRenderer);
+
+        const uintptr_t weaponry = *reinterpret_cast<uintptr_t*>(
+            player + OFFSET_WEAPONRYCONTROLLER);
+        const uintptr_t weapon = weaponry ? *reinterpret_cast<uintptr_t*>(
+            weaponry + OFFSET_WEAPONCONTROLLER) : 0;
+        const uintptr_t weaponLod = weapon ?
+            *reinterpret_cast<uintptr_t*>(weapon + 0x80) : 0;
+        if (weaponLod)
+            *weaponTransform = o_Component_get_transform(weaponLod);
+        if (*weaponTransform == *armsTransform) *weaponTransform = 0;
+        return *armsTransform || *weaponTransform;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        *armsTransform = 0;
+        *weaponTransform = 0;
+        return false;
+    }
 }
 
 static Vector3 AddViewModelOffset(const Vector3& nativePosition)
@@ -2703,19 +2724,31 @@ static Vector3 AddViewModelOffset(const Vector3& nativePosition)
         nativePosition.z + viewModelOffsetZ);
 }
 
+static int GetViewModelTransformIndexUnsafe(uintptr_t transform)
+{
+    uintptr_t armsTransform = 0;
+    uintptr_t weaponTransform = 0;
+    if (!transform || !GetLocalViewModelTransformsUnsafe(
+        &armsTransform, &weaponTransform)) return -1;
+    if (transform == armsTransform) return 0;
+    if (transform == weaponTransform) return 1;
+    return -1;
+}
+
 void __fastcall hk_Transform_set_localPosition(uintptr_t transform, Vector3 value)
 {
-    const uintptr_t viewModel = GetLocalViewModelTransformUnsafe();
-    if (keyValidated && transform && transform == viewModel) {
-        viewModelTransform.transform = transform;
-        viewModelTransform.nativePosition = value;
-        viewModelTransform.nativePositionCaptured = true;
+    const int index = GetViewModelTransformIndexUnsafe(transform);
+    if (keyValidated && index >= 0 && index < 2) {
+        ViewModelTransformState& state = viewModelTransforms[index];
+        state.transform = transform;
+        state.nativePosition = value;
+        state.nativePositionCaptured = true;
         if (viewModelEnabled) {
             value = AddViewModelOffset(value);
-            viewModelTransform.positionApplied = true;
+            state.positionApplied = true;
         }
         else {
-            viewModelTransform.positionApplied = false;
+            state.positionApplied = false;
         }
     }
     o_Transform_set_localPosition(transform, value);
@@ -2724,33 +2757,41 @@ void __fastcall hk_Transform_set_localPosition(uintptr_t transform, Vector3 valu
 static void ApplyViewModelPosition()
 {
     if (!o_Transform_get_localPosition || !o_Transform_set_localPosition) return;
-    const uintptr_t transform = GetLocalViewModelTransformUnsafe();
-    if (!transform) {
-        viewModelTransform = {};
+    uintptr_t transforms[2] = {};
+    if (!GetLocalViewModelTransformsUnsafe(&transforms[0], &transforms[1])) {
+        viewModelTransforms[0] = {};
+        viewModelTransforms[1] = {};
         return;
     }
     __try {
-        if (transform != viewModelTransform.transform) {
-            viewModelTransform.transform = transform;
-            viewModelTransform.nativePosition =
-                o_Transform_get_localPosition(transform);
-            viewModelTransform.nativePositionCaptured = true;
-            viewModelTransform.positionApplied = false;
-        }
-        if (viewModelEnabled && viewModelTransform.nativePositionCaptured) {
-            o_Transform_set_localPosition(transform,
-                AddViewModelOffset(viewModelTransform.nativePosition));
-            viewModelTransform.positionApplied = true;
-        }
-        else if (!viewModelEnabled && viewModelTransform.positionApplied &&
-            viewModelTransform.nativePositionCaptured) {
-            o_Transform_set_localPosition(
-                transform, viewModelTransform.nativePosition);
-            viewModelTransform.positionApplied = false;
+        for (int i = 0; i < 2; ++i) {
+            ViewModelTransformState& state = viewModelTransforms[i];
+            const uintptr_t transform = transforms[i];
+            if (!transform) {
+                state = {};
+                continue;
+            }
+            if (transform != state.transform) {
+                state.transform = transform;
+                state.nativePosition = o_Transform_get_localPosition(transform);
+                state.nativePositionCaptured = true;
+                state.positionApplied = false;
+            }
+            if (viewModelEnabled && state.nativePositionCaptured) {
+                o_Transform_set_localPosition(
+                    transform, AddViewModelOffset(state.nativePosition));
+                state.positionApplied = true;
+            }
+            else if (!viewModelEnabled && state.positionApplied &&
+                state.nativePositionCaptured) {
+                o_Transform_set_localPosition(transform, state.nativePosition);
+                state.positionApplied = false;
+            }
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        viewModelTransform = {};
+        viewModelTransforms[0] = {};
+        viewModelTransforms[1] = {};
     }
 }
 
