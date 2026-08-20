@@ -492,10 +492,13 @@ bool viewModelEnabled = false;
 float viewModelOffsetX = 0.0f;
 float viewModelOffsetY = 0.0f;
 float viewModelOffsetZ = 0.0f;
-uintptr_t viewModelObservedTransform = 0;
-Vector3 viewModelNativePosition;
-bool viewModelNativePositionCaptured = false;
-bool viewModelPositionApplied = false;
+struct ViewModelTransformState {
+    uintptr_t transform;
+    Vector3 nativePosition;
+    bool nativePositionCaptured;
+    bool positionApplied;
+};
+ViewModelTransformState viewModelTransform = {};
 bool silentAntiAimEnabled = false;
 int silentAntiAimMode = 0; // 0 = Static, 1 = Jitter, 2 = Spin, 3 = Edge Yaw
 int silentAntiAimPitch = 0; // 0 = Neutral, 1 = Down, 2 = Up
@@ -2681,12 +2684,13 @@ static bool ApplyAdminBhopState()
 static uintptr_t GetLocalViewModelTransformUnsafe()
 {
     const uintptr_t player = liveHudLocalPlayer;
-    if (!player || !o_Component_get_transform) return 0;
+    if (!player) return 0;
     __try {
-        // dump1: PlayerController::_armsBiped is the FPS hands/weapon rig at +0x38.
-        // Its component Transform moves the view model without moving either camera.
+        // dump1: PlayerController::_armsBiped +0x38 is the FPS skeleton map.
+        // BipedMap::Spine +0x30 is the visible rig root; the weapon attachment is
+        // below this hierarchy, so moving Spine shifts hands and weapon together.
         const uintptr_t armsBiped = *reinterpret_cast<uintptr_t*>(player + 0x38);
-        return armsBiped ? o_Component_get_transform(armsBiped) : 0;
+        return armsBiped ? *reinterpret_cast<uintptr_t*>(armsBiped + 0x30) : 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
@@ -2701,17 +2705,17 @@ static Vector3 AddViewModelOffset(const Vector3& nativePosition)
 
 void __fastcall hk_Transform_set_localPosition(uintptr_t transform, Vector3 value)
 {
-    const uintptr_t viewModelTransform = GetLocalViewModelTransformUnsafe();
-    if (keyValidated && transform && transform == viewModelTransform) {
-        viewModelObservedTransform = transform;
-        viewModelNativePosition = value;
-        viewModelNativePositionCaptured = true;
+    const uintptr_t viewModel = GetLocalViewModelTransformUnsafe();
+    if (keyValidated && transform && transform == viewModel) {
+        viewModelTransform.transform = transform;
+        viewModelTransform.nativePosition = value;
+        viewModelTransform.nativePositionCaptured = true;
         if (viewModelEnabled) {
             value = AddViewModelOffset(value);
-            viewModelPositionApplied = true;
+            viewModelTransform.positionApplied = true;
         }
         else {
-            viewModelPositionApplied = false;
+            viewModelTransform.positionApplied = false;
         }
     }
     o_Transform_set_localPosition(transform, value);
@@ -2722,31 +2726,31 @@ static void ApplyViewModelPosition()
     if (!o_Transform_get_localPosition || !o_Transform_set_localPosition) return;
     const uintptr_t transform = GetLocalViewModelTransformUnsafe();
     if (!transform) {
-        viewModelObservedTransform = 0;
-        viewModelNativePositionCaptured = false;
-        viewModelPositionApplied = false;
+        viewModelTransform = {};
         return;
     }
     __try {
-        if (transform != viewModelObservedTransform) {
-            viewModelObservedTransform = transform;
-            viewModelNativePosition = o_Transform_get_localPosition(transform);
-            viewModelNativePositionCaptured = true;
-            viewModelPositionApplied = false;
+        if (transform != viewModelTransform.transform) {
+            viewModelTransform.transform = transform;
+            viewModelTransform.nativePosition =
+                o_Transform_get_localPosition(transform);
+            viewModelTransform.nativePositionCaptured = true;
+            viewModelTransform.positionApplied = false;
         }
-        if (viewModelEnabled && viewModelNativePositionCaptured) {
-            o_Transform_set_localPosition(transform, AddViewModelOffset(viewModelNativePosition));
-            viewModelPositionApplied = true;
+        if (viewModelEnabled && viewModelTransform.nativePositionCaptured) {
+            o_Transform_set_localPosition(transform,
+                AddViewModelOffset(viewModelTransform.nativePosition));
+            viewModelTransform.positionApplied = true;
         }
-        else if (!viewModelEnabled && viewModelPositionApplied && viewModelNativePositionCaptured) {
-            o_Transform_set_localPosition(transform, viewModelNativePosition);
-            viewModelPositionApplied = false;
+        else if (!viewModelEnabled && viewModelTransform.positionApplied &&
+            viewModelTransform.nativePositionCaptured) {
+            o_Transform_set_localPosition(
+                transform, viewModelTransform.nativePosition);
+            viewModelTransform.positionApplied = false;
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        viewModelObservedTransform = 0;
-        viewModelNativePositionCaptured = false;
-        viewModelPositionApplied = false;
+        viewModelTransform = {};
     }
 }
 
