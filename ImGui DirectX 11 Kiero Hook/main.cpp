@@ -2681,12 +2681,12 @@ static bool ApplyAdminBhopState()
 static uintptr_t GetLocalViewModelTransformUnsafe()
 {
     const uintptr_t player = liveHudLocalPlayer;
-    if (!player) return 0;
+    if (!player || !o_Component_get_transform) return 0;
     __try {
-        // dump1: PlayerController::ArmsAnimationController +0xE8, then
-        // ArmsAnimationController::fpsDirective Transform +0x68.
-        const uintptr_t armsController = *reinterpret_cast<uintptr_t*>(player + 0xE8);
-        return armsController ? *reinterpret_cast<uintptr_t*>(armsController + 0x68) : 0;
+        // dump1: PlayerController::_armsBiped is the FPS hands/weapon rig at +0x38.
+        // Its component Transform moves the view model without moving either camera.
+        const uintptr_t armsBiped = *reinterpret_cast<uintptr_t*>(player + 0x38);
+        return armsBiped ? o_Component_get_transform(armsBiped) : 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
