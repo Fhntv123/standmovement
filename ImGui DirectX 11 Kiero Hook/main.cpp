@@ -20,6 +20,7 @@
 
 #include <comdef.h>
 #include <shlobj.h>
+#include <mmsystem.h>
 
 #pragma comment(lib, "urlmon.lib")
 
@@ -27,6 +28,7 @@
 
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "winmm.lib")
 
 
 
@@ -717,6 +719,14 @@ struct FrozenCorpseEntry {
 };
 std::vector<FrozenCorpseEntry> frozenCorpses;
 SRWLOCK frozenCorpseLock = SRWLOCK_INIT;
+
+bool hitSoundEnabled = false;
+int hitSoundSelectedIndex = 0;
+std::vector<std::wstring> hitSoundFiles;
+SRWLOCK hitSoundLock = SRWLOCK_INIT;
+uintptr_t hitSoundLastResult = 0;
+ULONGLONG hitSoundLastResultAt = 0;
+char hitSoundStatus[128] = "No .wav files found";
 
 bool hitMarkerEnabled = false;
 float hitMarkerColor[3] = { 1.0f, 1.0f, 1.0f };
@@ -1492,6 +1502,70 @@ static std::wstring GetConfigDirectory()
     return directory;
 }
 
+static std::wstring GetHitSoundDirectory()
+{
+    const std::wstring directory = GetConfigDirectory() + L"\\sound";
+    CreateDirectoryW(directory.c_str(), nullptr);
+    return directory;
+}
+
+static std::string WideFileNameToUtf8(const std::wstring& text)
+{
+    if (text.empty()) return std::string();
+    const int size = WideCharToMultiByte(CP_UTF8, 0, text.c_str(),
+        static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    if (size <= 0) return std::string();
+    std::string result(static_cast<size_t>(size), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+        &result[0], size, nullptr, nullptr);
+    return result;
+}
+
+static void RefreshHitSounds()
+{
+    std::vector<std::wstring> files;
+    WIN32_FIND_DATAW data = {};
+    HANDLE find = FindFirstFileW((GetHitSoundDirectory() + L"\\*.wav").c_str(), &data);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+                files.push_back(data.cFileName);
+        } while (FindNextFileW(find, &data));
+        FindClose(find);
+    }
+    std::sort(files.begin(), files.end());
+    AcquireSRWLockExclusive(&hitSoundLock);
+    hitSoundFiles.swap(files);
+    if (hitSoundSelectedIndex < 0 ||
+        hitSoundSelectedIndex >= static_cast<int>(hitSoundFiles.size()))
+        hitSoundSelectedIndex = 0;
+    const size_t count = hitSoundFiles.size();
+    ReleaseSRWLockExclusive(&hitSoundLock);
+    if (count)
+        sprintf_s(hitSoundStatus, "%zu .wav sound(s) found", count);
+    else
+        strcpy_s(hitSoundStatus, "Put .wav files in Documents\\ze0nware\\sound");
+}
+
+static bool PlaySelectedHitSound()
+{
+    wchar_t path[MAX_PATH] = {};
+    bool haveSound = false;
+    AcquireSRWLockShared(&hitSoundLock);
+    if (hitSoundSelectedIndex >= 0 &&
+        hitSoundSelectedIndex < static_cast<int>(hitSoundFiles.size())) {
+        const std::wstring fullPath = GetHitSoundDirectory() + L"\\" +
+            hitSoundFiles[static_cast<size_t>(hitSoundSelectedIndex)];
+        if (fullPath.size() < MAX_PATH) {
+            wcscpy_s(path, fullPath.c_str());
+            haveSound = true;
+        }
+    }
+    ReleaseSRWLockShared(&hitSoundLock);
+    return haveSound && PlaySoundW(path, nullptr,
+        SND_ASYNC | SND_FILENAME | SND_NODEFAULT) != FALSE;
+}
+
 static std::string SanitizeConfigName(const char* input)
 {
     std::string result;
@@ -1590,6 +1664,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(weaponChamsEnabled); SAVE_INT(weaponChamsMode); SAVE_BOOL(armChamsEnabled); SAVE_INT(armChamsMode);
     SAVE_BOOL(gloveChamsEnabled); SAVE_INT(gloveChamsMode); SAVE_BOOL(localPlayerChamsEnabled); SAVE_INT(localPlayerChamsMode);
     SAVE_BOOL(enemyChamsEnabled); SAVE_BOOL(enemyChamsThroughWalls); SAVE_INT(enemyChamsMode);
+    SAVE_BOOL(hitSoundEnabled); SAVE_INT(hitSoundSelectedIndex);
     SAVE_BOOL(hitMarkerEnabled); SAVE_FLOAT(hitMarkerDuration); SAVE_FLOAT(hitMarkerSize); SAVE_FLOAT(hitMarkerGap); SAVE_FLOAT(hitMarkerThickness);
     SAVE_BOOL(hitLogEnabled); SAVE_FLOAT(hitLogDuration);
     SAVE_BOOL(bulletTracerEnabled); SAVE_FLOAT(bulletTracerDuration); SAVE_FLOAT(bulletTracerThickness);
@@ -1676,6 +1751,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(weaponChamsEnabled); LOAD_INT(weaponChamsMode); LOAD_BOOL(armChamsEnabled); LOAD_INT(armChamsMode);
     LOAD_BOOL(gloveChamsEnabled); LOAD_INT(gloveChamsMode); LOAD_BOOL(localPlayerChamsEnabled); LOAD_INT(localPlayerChamsMode);
     LOAD_BOOL(enemyChamsEnabled); LOAD_BOOL(enemyChamsThroughWalls); LOAD_INT(enemyChamsMode);
+    LOAD_BOOL(hitSoundEnabled); LOAD_INT(hitSoundSelectedIndex);
     LOAD_BOOL(hitMarkerEnabled); LOAD_FLOAT(hitMarkerDuration); LOAD_FLOAT(hitMarkerSize); LOAD_FLOAT(hitMarkerGap); LOAD_FLOAT(hitMarkerThickness);
     LOAD_BOOL(hitLogEnabled); LOAD_FLOAT(hitLogDuration);
     LOAD_BOOL(bulletTracerEnabled); LOAD_FLOAT(bulletTracerDuration); LOAD_FLOAT(bulletTracerThickness);
@@ -1719,6 +1795,9 @@ static bool LoadConfig(const char* requestedName)
     if (localPlayerChamsMode < 0 || localPlayerChamsMode > 7)
         localPlayerChamsMode = 0;
     if (enemyChamsMode < 0 || enemyChamsMode > 8) enemyChamsMode = 0;
+    if (hitSoundSelectedIndex < 0 ||
+        hitSoundSelectedIndex >= static_cast<int>(hitSoundFiles.size()))
+        hitSoundSelectedIndex = 0;
     if (maxTrailPoints < 2) maxTrailPoints = 2;
     if (maxTrailPoints > 2048) maxTrailPoints = 2048;
     if (!isfinite(trailMinDistance) || trailMinDistance < 0.01f)
@@ -4439,6 +4518,21 @@ void __fastcall hk_HitMarkerView_LocalHit(uintptr_t instance, void* victim,
         Vector3 confirmedImpact, castEndFallback;
         if (ResolveConfirmedPlayerImpact(confirmedImpact, castEndFallback))
             AddBulletImpact(confirmedImpact, true);
+    }
+    if (keyValidated && hitSoundEnabled && instance && instance == liveHitMarkerView &&
+        victim && shotData && activeLocalHitCastDepth > 0) {
+        const ULONGLONG now = GetTickCount64();
+        void* localPlayer = GetLocalPC();
+        const unsigned char localTeam = GetPCTeam(localPlayer);
+        const unsigned char victimTeam = GetPCTeam(victim);
+        if (localPlayer && victim != localPlayer && localTeam && localTeam != 3 &&
+            victimTeam && victimTeam != 3 && victimTeam != localTeam &&
+            (shotData != hitSoundLastResult || now - hitSoundLastResultAt > 250)) {
+            if (PlaySelectedHitSound()) {
+                hitSoundLastResult = shotData;
+                hitSoundLastResultAt = now;
+            }
+        }
     }
     if (keyValidated && hitLogEnabled && instance && instance == liveHitMarkerView && victim && shotData) {
         const ULONGLONG now = GetTickCount64();
@@ -7695,6 +7789,7 @@ void InitImGui()
 
     io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 16.0f);
     RefreshConfigFiles(); // Creates Documents\ze0nware immediately.
+    RefreshHitSounds();    // Creates Documents\ze0nware\sound and scans .wav files.
 
 }
 
@@ -8524,6 +8619,37 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             }
             if (enemyChamsMode == 5 || enemyChamsMode == 6)
                 ImGui::SliderFloat("Enemy Animation Speed", &enemyChamsAnimationSpeed, 0.2f, 5.0f, "%.1f");
+        }
+        ImGui::Checkbox("Hitsound", &hitSoundEnabled);
+        if (hitSoundEnabled) {
+            std::vector<std::string> soundNames;
+            int selectedSound = 0;
+            AcquireSRWLockShared(&hitSoundLock);
+            selectedSound = hitSoundSelectedIndex;
+            soundNames.reserve(hitSoundFiles.size());
+            for (const std::wstring& file : hitSoundFiles)
+                soundNames.push_back(WideFileNameToUtf8(file));
+            ReleaseSRWLockShared(&hitSoundLock);
+            const char* preview = selectedSound >= 0 &&
+                selectedSound < static_cast<int>(soundNames.size()) ?
+                soundNames[static_cast<size_t>(selectedSound)].c_str() : "No .wav files";
+            if (ImGui::BeginCombo("Hit Sound", preview)) {
+                for (size_t i = 0; i < soundNames.size(); ++i) {
+                    const bool selected = selectedSound == static_cast<int>(i);
+                    if (ImGui::Selectable(soundNames[i].c_str(), selected)) {
+                        AcquireSRWLockExclusive(&hitSoundLock);
+                        hitSoundSelectedIndex = static_cast<int>(i);
+                        ReleaseSRWLockExclusive(&hitSoundLock);
+                        selectedSound = static_cast<int>(i);
+                    }
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            if (ImGui::Button("Refresh Hit Sounds")) RefreshHitSounds();
+            ImGui::SameLine();
+            if (ImGui::Button("Test Hit Sound")) PlaySelectedHitSound();
+            ImGui::TextDisabled("%s", hitSoundStatus);
         }
         if (ImGui::Checkbox("Hit Log", &hitLogEnabled)) {
             AcquireSRWLockExclusive(&hitLogLock);
