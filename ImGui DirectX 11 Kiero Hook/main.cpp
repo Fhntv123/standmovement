@@ -2297,7 +2297,16 @@ static void RestoreWorldColor()
 static uintptr_t EnsureWorldModeMaterial(int mode)
 {
     if (mode < 1 || mode > 6) return 0;
-    if (worldColorMaterials[mode]) return worldColorMaterials[mode];
+    if (worldColorMaterials[mode]) {
+        if (!o_Object_IsAlive || IsUnityObjectAliveUnsafe(worldColorMaterials[mode]))
+            return worldColorMaterials[mode];
+        // Scene teardown can destroy a native Material while its managed pointer and
+        // GC handle remain cached. Drop both before creating the replacement.
+        if (worldColorMaterialHandles[mode] && g_il2cpp.gchandle_free)
+            g_il2cpp.gchandle_free(worldColorMaterialHandles[mode]);
+        worldColorMaterialHandles[mode] = 0;
+        worldColorMaterials[mode] = 0;
+    }
     if (!o_Shader_Find || !o_Material_ctor || !g_il2cpp.object_new || !g_il2cpp.string_new) return 0;
     static const char* shaderCandidates[7][5] = {
         { nullptr, nullptr, nullptr, nullptr, nullptr },
@@ -2388,7 +2397,7 @@ static void AnimateWorldColor()
     const ULONGLONG now = GetTickCount64();
     if (now - worldColorLastAnimationTick < 33) return;
     worldColorLastAnimationTick = now;
-    const uintptr_t material = worldColorMaterials[worldColorMode];
+    const uintptr_t material = EnsureWorldModeMaterial(worldColorMode);
     if (!material) return;
     __try { o_Material_set_color(material, GetWorldAnimatedColor()); }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -7122,6 +7131,71 @@ static void UpdateWeaponChams(uintptr_t knownWeaponController)
     strcpy_s(weaponChamsStatus, "Active");
 }
 
+static void MaintainWorldColorForCurrentScene(ULONGLONG now,
+    bool maintenanceDue)
+{
+    const uintptr_t activeGameController = GetActiveGameController();
+    if (activeGameController &&
+        activeGameController != worldColorObservedGameController) {
+        const bool hadObservedScene = worldColorObservedGameController != 0;
+        worldColorObservedGameController = activeGameController;
+        if (hadObservedScene) {
+            // Old scene wrappers may already be destroyed; never restore through them.
+            worldColorRenderers.clear();
+            worldColorTintMaterials.clear();
+            worldColorRetryCount = 0;
+            worldColorNextRetryTick = worldColorEnabled ? now + 1500 : 0;
+            if (worldColorEnabled)
+                strcpy_s(worldColorStatus, "Waiting for new map to stabilize...");
+        }
+    }
+
+    if (maintenanceDue && worldColorEnabled && !worldColorRenderers.empty()) {
+        size_t liveRendererCount = 0;
+        for (const WorldColorRenderer& entry : worldColorRenderers)
+            if (entry.renderer && IsUnityObjectAliveUnsafe(entry.renderer))
+                ++liveRendererCount;
+        if (!liveRendererCount) {
+            // Some round transitions reuse the GameController. Destroyed renderer
+            // wrappers are the authoritative signal that the cached map is gone.
+            worldColorRenderers.clear();
+            worldColorTintMaterials.clear();
+            worldColorRetryCount = 0;
+            worldColorNextRetryTick = now + 1500;
+            strcpy_s(worldColorStatus, "Round changed; recapturing map materials...");
+        }
+    }
+
+    const LONG command = InterlockedExchange(&pendingWorldColorCommand, 0);
+    if (command == 2) {
+        worldColorNextRetryTick = 0;
+        worldColorRetryCount = 0;
+        RestoreWorldColor();
+    }
+    else if (keyValidated && worldColorEnabled && command == 1) {
+        if (!worldColorRenderers.empty()) ApplyWorldColorToCache();
+        else { worldColorRetryCount = 0; worldColorNextRetryTick = now; }
+    }
+
+    if (keyValidated && worldColorEnabled && worldColorRenderers.empty() &&
+        worldColorNextRetryTick && now >= worldColorNextRetryTick) {
+        ++worldColorRetryCount;
+        if (CaptureWorldColorMaterials()) {
+            worldColorRetryCount = 0;
+            worldColorNextRetryTick = 0;
+        }
+        else if (worldColorRetryCount < worldColorMaxRetries) {
+            worldColorNextRetryTick = now + 1000;
+            sprintf_s(worldColorStatus, "Map loading; retry %d/%d",
+                worldColorRetryCount, worldColorMaxRetries);
+        }
+        else {
+            worldColorNextRetryTick = 0;
+            strcpy_s(worldColorStatus, "Map not ready; toggle World Color to retry");
+        }
+    }
+}
+
 static void MaintainChamsForCurrentScene()
 {
     const uintptr_t currentLocalPlayer = liveHudLocalPlayer;
@@ -7169,6 +7243,7 @@ static void MaintainChamsForCurrentScene()
     const bool enemyRefreshRequested = InterlockedExchange(&pendingEnemyChamsRefresh, 0) != 0;
     const ULONGLONG chamsNow = GetTickCount64();
     const bool maintenanceDue = chamsNow - chamsLastMaintenanceTick >= 500;
+    MaintainWorldColorForCurrentScene(chamsNow, maintenanceDue);
     if (weaponRefreshRequested || armRefreshRequested || gloveRefreshRequested || localPlayerRefreshRequested || enemyRefreshRequested || maintenanceDue) {
         if (maintenanceDue) chamsLastMaintenanceTick = chamsNow;
         if (weaponRefreshRequested || (maintenanceDue && weaponChamsEnabled))
@@ -7223,50 +7298,6 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     UpdateAimbotAutoFire();
 
     if (InterlockedExchange(&pendingScopeOverlayRefresh, 0)) ApplyScopeOverlayState();
-
-    // A PlayerController changes on every death, but the map and its renderers do
-    // not. Rebuild World Color only when the actual GameController/scene changes.
-    const uintptr_t activeGameController = GetActiveGameController();
-    if (activeGameController &&
-        activeGameController != worldColorObservedGameController) {
-        const bool hadObservedScene = worldColorObservedGameController != 0;
-        worldColorObservedGameController = activeGameController;
-        if (hadObservedScene) {
-            // The previous scene may already have destroyed its renderers. Abandon
-            // stale wrappers without restoring them, then capture the new map once.
-            worldColorRenderers.clear();
-            worldColorTintMaterials.clear();
-            worldColorRetryCount = 0;
-            worldColorNextRetryTick = worldColorEnabled ? chamsNow + 1500 : 0;
-            if (worldColorEnabled)
-                strcpy_s(worldColorStatus, "Waiting for new map to stabilize...");
-        }
-    }
-
-    const LONG worldColorCommand = InterlockedExchange(&pendingWorldColorCommand, 0);
-    if (worldColorCommand == 2) {
-        worldColorNextRetryTick = 0;
-        worldColorRetryCount = 0;
-        RestoreWorldColor();
-    } else if (keyValidated && worldColorEnabled && worldColorCommand == 1) {
-        if (!worldColorRenderers.empty()) ApplyWorldColorToCache();
-        else { worldColorRetryCount = 0; worldColorNextRetryTick = chamsNow; }
-    }
-
-    if (keyValidated && worldColorEnabled && worldColorRenderers.empty() &&
-        worldColorNextRetryTick && chamsNow >= worldColorNextRetryTick) {
-        ++worldColorRetryCount;
-        if (CaptureWorldColorMaterials()) {
-            worldColorRetryCount = 0;
-            worldColorNextRetryTick = 0;
-        } else if (worldColorRetryCount < worldColorMaxRetries) {
-            worldColorNextRetryTick = chamsNow + 1000;
-            sprintf_s(worldColorStatus, "Map loading; retry %d/%d", worldColorRetryCount, worldColorMaxRetries);
-        } else {
-            worldColorNextRetryTick = 0;
-            strcpy_s(worldColorStatus, "Map not ready; toggle World Color to retry");
-        }
-    }
 
     const LONG skyboxCommand = InterlockedExchange(&pendingSkyboxCommand, 0);
     if (keyValidated && skyboxCommand == 1) LoadEmbeddedCatSkybox();
