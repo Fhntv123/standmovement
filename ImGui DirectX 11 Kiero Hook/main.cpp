@@ -9704,13 +9704,18 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_COMMAND));
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE));
-    const MH_STATUS hitCasterCreate = MH_CreateHook(
-        (LPVOID)(base + OFFSET_HITCASTER_CAST), hk_HitCaster_Cast,
-        (LPVOID*)&o_HitCaster_Cast);
-    const MH_STATUS hitCasterEnable = hitCasterCreate == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_HITCASTER_CAST)) : hitCasterCreate;
-    sprintf_s(aimbotStatus, "dump1 HitCaster hook=%d/%d",
-        (int)hitCasterCreate, (int)hitCasterEnable);
+    // Do not detour the shared generic HitCaster.vxe<ceq> entry point. The crash log
+    // repeatedly captured ntdll unwinding/scanning this exact patched address
+    // (GameAssembly + 0xEEE090) on a separate worker after every kill hook had returned.
+    // A native generic method returning the 0x30-byte cer value uses hidden ABI state
+    // that MinHook cannot safely reproduce at this entry. Keep the unpatched address
+    // only for direct native probes; local-hit tracking remains around GunController.Fire.
+    o_HitCaster_Cast = reinterpret_cast<decltype(o_HitCaster_Cast)>(
+        base + OFFSET_HITCASTER_CAST);
+    aimbotLastCeqValid = false;
+    aimbotLastCeqGun = 0;
+    aimbotLastHitCasterMethod = nullptr;
+    strcpy_s(aimbotStatus, "HitCaster direct detour disabled for stability");
 
     MH_CreateHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE), hk_RagdollActivate, (LPVOID*)&o_RagdollActivate);
     MH_EnableHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE));
