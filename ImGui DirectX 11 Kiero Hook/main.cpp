@@ -5303,10 +5303,11 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
     const uintptr_t localPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
     if (!localPlayer) return false;
     __try {
-        // Include trigger hitboxes as well as world surfaces. The result no longer
-        // depends on receiving a target hit; the selected head position is the limit.
+        // Target ownership is already known from CollectPlayers and the ray limit is
+        // the selected head position. Ignore trigger volumes here: using Collide made
+        // invisible gameplay/volume triggers look like walls and reject clear shots.
         Il2CppArray* rayHits = o_Physics_RaycastAll(
-            origin, direction, distance + 0.35f, -1, 2, nullptr);
+            origin, direction, distance + 0.35f, -1, 1, nullptr);
         const uintptr_t array = reinterpret_cast<uintptr_t>(rayHits);
         const size_t count = array ? *reinterpret_cast<size_t*>(array + 0x18) : 0;
         if (!array || count > 128) return false;
