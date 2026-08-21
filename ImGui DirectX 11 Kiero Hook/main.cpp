@@ -2426,6 +2426,8 @@ thread_local int activeLocalHitCastDepth = 0;
 thread_local Vector3 aimbotShotDirection;
 thread_local bool aimbotShotDirectionValid = false;
 thread_local bool visibleAimbotSnapPending = false;
+thread_local uintptr_t aimbotShotDirectionGun = 0;
+thread_local ULONGLONG aimbotShotDirectionAt = 0;
 
 static bool NeedsLocalHitCastTracking()
 {
@@ -5689,11 +5691,17 @@ Vector3 __fastcall hk_GunController_Direction(uintptr_t instance,
     Vector3 nativeDirection, const Il2CppMethod* method)
 {
     Vector3 direction = o_GunController_Direction(instance, nativeDirection, method);
-    if (!insideLocalGunFire || !keyValidated) {
-        aimbotShotDirection = direction;
-        aimbotShotDirectionValid = true;
-        return direction;
+    bool isLocalGun = false;
+    __try {
+        const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
+        const uintptr_t owner = instance ? *reinterpret_cast<uintptr_t*>(instance + 0x20) : 0;
+        isLocalGun = instance && ((currentWeapon && instance == currentWeapon) ||
+            (liveHudLocalPlayer && owner == liveHudLocalPlayer));
     }
+    __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
+    if (!isLocalGun || !keyValidated) return direction;
+    activeLocalWeaponController = instance;
+    visibleAimbotSnapPending = false;
 
     if (aimbotEnabled || visibleAimbotEnabled) {
         InterlockedIncrement(&aimbotShots);
@@ -5736,6 +5744,8 @@ Vector3 __fastcall hk_GunController_Direction(uintptr_t instance,
 
     aimbotShotDirection = direction;
     aimbotShotDirectionValid = true;
+    aimbotShotDirectionGun = instance;
+    aimbotShotDirectionAt = GetTickCount64();
     return direction;
 }
 
@@ -5753,9 +5763,10 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
     if (isLocalGun) activeLocalWeaponController = instance;
-    aimbotShotDirection = playSound;
-    aimbotShotDirectionValid = false;
-    visibleAimbotSnapPending = false;
+    const ULONGLONG fireNow = GetTickCount64();
+    const bool haveFreshAimbotDirection = isLocalGun && aimbotShotDirectionValid &&
+        aimbotShotDirectionGun == instance && fireNow >= aimbotShotDirectionAt &&
+        fireNow - aimbotShotDirectionAt <= 250;
     if (isLocalGun && infinityAmmo) InterlockedIncrement(&infinityAmmoFireCalls);
     short ammoBeforeShot = -1;
     if (isLocalGun && (infinityAmmo || doubleTapEnabled)) {
@@ -5770,7 +5781,6 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     }
     const bool fireSecondShot = isLocalGun && doubleTapEnabled &&
         (infinityAmmo || ammoBeforeShot >= 2);
-    const ULONGLONG fireNow = GetTickCount64();
     const bool persistentAutoRequest = isLocalGun && instance == aimbotAutoFirePendingGun &&
         fireNow <= aimbotAutoFirePendingUntil;
     insideAutoFireRequest = persistentAutoRequest;
@@ -5798,10 +5808,15 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     if (trackLocalHitCast) ++activeLocalHitCastDepth;
     o_GunController_Fire(instance, playSound, method);
     if (trackLocalHitCast) --activeLocalHitCastDepth;
-    if (isLocalGun && visibleAimbotSnapPending && aimbotShotDirectionValid) {
+    if (haveFreshAimbotDirection && visibleAimbotSnapPending) {
         BeginVisibleAimbotCameraSnap(aimbotShotDirection);
-        visibleAimbotSnapPending = false;
         strcpy_s(aimbotStatus, "Shot fired; visible camera snap applied");
+    }
+    if (isLocalGun) {
+        aimbotShotDirectionValid = false;
+        visibleAimbotSnapPending = false;
+        aimbotShotDirectionGun = 0;
+        aimbotShotDirectionAt = 0;
     }
     if (fireSecondShot) {
         // Keep the real second cast/damage/ammo path, then restore only the native
