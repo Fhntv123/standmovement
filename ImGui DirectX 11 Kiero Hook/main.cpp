@@ -21,6 +21,7 @@
 #include <comdef.h>
 #include <shlobj.h>
 #include <mmsystem.h>
+#include <dbghelp.h>
 
 #pragma comment(lib, "urlmon.lib")
 
@@ -29,11 +30,46 @@
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "dbghelp.lib")
 
 
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+static wchar_t crashDumpPath[MAX_PATH] = {};
+
+static LONG WINAPI WriteCrashDump(EXCEPTION_POINTERS* exceptionInfo)
+{
+    if (!exceptionInfo || !crashDumpPath[0]) return EXCEPTION_CONTINUE_SEARCH;
+    HANDLE file = CreateFileW(crashDumpPath, GENERIC_WRITE, FILE_SHARE_READ,
+        nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return EXCEPTION_CONTINUE_SEARCH;
+    MINIDUMP_EXCEPTION_INFORMATION info = {};
+    info.ThreadId = GetCurrentThreadId();
+    info.ExceptionPointers = exceptionInfo;
+    info.ClientPointers = FALSE;
+    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file,
+        static_cast<MINIDUMP_TYPE>(MiniDumpWithIndirectlyReferencedMemory |
+            MiniDumpScanMemory | MiniDumpWithThreadInfo), &info, nullptr, nullptr);
+    CloseHandle(file);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static void InitializeCrashDumpCapture()
+{
+    wchar_t documents[MAX_PATH] = {};
+    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_PERSONAL, nullptr,
+        SHGFP_TYPE_CURRENT, documents))) return;
+    wchar_t directory[MAX_PATH] = {};
+    if (swprintf_s(directory, L"%s\\ze0nware", documents) <= 0) return;
+    CreateDirectoryW(directory, nullptr);
+    if (swprintf_s(crashDumpPath, L"%s\\ze0nware_crash.dmp", directory) <= 0) {
+        crashDumpPath[0] = L'\0';
+        return;
+    }
+    SetUnhandledExceptionFilter(WriteCrashDump);
+}
 
 
 
@@ -1832,6 +1868,24 @@ static bool LoadConfig(const char* requestedName)
     if (worldColorMode < 0 || worldColorMode > 6) worldColorMode = 0;
     if (freezeCorpsesChamsMode < 0 || freezeCorpsesChamsMode > 7)
         freezeCorpsesChamsMode = 0;
+    if (!isfinite(freezeCorpsesDuration) || freezeCorpsesDuration < 0.5f)
+        freezeCorpsesDuration = 0.5f;
+    if (freezeCorpsesDuration > 10.0f) freezeCorpsesDuration = 10.0f;
+    if (!isfinite(freezeCorpsesFadeDuration) || freezeCorpsesFadeDuration < 0.1f)
+        freezeCorpsesFadeDuration = 0.1f;
+    if (freezeCorpsesFadeDuration > 4.0f) freezeCorpsesFadeDuration = 4.0f;
+    if (!isfinite(freezeCorpsesChamsAlpha)) freezeCorpsesChamsAlpha = 0.55f;
+    if (freezeCorpsesChamsAlpha < 0.05f) freezeCorpsesChamsAlpha = 0.05f;
+    if (freezeCorpsesChamsAlpha > 0.95f) freezeCorpsesChamsAlpha = 0.95f;
+    if (!isfinite(freezeCorpsesMetallic)) freezeCorpsesMetallic = 0.9f;
+    if (freezeCorpsesMetallic < 0.0f) freezeCorpsesMetallic = 0.0f;
+    if (freezeCorpsesMetallic > 1.0f) freezeCorpsesMetallic = 1.0f;
+    if (!isfinite(freezeCorpsesSmoothness)) freezeCorpsesSmoothness = 0.8f;
+    if (freezeCorpsesSmoothness < 0.0f) freezeCorpsesSmoothness = 0.0f;
+    if (freezeCorpsesSmoothness > 1.0f) freezeCorpsesSmoothness = 1.0f;
+    if (!isfinite(freezeCorpsesAnimationSpeed) || freezeCorpsesAnimationSpeed < 0.1f)
+        freezeCorpsesAnimationSpeed = 0.1f;
+    if (freezeCorpsesAnimationSpeed > 5.0f) freezeCorpsesAnimationSpeed = 5.0f;
     if (weaponChamsMode < 0 || weaponChamsMode > 7) weaponChamsMode = 0;
     if (armChamsMode < 0 || armChamsMode > 7) armChamsMode = 0;
     if (gloveChamsMode < 0 || gloveChamsMode > 7) gloveChamsMode = 0;
@@ -3440,42 +3494,66 @@ static void ApplyFrozenCorpseFadeUnsafe(uintptr_t material, uintptr_t renderer,
 
 static void UpdateFrozenCorpses()
 {
+    struct CorpseFadeWork {
+        uintptr_t ragdoll;
+        uintptr_t material;
+        uintptr_t renderer;
+        int mode;
+        float alpha;
+    };
+
     const ULONGLONG now = GetTickCount64();
-    std::vector<std::pair<uintptr_t, uintptr_t>> releases;
+    std::vector<FrozenCorpseEntry> finished;
+    std::vector<CorpseFadeWork> fades;
+
+    // Only move/copy bookkeeping while holding the lock. Unity calls below can invoke
+    // callbacks synchronously (including RagdollManager::Release) and must never run
+    // while frozenCorpseLock is owned.
     AcquireSRWLockExclusive(&frozenCorpseLock);
     for (auto it = frozenCorpses.begin(); it != frozenCorpses.end();) {
-        if (!it->ragdoll || !IsUnityObjectAliveUnsafe(it->ragdoll)) {
-            RestoreFrozenCorpseMaterial(*it);
+        if (!freezeCorpsesEnabled || now >= it->releaseAt) {
+            finished.push_back(std::move(*it));
             it = frozenCorpses.erase(it);
             continue;
         }
-        if (freezeCorpsesEnabled && now < it->releaseAt) {
-            if (it->fadeMaterial && o_Material_set_color) {
-                float alpha = it->materialMode == 2 ? freezeCorpsesChamsAlpha : 1.0f;
-                if (freezeCorpsesFadeEnabled) {
-                    float fadeFactor = 1.0f;
-                    const ULONGLONG fadeMs = static_cast<ULONGLONG>(
-                        fmaxf(0.05f, freezeCorpsesFadeDuration) * 1000.0f);
-                    const ULONGLONG remaining = it->releaseAt - now;
-                    if (remaining < fadeMs)
-                        fadeFactor = static_cast<float>(remaining) / static_cast<float>(fadeMs);
-                    alpha *= fadeFactor;
-                }
-                ApplyFrozenCorpseFadeUnsafe(it->fadeMaterial, it->renderer,
-                    it->materialMode, alpha, now);
+        if (it->fadeMaterial && o_Material_set_color) {
+            float alpha = it->materialMode == 2 ? freezeCorpsesChamsAlpha : 1.0f;
+            if (freezeCorpsesFadeEnabled) {
+                float fadeFactor = 1.0f;
+                const ULONGLONG fadeMs = static_cast<ULONGLONG>(
+                    fmaxf(0.05f, freezeCorpsesFadeDuration) * 1000.0f);
+                const ULONGLONG remaining = it->releaseAt - now;
+                if (remaining < fadeMs)
+                    fadeFactor = static_cast<float>(remaining) / static_cast<float>(fadeMs);
+                alpha *= fadeFactor;
             }
-            ++it;
-            continue;
+            fades.push_back({ it->ragdoll, it->fadeMaterial, it->renderer,
+                it->materialMode, alpha });
         }
-        RestoreFrozenCorpseMaterial(*it);
-        SetCorpseRigidbodiesFrozen(*it, false);
-        if (it->releaseRequested && it->manager && it->ragdoll)
-            releases.push_back({ it->manager, it->ragdoll });
-        it = frozenCorpses.erase(it);
+        ++it;
     }
     ReleaseSRWLockExclusive(&frozenCorpseLock);
-    // Release outside the lock: the native pool callback can synchronously reuse
-    // the ragdoll and enter hk_RagdollActivate again.
+
+    // Validate and touch Unity objects only after releasing the lock. This also avoids
+    // retaining the lock across Material setters and Rigidbody restoration.
+    for (const CorpseFadeWork& fade : fades) {
+        if (!fade.ragdoll || !IsUnityObjectAliveUnsafe(fade.ragdoll)) continue;
+        ApplyFrozenCorpseFadeUnsafe(fade.material, fade.renderer,
+            fade.mode, fade.alpha, now);
+    }
+
+    std::vector<std::pair<uintptr_t, uintptr_t>> releases;
+    for (FrozenCorpseEntry& corpse : finished) {
+        const bool ragdollAlive = corpse.ragdoll &&
+            IsUnityObjectAliveUnsafe(corpse.ragdoll);
+        RestoreFrozenCorpseMaterial(corpse);
+        if (ragdollAlive) SetCorpseRigidbodiesFrozen(corpse, false);
+        if (corpse.releaseRequested && corpse.manager && corpse.ragdoll)
+            releases.push_back({ corpse.manager, corpse.ragdoll });
+    }
+
+    // Native release remains last and outside the lock: it can synchronously reuse the
+    // pooled ragdoll and enter hk_RagdollActivate again.
     for (const auto& release : releases)
         o_RagdollManagerRelease(release.first, release.second, nullptr);
 }
@@ -9147,6 +9225,7 @@ DWORD WINAPI HackThread(LPVOID)
 
 {
 
+    InitializeCrashDumpCapture();
     MH_Initialize();
 
     // IL2CPP init: locate dump1 classes and singleton backing fields
