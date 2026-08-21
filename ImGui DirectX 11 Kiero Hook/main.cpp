@@ -2460,6 +2460,8 @@ static bool hitCasterBreakpointInstalled = false;
 thread_local bool hitCasterBreakpointRearm = false;
 thread_local bool hitCasterDirectionPending = false;
 thread_local HitCasterVector3Abi hitCasterPendingDirection = {};
+thread_local bool visibleAimbotSnapPending = false;
+thread_local Vector3 visibleAimbotPendingDirection;
 thread_local bool insideLocalGunFire = false;
 thread_local bool insideAutoFireRequest = false;
 thread_local int activeLocalHitCastDepth = 0;
@@ -5837,6 +5839,7 @@ static bool InstallHitCasterBreakpoint()
 static bool PrepareHitCasterDirectionForFire()
 {
     hitCasterDirectionPending = false;
+    visibleAimbotSnapPending = false;
     if (!keyValidated || (!aimbotEnabled && !visibleAimbotEnabled &&
         !noSpreadEnabled))
         return false;
@@ -5856,7 +5859,13 @@ static bool PrepareHitCasterDirectionForFire()
                     direction)) {
                 hitCasterPendingDirection = ToHitCasterVector3Abi(direction);
                 hitCasterDirectionPending = true;
-                strcpy_s(aimbotStatus, "Breakpoint HitCaster direction ready");
+                if (visibleAimbotEnabled) {
+                    visibleAimbotPendingDirection = direction;
+                    visibleAimbotSnapPending = true;
+                }
+                strcpy_s(aimbotStatus, visibleAimbotEnabled ?
+                    "Visible aim direction ready" :
+                    "Breakpoint HitCaster direction ready");
                 return true;
             }
         }
@@ -5932,6 +5941,11 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     if (trackLocalHitCast) ++activeLocalHitCastDepth;
     o_GunController_Fire(instance, playSound, method);
     if (trackLocalHitCast) --activeLocalHitCastDepth;
+    if (isLocalGun && visibleAimbotSnapPending) {
+        BeginVisibleAimbotCameraSnap(visibleAimbotPendingDirection);
+        visibleAimbotSnapPending = false;
+        strcpy_s(aimbotStatus, "Visible camera snap applied");
+    }
     if (fireSecondShot) {
         // Keep the real second cast/damage/ammo path, then restore only the native
         // recoil accumulator. Never lock or rewrite camera aim after the shot.
@@ -5949,6 +5963,7 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
         InterlockedIncrement(&doubleTapExtraShots);
     }
     hitCasterDirectionPending = false;
+    visibleAimbotSnapPending = false;
     insideLocalGunFire = false;
     insideAutoFireRequest = false;
     if (persistentAutoRequest) {
