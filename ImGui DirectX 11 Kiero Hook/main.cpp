@@ -623,7 +623,6 @@ bool pixelSurf = false; // legacy alias; real Pixel Surf state is jbActive
 
 bool jbActive = false;
 bool pixelSurfReleaseHop = false;
-volatile LONG64 pixelSurfReleasedAt = 0;
 volatile LONG64 pixelSurfReleaseGraceUntil = 0;
 uintptr_t pixelSurfCharacterController = 0;
 volatile LONG pendingPixelSurfChatMessage = 0;
@@ -634,13 +633,11 @@ static void SetPixelSurfActive(bool active)
     jbActive = active;
     pixelSurf = active;
     if (active) {
-        InterlockedExchange64(&pixelSurfReleasedAt, 0);
         if (!wasActive) InterlockedExchange(&pendingPixelSurfChatMessage, 1);
         InterlockedExchange64(&pixelSurfReleaseGraceUntil, 0);
     }
     else if (wasActive) {
         const LONG64 now = static_cast<LONG64>(GetTickCount64());
-        InterlockedExchange64(&pixelSurfReleasedAt, now);
         // Optional legacy mode keeps the small release hop the user liked.
         InterlockedExchange64(&pixelSurfReleaseGraceUntil,
             pixelSurfReleaseHop ? now + 100 : 0);
@@ -5498,8 +5495,6 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
     CollectPlayers(players, 64, playerCount);
     InterlockedExchange(&aimbotTargetsScanned, playerCount);
 
-    (void)castParameters;
-    (void)castMethod;
     aimbotSelectedTargetPointValid = false;
     bool found = false;
     int visibleCount = 0;
@@ -5521,11 +5516,12 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
         const Vector3 candidate(delta.x / distance, delta.y / distance, delta.z / distance);
 
         bool reachable = false;
-        if (castParameters && castMethod && o_HitCaster_Cast) {
+        if (castParameters && o_HitCaster_Cast) {
             // dump1 exact path: HitCaster.vxe<ceq> returns cer with authoritative
             // Dictionary<bal,ccr> ownership and List<cew> penetration data. The unsafe
-            // MinHook detour is gone; call the original ABI directly for validation,
-            // then redirect only the one real GunController shot through VEH.
+            // MinHook detour is gone; call the original ABI directly for validation.
+            // Its specialized MethodInfo can be null, so ceq—not MethodInfo—is the
+            // readiness gate. Redirect only the real GunController shot through VEH.
             const HitCasterCer probe = CallOriginalHitCaster(
                 origin, candidate, distance + 0.35f, *castParameters, castMethod);
             int nativeDamage = 0;
@@ -5605,7 +5601,7 @@ void __fastcall hk_HitCaster_Cast(HitCasterCerAbi* returnValue,
             }
         }
         aimbotLastCeq = hitParameters;
-        aimbotLastCeqValid = hitParameters.damageDefinition != 0 && method != nullptr;
+        aimbotLastCeqValid = hitParameters.damageDefinition != 0;
         aimbotLastCeqGun = activeLocalWeaponController;
         aimbotLastHitCasterMethod = method;
     }
@@ -5831,8 +5827,7 @@ static bool HasVisibleTargetBeforeNativeFire(uintptr_t gun)
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
     Vector3 direction;
-    const bool haveCachedCast = aimbotLastCeqValid && aimbotLastCeqGun == gun &&
-        aimbotLastHitCasterMethod != nullptr;
+    const bool haveCachedCast = aimbotLastCeqValid && aimbotLastCeqGun == gun;
     const HitCasterCeq* cached = haveCachedCast ? &aimbotLastCeq : nullptr;
     const Il2CppMethod* cachedMethod = haveCachedCast ? aimbotLastHitCasterMethod : nullptr;
     return haveOrigin && FindVisibleAimbotDirection(
@@ -6459,10 +6454,8 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
 
     if (jbActive) return false;
 
-    if (grounded && instance && instance == pixelSurfCharacterController) {
-        InterlockedExchange64(&pixelSurfReleasedAt, 0);
+    if (grounded && instance && instance == pixelSurfCharacterController)
         pixelSurfCharacterController = 0;
-    }
     return grounded;
 
 }
@@ -7974,22 +7967,11 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         const LONG64 now = static_cast<LONG64>(GetTickCount64());
         const LONG64 releaseGraceUntil = InterlockedCompareExchange64(
             &pixelSurfReleaseGraceUntil, 0, 0);
-        const LONG64 releasedAt = InterlockedCompareExchange64(
-            &pixelSurfReleasedAt, 0, 0);
-        if (pixelSurfReleaseHop && releaseGraceUntil > now && motion.y < 0.0f) {
+        if (pixelSurfReleaseHop && releaseGraceUntil > now && motion.y < 0.0f)
             motion.y = 0.0f;
-        }
-        else if (!pixelSurfReleaseHop && releasedAt > 0 && now >= releasedAt &&
-            instance == pixelSurfCharacterController && motion.y < 0.0f) {
-            // Normal release: never fake grounded. Keep replacing the stale accumulated
-            // gravity until this exact controller actually lands; do not expire mid-air.
-            const float deltaTime = movementDeltaTime;
-            const float elapsed = static_cast<float>(now - releasedAt) * 0.001f;
-            float normalDownSpeed = 0.5f + 4.0f * elapsed;
-            if (normalDownSpeed > 8.0f) normalDownSpeed = 8.0f;
-            const float normalDownMotion = -normalDownSpeed * deltaTime;
-            if (motion.y < normalDownMotion) motion.y = normalDownMotion;
-        }
+        // With Release Hop disabled, pass the game's vertical motion through untouched.
+        // The previous post-release clamp replaced accumulated gravity until landing,
+        // which caused the reported slow fall after Pixel Surf.
     }
 
     if (keyValidated) {
