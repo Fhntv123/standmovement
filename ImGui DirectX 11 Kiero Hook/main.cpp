@@ -2421,6 +2421,15 @@ HitCasterCer(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float,
 thread_local bool insideLocalGunFire = false;
 thread_local bool insideAutoFireRequest = false;
 thread_local int activeLocalHitCastDepth = 0;
+thread_local bool silentAimbotAimPending = false;
+thread_local uintptr_t silentAimbotPendingGun = 0;
+thread_local uintptr_t silentAimbotPendingController = 0;
+thread_local uintptr_t silentAimbotPendingData = 0;
+thread_local Vector3 silentAimbotPendingOriginalAim;
+thread_local Vector3 silentAimbotPendingOriginalEuler;
+thread_local ULONGLONG silentAimbotPendingAt = 0;
+thread_local bool aimbotCommandAimActive = false;
+thread_local bool aimbotCommandFireConsumed = false;
 
 static bool NeedsLocalHitCastTracking()
 {
@@ -5634,6 +5643,33 @@ static bool HasVisibleTargetBeforeNativeFire(uintptr_t gun)
         origin, true, cached, cachedMethod, direction);
 }
 
+static void ClearSilentAimbotPendingState()
+{
+    silentAimbotAimPending = false;
+    silentAimbotPendingGun = 0;
+    silentAimbotPendingController = 0;
+    silentAimbotPendingData = 0;
+    silentAimbotPendingAt = 0;
+}
+
+static void RestoreSilentAimbotAimPending()
+{
+    if (!silentAimbotAimPending) return;
+    __try {
+        if (silentAimbotPendingController && silentAimbotPendingData) {
+            *reinterpret_cast<Vector3*>(silentAimbotPendingData + 0x18) =
+                silentAimbotPendingOriginalAim;
+            *reinterpret_cast<Vector3*>(silentAimbotPendingData + 0x24) =
+                silentAimbotPendingOriginalEuler;
+            if (o_AimController_SetHeadDirective)
+                o_AimController_SetHeadDirective(silentAimbotPendingController,
+                    silentAimbotPendingOriginalAim, nullptr);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    ClearSilentAimbotPendingState();
+}
+
 static bool ApplyAimbotAimBeforeCommand(uintptr_t gun, Vector3* originalAim,
     Vector3* originalEuler, uintptr_t* aimControllerOut, uintptr_t* aimingDataOut,
     Vector3* targetAimOut)
@@ -5642,6 +5678,14 @@ static bool ApplyAimbotAimBeforeCommand(uintptr_t gun, Vector3* originalAim,
         !aimingDataOut || !targetAimOut || !liveHudLocalPlayer ||
         (!aimbotEnabled && !visibleAimbotEnabled))
         return false;
+    if (silentAimbotAimPending) {
+        const ULONGLONG now = GetTickCount64();
+        if (silentAimbotPendingGun != gun || now < silentAimbotPendingAt ||
+            now - silentAimbotPendingAt > 250)
+            RestoreSilentAimbotAimPending();
+        else
+            return false;
+    }
     __try {
         const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
         const uintptr_t owner = *reinterpret_cast<uintptr_t*>(gun + 0x20);
@@ -5663,6 +5707,7 @@ static bool ApplyAimbotAimBeforeCommand(uintptr_t gun, Vector3* originalAim,
             origin, false, nullptr, nullptr, targetDirection))
             return false;
         const Vector3 targetAim = DirectionToCameraEuler(targetDirection);
+        activeLocalWeaponController = gun;
         *originalAim = *reinterpret_cast<Vector3*>(aimingData + 0x18);
         *originalEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
         *aimControllerOut = aimController;
@@ -5682,9 +5727,9 @@ static bool ApplyAimbotAimBeforeCommand(uintptr_t gun, Vector3* originalAim,
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-static void FinishAimbotAimAfterCommand(bool applied, uintptr_t aimController,
-    uintptr_t aimingData, Vector3 originalAim, Vector3 originalEuler,
-    Vector3 targetAim)
+static void FinishAimbotAimAfterCommand(bool applied, bool fireConsumed,
+    uintptr_t aimController, uintptr_t aimingData, Vector3 originalAim,
+    Vector3 originalEuler, Vector3 targetAim)
 {
     if (!applied || !aimController || !aimingData) return;
     __try {
@@ -5699,11 +5744,22 @@ static void FinishAimbotAimAfterCommand(bool applied, uintptr_t aimController,
                 static_cast<ULONGLONG>(visibleAimbotHoldMs);
             visibleAimbotCameraActive = true;
         }
-        else {
+        else if (fireConsumed) {
             *reinterpret_cast<Vector3*>(aimingData + 0x18) = originalAim;
             *reinterpret_cast<Vector3*>(aimingData + 0x24) = originalEuler;
             if (o_AimController_SetHeadDirective)
                 o_AimController_SetHeadDirective(aimController, originalAim, nullptr);
+            strcpy_s(aimbotStatus, "Silent aim consumed by native Fire");
+        }
+        else {
+            silentAimbotAimPending = true;
+            silentAimbotPendingGun = activeLocalWeaponController;
+            silentAimbotPendingController = aimController;
+            silentAimbotPendingData = aimingData;
+            silentAimbotPendingOriginalAim = originalAim;
+            silentAimbotPendingOriginalEuler = originalEuler;
+            silentAimbotPendingAt = GetTickCount64();
+            strcpy_s(aimbotStatus, "Silent aim waiting for delayed native Fire");
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -5720,9 +5776,8 @@ void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, 
     Vector3 targetAim;
     uintptr_t commandAimController = 0;
     uintptr_t commandAimingData = 0;
-    const bool commandAimApplied = ApplyAimbotAimBeforeCommand(instance,
-        &originalAim, &originalEuler, &commandAimController,
-        &commandAimingData, &targetAim);
+    bool commandAimApplied = false;
+    bool shouldAimThisCommand = false;
     const ULONGLONG now = GetTickCount64();
     __try {
         const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
@@ -5749,12 +5804,26 @@ void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, 
                 strcpy_s(aimbotStatus, "Auto Fire blocked: no direct shot or valid wallbang");
             }
         }
+        shouldAimThisCommand = isLocalGun &&
+            *reinterpret_cast<bool*>(command + 0x10);
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { injectNativeFire = false; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        injectNativeFire = false;
+        shouldAimThisCommand = false;
+    }
 
+    if (shouldAimThisCommand)
+        commandAimApplied = ApplyAimbotAimBeforeCommand(instance,
+            &originalAim, &originalEuler, &commandAimController,
+            &commandAimingData, &targetAim);
+    aimbotCommandAimActive = commandAimApplied;
+    aimbotCommandFireConsumed = false;
     o_GunController_Command(instance, command, frameTime, commandTime, method);
-    FinishAimbotAimAfterCommand(commandAimApplied, commandAimController,
-        commandAimingData, originalAim, originalEuler, targetAim);
+    aimbotCommandAimActive = false;
+    FinishAimbotAimAfterCommand(commandAimApplied,
+        aimbotCommandFireConsumed, commandAimController, commandAimingData,
+        originalAim, originalEuler, targetAim);
+    aimbotCommandFireConsumed = false;
 
     if (injectNativeFire) {
         __try { *reinterpret_cast<bool*>(command + 0x10) = originalPrimaryFire; }
@@ -5781,6 +5850,8 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
     if (isLocalGun) activeLocalWeaponController = instance;
+    if (isLocalGun && aimbotCommandAimActive)
+        aimbotCommandFireConsumed = true;
     const ULONGLONG fireNow = GetTickCount64();
     if (isLocalGun && infinityAmmo) InterlockedIncrement(&infinityAmmoFireCalls);
     short ammoBeforeShot = -1;
@@ -5839,6 +5910,9 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
         }
         InterlockedIncrement(&doubleTapExtraShots);
     }
+    if (isLocalGun && silentAimbotAimPending &&
+        silentAimbotPendingGun == instance)
+        RestoreSilentAimbotAimPending();
     insideLocalGunFire = false;
     insideAutoFireRequest = false;
     if (persistentAutoRequest) {
@@ -9802,7 +9876,7 @@ DWORD WINAPI HackThread(LPVOID)
     aimbotLastCeqValid = false;
     aimbotLastCeqGun = 0;
     aimbotLastHitCasterMethod = nullptr;
-    strcpy_s(aimbotStatus, "Native pre-command aim path ready");
+    strcpy_s(aimbotStatus, "Silent aim held through native Fire");
 
     MH_CreateHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE), hk_RagdollActivate, (LPVOID*)&o_RagdollActivate);
     MH_EnableHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE));
