@@ -6,3 +6,7 @@ x64/
 "serverr.py" 
 "*.dll" 
 "serverr.py" 
+
+# Local crash diagnostics
+ze0nware_crash.log
+ze0nware_crash.dmp

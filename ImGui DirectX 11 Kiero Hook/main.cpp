@@ -21,7 +21,6 @@
 #include <comdef.h>
 #include <shlobj.h>
 #include <mmsystem.h>
-#include <dbghelp.h>
 
 #pragma comment(lib, "urlmon.lib")
 
@@ -30,45 +29,140 @@
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "winmm.lib")
-#pragma comment(lib, "dbghelp.lib")
 
 
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-static wchar_t crashDumpPath[MAX_PATH] = {};
+static wchar_t crashLogPath[MAX_PATH] = {};
+static uintptr_t crashPayloadBase = 0;
+static size_t crashPayloadSize = 0;
+static uintptr_t crashGameAssemblyBase = 0;
+static uintptr_t crashUnityPlayerBase = 0;
+static uintptr_t crashNtdllBase = 0;
+static uintptr_t crashKernelBase = 0;
+static uintptr_t crashWinmmBase = 0;
 
-static LONG WINAPI WriteCrashDump(EXCEPTION_POINTERS* exceptionInfo)
-{
-    if (!exceptionInfo || !crashDumpPath[0]) return EXCEPTION_CONTINUE_SEARCH;
-    HANDLE file = CreateFileW(crashDumpPath, GENERIC_WRITE, FILE_SHARE_READ,
-        nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) return EXCEPTION_CONTINUE_SEARCH;
-    MINIDUMP_EXCEPTION_INFORMATION info = {};
-    info.ThreadId = GetCurrentThreadId();
-    info.ExceptionPointers = exceptionInfo;
-    info.ClientPointers = FALSE;
-    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file,
-        static_cast<MINIDUMP_TYPE>(MiniDumpWithIndirectlyReferencedMemory |
-            MiniDumpScanMemory | MiniDumpWithThreadInfo), &info, nullptr, nullptr);
-    CloseHandle(file);
-    return EXCEPTION_CONTINUE_SEARCH;
+struct CrashBreadcrumb { volatile LONG sequence; DWORD tick; DWORD threadId; int eventId; uintptr_t arg0; uintptr_t arg1; };
+constexpr LONG kCrashBreadcrumbCount = 128;
+alignas(64) static CrashBreadcrumb crashBreadcrumbs[kCrashBreadcrumbCount] = {};
+static volatile LONG crashBreadcrumbSequence = 0;
+
+enum CrashEventId {
+    CrashHealthAEnter = 1, CrashHealthAOriginalDone, CrashHealthBEnter, CrashHealthBOriginalDone,
+    CrashHealthCEnter, CrashHealthCOriginalDone, CrashHealthDEnter, CrashHealthDOriginalDone,
+    CrashHitConfirmedAEnter, CrashHitConfirmedAOriginalDone, CrashHitConfirmedBEnter, CrashHitConfirmedBOriginalDone,
+    CrashCastEnter, CrashCastOriginalEnter, CrashCastOriginalDone, CrashCastExit,
+    CrashLocalHitEnter, CrashLocalHitCustomDone, CrashLocalHitOriginalEnter, CrashLocalHitOriginalDone,
+    CrashRagdollActivateEnter, CrashRagdollActivateOriginalDone, CrashRagdollActivateCustomDone,
+    CrashRagdollReleaseEnter, CrashRagdollReleaseDeferred, CrashRagdollReleaseOriginalDone,
+    CrashCorpseFinish, CrashCorpseNativeReleaseEnter, CrashCorpseNativeReleaseDone,
+    CrashHitSoundQueued, CrashHitSoundPlayEnter, CrashHitSoundPlayDone
+};
+
+static const char* CrashEventName(int id) {
+    switch (id) {
+    case CrashHealthAEnter: return "HealthApplyA enter"; case CrashHealthAOriginalDone: return "HealthApplyA original done";
+    case CrashHealthBEnter: return "HealthApplyB enter"; case CrashHealthBOriginalDone: return "HealthApplyB original done";
+    case CrashHealthCEnter: return "HealthApplyC enter"; case CrashHealthCOriginalDone: return "HealthApplyC original done";
+    case CrashHealthDEnter: return "HealthApplyD enter"; case CrashHealthDOriginalDone: return "HealthApplyD original done";
+    case CrashHitConfirmedAEnter: return "PlayerHitConfirmedA enter"; case CrashHitConfirmedAOriginalDone: return "PlayerHitConfirmedA original done";
+    case CrashHitConfirmedBEnter: return "PlayerHitConfirmedB enter"; case CrashHitConfirmedBOriginalDone: return "PlayerHitConfirmedB original done";
+    case CrashCastEnter: return "HitCaster enter"; case CrashCastOriginalEnter: return "HitCaster original enter";
+    case CrashCastOriginalDone: return "HitCaster original done"; case CrashCastExit: return "HitCaster exit";
+    case CrashLocalHitEnter: return "LocalHit enter"; case CrashLocalHitCustomDone: return "LocalHit custom done";
+    case CrashLocalHitOriginalEnter: return "LocalHit original enter"; case CrashLocalHitOriginalDone: return "LocalHit original done";
+    case CrashRagdollActivateEnter: return "RagdollActivate enter"; case CrashRagdollActivateOriginalDone: return "RagdollActivate original done";
+    case CrashRagdollActivateCustomDone: return "RagdollActivate custom done"; case CrashRagdollReleaseEnter: return "RagdollRelease enter";
+    case CrashRagdollReleaseDeferred: return "RagdollRelease deferred"; case CrashRagdollReleaseOriginalDone: return "RagdollRelease original done";
+    case CrashCorpseFinish: return "Frozen corpse finish"; case CrashCorpseNativeReleaseEnter: return "Frozen corpse native release enter";
+    case CrashCorpseNativeReleaseDone: return "Frozen corpse native release done"; case CrashHitSoundQueued: return "Hitsound queued";
+    case CrashHitSoundPlayEnter: return "Hitsound play enter"; case CrashHitSoundPlayDone: return "Hitsound play done";
+    default: return "Unknown"; }
 }
 
-static void InitializeCrashDumpCapture()
-{
-    wchar_t documents[MAX_PATH] = {};
-    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_PERSONAL, nullptr,
-        SHGFP_TYPE_CURRENT, documents))) return;
-    wchar_t directory[MAX_PATH] = {};
-    if (swprintf_s(directory, L"%s\\ze0nware", documents) <= 0) return;
-    CreateDirectoryW(directory, nullptr);
-    if (swprintf_s(crashDumpPath, L"%s\\ze0nware_crash.dmp", directory) <= 0) {
-        crashDumpPath[0] = L'\0';
-        return;
+static void RecordCrashBreadcrumb(int id, uintptr_t a = 0, uintptr_t b = 0) {
+    const LONG seq = InterlockedIncrement(&crashBreadcrumbSequence);
+    CrashBreadcrumb& e = crashBreadcrumbs[static_cast<unsigned long>(seq) % kCrashBreadcrumbCount];
+    e.sequence = 0; e.tick = GetTickCount(); e.threadId = GetCurrentThreadId(); e.eventId = id; e.arg0 = a; e.arg1 = b;
+    MemoryBarrier(); InterlockedExchange(&e.sequence, seq);
+}
+static void CrashLogWrite(HANDLE f, const char* text) {
+    if (f == INVALID_HANDLE_VALUE || !text) return; DWORD written = 0;
+    WriteFile(f, text, static_cast<DWORD>(strlen(text)), &written, nullptr);
+}
+static const char* CrashModuleName(uintptr_t address, uintptr_t* moduleBase) {
+    MEMORY_BASIC_INFORMATION m = {};
+    if (!address || !VirtualQuery(reinterpret_cast<void*>(address), &m, sizeof(m))) return "unknown";
+    const uintptr_t allocationBase = reinterpret_cast<uintptr_t>(m.AllocationBase);
+    if (moduleBase) *moduleBase = allocationBase;
+    if (crashPayloadBase && address >= crashPayloadBase && address < crashPayloadBase + crashPayloadSize) { if (moduleBase) *moduleBase = crashPayloadBase; return "payload1.dll"; }
+    if (allocationBase == crashGameAssemblyBase) return "GameAssembly.dll";
+    if (allocationBase == crashUnityPlayerBase) return "UnityPlayer.dll";
+    if (allocationBase == crashNtdllBase) return "ntdll.dll";
+    if (allocationBase == crashKernelBase) return "KERNELBASE.dll";
+    if (allocationBase == crashWinmmBase) return "winmm.dll";
+    return "other/unknown";
+}
+
+static LONG WINAPI WriteCrashLog(EXCEPTION_POINTERS* info) {
+    if (!info || !info->ExceptionRecord || !info->ContextRecord || !crashLogPath[0]) return EXCEPTION_CONTINUE_SEARCH;
+    HANDLE file = CreateFileW(crashLogPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return EXCEPTION_CONTINUE_SEARCH;
+    const EXCEPTION_RECORD* ex = info->ExceptionRecord; const CONTEXT* c = info->ContextRecord;
+    uintptr_t moduleBase = 0; const char* module = CrashModuleName(reinterpret_cast<uintptr_t>(ex->ExceptionAddress), &moduleBase);
+    char line[512] = {};
+    sprintf_s(line, "ze0nware crash log v1\r\nExceptionCode=0x%08lX Flags=0x%08lX Thread=%lu\r\nAddress=0x%p Module=%s ModuleBase=0x%p RVA=0x%llX\r\nAccessType=%llu AccessAddress=0x%llX\r\n",
+        ex->ExceptionCode, ex->ExceptionFlags, GetCurrentThreadId(), ex->ExceptionAddress, module,
+        reinterpret_cast<void*>(moduleBase), static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(ex->ExceptionAddress) - moduleBase),
+        ex->NumberParameters > 0 ? static_cast<unsigned long long>(ex->ExceptionInformation[0]) : 0ULL,
+        ex->NumberParameters > 1 ? static_cast<unsigned long long>(ex->ExceptionInformation[1]) : 0ULL);
+    CrashLogWrite(file, line);
+#if defined(_M_X64)
+    sprintf_s(line, "RIP=0x%llX RSP=0x%llX RBP=0x%llX\r\nRAX=0x%llX RBX=0x%llX RCX=0x%llX RDX=0x%llX\r\nRSI=0x%llX RDI=0x%llX R8=0x%llX R9=0x%llX\r\nR10=0x%llX R11=0x%llX R12=0x%llX R13=0x%llX R14=0x%llX R15=0x%llX\r\n",
+        c->Rip,c->Rsp,c->Rbp,c->Rax,c->Rbx,c->Rcx,c->Rdx,c->Rsi,c->Rdi,c->R8,c->R9,c->R10,c->R11,c->R12,c->R13,c->R14,c->R15);
+    CrashLogWrite(file, line);
+#endif
+    CrashLogWrite(file, "\r\nRecent kill-path breadcrumbs (oldest to newest):\r\n");
+    const LONG latest = InterlockedCompareExchange(&crashBreadcrumbSequence, 0, 0);
+    const LONG first = latest > kCrashBreadcrumbCount ? latest - kCrashBreadcrumbCount + 1 : 1;
+    for (LONG seq = first; seq <= latest; ++seq) {
+        const CrashBreadcrumb& e = crashBreadcrumbs[static_cast<unsigned long>(seq) % kCrashBreadcrumbCount];
+        if (InterlockedCompareExchange(const_cast<volatile LONG*>(&e.sequence), 0, 0) != seq) continue;
+        sprintf_s(line, "#%ld tick=%lu thread=%lu event=%s arg0=0x%p arg1=0x%p\r\n", seq,e.tick,e.threadId,
+            CrashEventName(e.eventId),reinterpret_cast<void*>(e.arg0),reinterpret_cast<void*>(e.arg1)); CrashLogWrite(file,line);
     }
-    SetUnhandledExceptionFilter(WriteCrashDump);
+#if defined(_M_X64)
+    CrashLogWrite(file, "\r\nStack scan (known module return addresses):\r\n");
+    uintptr_t stack[256] = {}; SIZE_T bytesRead = 0;
+    if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(c->Rsp), stack, sizeof(stack), &bytesRead)) {
+        for (size_t i = 0; i < bytesRead / sizeof(uintptr_t); ++i) {
+            uintptr_t baseAddress = 0; const char* name = CrashModuleName(stack[i], &baseAddress);
+            if (!baseAddress || strcmp(name,"other/unknown") == 0 || strcmp(name,"unknown") == 0) continue;
+            sprintf_s(line,"stack+0x%04llX address=0x%p module=%s rva=0x%llX\r\n",
+                static_cast<unsigned long long>(i*sizeof(uintptr_t)),reinterpret_cast<void*>(stack[i]),name,
+                static_cast<unsigned long long>(stack[i]-baseAddress)); CrashLogWrite(file,line);
+        }
+    }
+#endif
+    FlushFileBuffers(file); CloseHandle(file); return EXCEPTION_CONTINUE_SEARCH;
+}
+static void InitializeCrashLogCapture() {
+    wchar_t documents[MAX_PATH] = {}, directory[MAX_PATH] = {};
+    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_PERSONAL, nullptr, SHGFP_TYPE_CURRENT, documents))) return;
+    if (swprintf_s(directory,L"%s\\ze0nware",documents) <= 0) return; CreateDirectoryW(directory,nullptr);
+    if (swprintf_s(crashLogPath,L"%s\\ze0nware_crash.log",directory) <= 0) { crashLogPath[0]=L'\0'; return; }
+    crashPayloadBase = reinterpret_cast<uintptr_t>(&__ImageBase);
+    __try { const IMAGE_NT_HEADERS* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(crashPayloadBase + reinterpret_cast<const IMAGE_DOS_HEADER*>(crashPayloadBase)->e_lfanew); crashPayloadSize = nt->OptionalHeader.SizeOfImage; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { crashPayloadSize = 0; }
+    crashGameAssemblyBase=reinterpret_cast<uintptr_t>(GetModuleHandleW(L"GameAssembly.dll"));
+    crashUnityPlayerBase=reinterpret_cast<uintptr_t>(GetModuleHandleW(L"UnityPlayer.dll"));
+    crashNtdllBase=reinterpret_cast<uintptr_t>(GetModuleHandleW(L"ntdll.dll"));
+    crashKernelBase=reinterpret_cast<uintptr_t>(GetModuleHandleW(L"KERNELBASE.dll"));
+    crashWinmmBase=reinterpret_cast<uintptr_t>(GetModuleHandleW(L"winmm.dll"));
+    DeleteFileW(crashLogPath); SetUnhandledExceptionFilter(WriteCrashLog);
 }
 
 
@@ -1146,19 +1240,27 @@ static void CacheUpdatedHealth(uintptr_t state) {
     InterlockedIncrement(&boxEspHealthUpdates);
 }
 void __fastcall hk_HealthApplyA(uintptr_t state, int a, int b, bool c, bool d, float e, const Il2CppMethod* method) {
+    RecordCrashBreadcrumb(CrashHealthAEnter, state, static_cast<uintptr_t>(a));
     o_HealthApplyA(state, a, b, c, d, e, method);
+    RecordCrashBreadcrumb(CrashHealthAOriginalDone, state, static_cast<uintptr_t>(a));
     InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, b); CacheUpdatedHealth(state);
 }
 void __fastcall hk_HealthApplyB(uintptr_t state, int a, int b, bool c, bool d, float e, void* info, const Il2CppMethod* method) {
+    RecordCrashBreadcrumb(CrashHealthBEnter, state, static_cast<uintptr_t>(a));
     o_HealthApplyB(state, a, b, c, d, e, info, method);
+    RecordCrashBreadcrumb(CrashHealthBOriginalDone, state, static_cast<uintptr_t>(a));
     InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, b); CacheUpdatedHealth(state);
 }
 void __fastcall hk_HealthApplyC(uintptr_t state, int a, bool b, const Il2CppMethod* method) {
+    RecordCrashBreadcrumb(CrashHealthCEnter, state, static_cast<uintptr_t>(a));
     o_HealthApplyC(state, a, b, method);
+    RecordCrashBreadcrumb(CrashHealthCOriginalDone, state, static_cast<uintptr_t>(a));
     InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, -1); CacheUpdatedHealth(state);
 }
 void __fastcall hk_HealthApplyD(uintptr_t state, int a, bool b, const Il2CppMethod* method) {
+    RecordCrashBreadcrumb(CrashHealthDEnter, state, static_cast<uintptr_t>(a));
     o_HealthApplyD(state, a, b, method);
+    RecordCrashBreadcrumb(CrashHealthDOriginalDone, state, static_cast<uintptr_t>(a));
     InterlockedExchange(&boxEspHealthLastA, a); InterlockedExchange(&boxEspHealthLastB, -1); CacheUpdatedHealth(state);
 }
 
@@ -1224,11 +1326,15 @@ static void CacheConfirmedDamageResult(uintptr_t hitController, uintptr_t result
 }
 
 void __fastcall hk_PlayerHitConfirmedA(uintptr_t hitController, uintptr_t result, const Il2CppMethod* method) {
+    RecordCrashBreadcrumb(CrashHitConfirmedAEnter, hitController, result);
     o_PlayerHitConfirmedA(hitController, result, method);
+    RecordCrashBreadcrumb(CrashHitConfirmedAOriginalDone, hitController, result);
     CacheConfirmedDamageResult(hitController, result);
 }
 void __fastcall hk_PlayerHitConfirmedB(uintptr_t hitController, uintptr_t result, const Il2CppMethod* method) {
+    RecordCrashBreadcrumb(CrashHitConfirmedBEnter, hitController, result);
     o_PlayerHitConfirmedB(hitController, result, method);
+    RecordCrashBreadcrumb(CrashHitConfirmedBOriginalDone, hitController, result);
     CacheConfirmedDamageResult(hitController, result);
 }
 Il2CppClass* g_GlovesManagerClass = nullptr;
@@ -1647,7 +1753,9 @@ static DWORD WINAPI HitSoundWorker(LPVOID)
             // One persistent worker serializes playback. SND_ASYNC created overlapping
             // WinMM/AudioSes workers; the captured crash was an invalid callback on one
             // of those audio threads after repeated hits.
+            RecordCrashBreadcrumb(CrashHitSoundPlayEnter);
             PlaySoundW(path, nullptr, SND_SYNC | SND_FILENAME | SND_NODEFAULT);
+            RecordCrashBreadcrumb(CrashHitSoundPlayDone);
         }
     }
     return 0;
@@ -1669,6 +1777,7 @@ static bool InitializeHitSoundWorker()
 
 static bool QueueSelectedHitSound()
 {
+    RecordCrashBreadcrumb(CrashHitSoundQueued);
     return hitSoundEvent && SetEvent(hitSoundEvent) != FALSE;
 }
 
@@ -3446,7 +3555,9 @@ static void SetCorpseRendererVisibleUnsafe(uintptr_t renderer, bool visible)
 void __fastcall hk_RagdollActivate(uintptr_t ragdoll, uintptr_t biped, Vector3 velocity,
     bool c, void* skinName, uintptr_t shotData, bool f, bool g, const Il2CppMethod* method)
 {
+    RecordCrashBreadcrumb(CrashRagdollActivateEnter, ragdoll, shotData);
     o_RagdollActivate(ragdoll, biped, velocity, c, skinName, shotData, f, g, method);
+    RecordCrashBreadcrumb(CrashRagdollActivateOriginalDone, ragdoll, shotData);
     if (!keyValidated || !freezeCorpsesEnabled || !ragdoll) return;
     FrozenCorpseEntry corpse{};
     corpse.ragdoll = ragdoll;
@@ -3478,11 +3589,13 @@ void __fastcall hk_RagdollActivate(uintptr_t ragdoll, uintptr_t biped, Vector3 v
         RestoreFrozenCorpseMaterial(oldCorpse);
         SetCorpseRigidbodiesFrozen(oldCorpse, false);
     }
+    RecordCrashBreadcrumb(CrashRagdollActivateCustomDone, ragdoll, shotData);
 }
 
 void __fastcall hk_RagdollManagerRelease(uintptr_t manager, uintptr_t ragdoll,
     const Il2CppMethod* method)
 {
+    RecordCrashBreadcrumb(CrashRagdollReleaseEnter, manager, ragdoll);
     if (keyValidated && freezeCorpsesEnabled && ragdoll) {
         const ULONGLONG now = GetTickCount64();
         AcquireSRWLockExclusive(&frozenCorpseLock);
@@ -3491,11 +3604,13 @@ void __fastcall hk_RagdollManagerRelease(uintptr_t manager, uintptr_t ragdoll,
             corpse.manager = manager;
             corpse.releaseRequested = true;
             ReleaseSRWLockExclusive(&frozenCorpseLock);
+            RecordCrashBreadcrumb(CrashRagdollReleaseDeferred, manager, ragdoll);
             return;
         }
         ReleaseSRWLockExclusive(&frozenCorpseLock);
     }
     o_RagdollManagerRelease(manager, ragdoll, method);
+    RecordCrashBreadcrumb(CrashRagdollReleaseOriginalDone, manager, ragdoll);
 }
 
 static void ApplyFrozenCorpseFadeUnsafe(uintptr_t material, uintptr_t renderer,
@@ -3550,6 +3665,7 @@ static void UpdateFrozenCorpses()
     AcquireSRWLockExclusive(&frozenCorpseLock);
     for (auto it = frozenCorpses.begin(); it != frozenCorpses.end();) {
         if (!freezeCorpsesEnabled || now >= it->releaseAt) {
+            RecordCrashBreadcrumb(CrashCorpseFinish, it->ragdoll, it->manager);
             finished.push_back(std::move(*it));
             it = frozenCorpses.erase(it);
             continue;
@@ -3592,8 +3708,11 @@ static void UpdateFrozenCorpses()
 
     // Native release remains last and outside the lock: it can synchronously reuse the
     // pooled ragdoll and enter hk_RagdollActivate again.
-    for (const auto& release : releases)
+    for (const auto& release : releases) {
+        RecordCrashBreadcrumb(CrashCorpseNativeReleaseEnter, release.first, release.second);
         o_RagdollManagerRelease(release.first, release.second, nullptr);
+        RecordCrashBreadcrumb(CrashCorpseNativeReleaseDone, release.first, release.second);
+    }
 }
 
 void __fastcall hk_GameObject_SetActive(uintptr_t instance, bool active)
@@ -4902,9 +5021,13 @@ static void ProcessLocalHitUnsafe(uintptr_t instance, void* victim,
 void __fastcall hk_HitMarkerView_LocalHit(uintptr_t instance, void* victim,
     uintptr_t shotData, const Il2CppMethod* method)
 {
+    RecordCrashBreadcrumb(CrashLocalHitEnter, reinterpret_cast<uintptr_t>(victim), shotData);
     __try { ProcessLocalHitUnsafe(instance, victim, shotData); }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
+    RecordCrashBreadcrumb(CrashLocalHitCustomDone, reinterpret_cast<uintptr_t>(victim), shotData);
+    RecordCrashBreadcrumb(CrashLocalHitOriginalEnter, reinterpret_cast<uintptr_t>(victim), shotData);
     o_HitMarkerView_LocalHit(instance, victim, shotData, method);
+    RecordCrashBreadcrumb(CrashLocalHitOriginalDone, reinterpret_cast<uintptr_t>(victim), shotData);
 }
 
 static void ProcessHitMarkerShowUnsafe(uintptr_t instance, bool value)
@@ -5267,6 +5390,7 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
 HitCasterCer __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction,
     float maxDistance, HitCasterCeq hitParameters, const Il2CppMethod* method)
 {
+    RecordCrashBreadcrumb(CrashCastEnter, hitParameters.damageDefinition, reinterpret_cast<uintptr_t>(method));
     bool applyVisibleSnapAfterCast = false;
     Vector3 visibleSnapDirection;
     if (insideLocalGunFire) {
@@ -5322,8 +5446,10 @@ HitCasterCer __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction,
     const bool markLocalHitCast = keyValidated &&
         NeedsLocalHitCastTracking() && insideLocalGunFire;
     if (markLocalHitCast) ++activeLocalHitCastDepth;
+    RecordCrashBreadcrumb(CrashCastOriginalEnter, hitParameters.damageDefinition, reinterpret_cast<uintptr_t>(method));
     const HitCasterCer result = o_HitCaster_Cast(
         origin, direction, maxDistance, hitParameters, method);
+    RecordCrashBreadcrumb(CrashCastOriginalDone, result.hitDictionary, result.penetrations);
     if (markLocalHitCast) --activeLocalHitCastDepth;
 
     const float castLength = result.start.Distance(result.end);
@@ -5378,6 +5504,7 @@ HitCasterCer __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction,
             ReleaseSRWLockExclusive(&bulletTracerLock);
         }
     }
+    RecordCrashBreadcrumb(CrashCastExit, result.hitDictionary, result.penetrations);
     return result;
 }
 
@@ -9263,7 +9390,7 @@ DWORD WINAPI HackThread(LPVOID)
 
 {
 
-    InitializeCrashDumpCapture();
+    InitializeCrashLogCapture();
     InitializeHitSoundWorker();
     MH_Initialize();
 
