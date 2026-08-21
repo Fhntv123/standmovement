@@ -5367,27 +5367,49 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
             if (!IsNativePenetrableSurface(entrySurface)) return false;
 
             const Vector3 reverseDirection(-direction.x, -direction.y, -direction.z);
+            const Vector3 reverseOrigin(
+                origin.x + direction.x * (distance + 0.35f),
+                origin.y + direction.y * (distance + 0.35f),
+                origin.z + direction.z * (distance + 0.35f));
+            // A reverse single-hit starts at/inside the selected enemy and commonly
+            // returns that PlayerHitbox, not the wall exit. Enumerate all reverse hits,
+            // skip every player collider, and choose the closest matching back face.
+            Il2CppArray* reverseHits = o_Physics_RaycastAll(
+                reverseOrigin, reverseDirection, distance + 0.70f, -1, 2, nullptr);
+            const uintptr_t reverseArray = reinterpret_cast<uintptr_t>(reverseHits);
+            const size_t reverseCount = reverseArray ?
+                *reinterpret_cast<size_t*>(reverseArray + 0x18) : 0;
+            if (!reverseArray || reverseCount == 0 || reverseCount > 128)
+                return false;
+            bool haveExit = false;
+            float closestExitDistance = 3.402823466e+38F;
             RaycastHitNative exitHit = {};
-            if (!o_Physics_RaycastHit(
-                    Vector3(origin.x + direction.x * distance,
-                        origin.y + direction.y * distance,
-                        origin.z + direction.z * distance),
-                    reverseDirection, &exitHit, distance + 0.35f, -1, 1, nullptr))
-                return false;
-            const uintptr_t exitCollider =
-                o_RaycastHit_get_collider(&exitHit, nullptr);
-            if (!exitCollider) return false;
-            const uintptr_t exitPlayer = o_Component_GetInParent(
-                exitCollider,
-                reinterpret_cast<uintptr_t>(g_PlayerControllerReflectionType),
-                true, nullptr);
-            if (exitPlayer) return false;
-            Il2CppString* exitTag = o_Component_get_tag(exitCollider, nullptr);
-            const int exitSurface = exitTag ?
-                o_SurfaceType_FromTag(exitTag, nullptr) : 0;
-            if (exitSurface != entrySurface ||
-                !IsNativePenetrableSurface(exitSurface))
-                return false;
+            for (size_t i = 0; i < reverseCount; ++i) {
+                RaycastHitNative* candidateExit = reinterpret_cast<RaycastHitNative*>(
+                    reverseArray + 0x20 + i * sizeof(RaycastHitNative));
+                if (!isfinite(candidateExit->distance) || candidateExit->distance < 0.0f ||
+                    candidateExit->distance >= closestExitDistance)
+                    continue;
+                const uintptr_t candidateCollider =
+                    o_RaycastHit_get_collider(candidateExit, nullptr);
+                if (!candidateCollider) continue;
+                const uintptr_t candidatePlayer = o_Component_GetInParent(
+                    candidateCollider,
+                    reinterpret_cast<uintptr_t>(g_PlayerControllerReflectionType),
+                    true, nullptr);
+                if (candidatePlayer) continue;
+                Il2CppString* candidateTag =
+                    o_Component_get_tag(candidateCollider, nullptr);
+                const int candidateSurface = candidateTag ?
+                    o_SurfaceType_FromTag(candidateTag, nullptr) : 0;
+                if (candidateSurface != entrySurface ||
+                    !IsNativePenetrableSurface(candidateSurface))
+                    continue;
+                exitHit = *candidateExit;
+                closestExitDistance = candidateExit->distance;
+                haveExit = true;
+            }
+            if (!haveExit) return false;
             const float thickness = entryHit.point.Distance(exitHit.point);
             return NativeWallDamagePasses(castParameters, entrySurface,
                 thickness, distance);
