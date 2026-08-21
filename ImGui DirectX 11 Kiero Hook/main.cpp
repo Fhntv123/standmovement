@@ -1823,7 +1823,7 @@ static bool ReadWaveFileForPlayback(const wchar_t* path,
             haveFormat = format.nChannels > 0 && format.nSamplesPerSec > 0 &&
                 format.nBlockAlign > 0 &&
                 (format.wFormatTag == WAVE_FORMAT_PCM ||
-                 format.wFormatTag == WAVE_FORMAT_IEEE_FLOAT);
+                 format.wFormatTag == 0x0003); // WAVE_FORMAT_IEEE_FLOAT
         }
         else if (memcmp(chunk, "data", 4) == 0 && chunkSize > 0) {
             audioData = bytes.data() + dataOffset;
