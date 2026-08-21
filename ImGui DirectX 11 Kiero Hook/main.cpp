@@ -410,6 +410,9 @@ struct Matrix16 {
 #define OFFSET_COMPONENT_GET_IN_PARENT                0x3474410
 #define OFFSET_COMPONENT_GET_TAG                      0x3474760
 #define OFFSET_SURFACE_TYPE_FROM_TAG                  0xA2A1B0
+#define OFFSET_SURFACE_PENETRATION_COST                0xA29800 // ces.vxz(cex,float)
+#define OFFSET_SURFACE_CAN_PENETRATE                   0xA29900 // ces.vya(cex)
+#define OFFSET_CEQ_DAMAGE_AT_DISTANCE                  0xA291D0 // ceq.vxm(float)
 #define OFFSET_COMPONENT_GET_IN_CHILDREN              0x3474380
 #define OFFSET_TRANSFORM_GET_PARENT                   0x348AA60
 #define OFFSET_MATERIAL_GET_COLOR                   0x3450820
@@ -2490,6 +2493,9 @@ uintptr_t(__fastcall* o_RaycastHit_get_collider)(RaycastHitNative*, const Il2Cpp
 uintptr_t(__fastcall* o_Component_GetInParent)(uintptr_t, uintptr_t, bool, const Il2CppMethod*) = nullptr;
 Il2CppString*(__fastcall* o_Component_get_tag)(uintptr_t, const Il2CppMethod*) = nullptr;
 int(__fastcall* o_SurfaceType_FromTag)(Il2CppString*, const Il2CppMethod*) = nullptr;
+float(__fastcall* o_Surface_PenetrationCost)(int, float, const Il2CppMethod*) = nullptr;
+bool(__fastcall* o_Surface_CanPenetrate)(int, const Il2CppMethod*) = nullptr;
+int(__fastcall* o_Ceq_DamageAtDistance)(const HitCasterCeqAbi*, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Component_GetInChildren)(uintptr_t, uintptr_t, bool, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Transform_get_parent)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GameObject_SetActive)(uintptr_t, bool) = nullptr;
@@ -5291,16 +5297,39 @@ static bool ReadDump1NativeTargetDamage(const HitCasterCer& castResult,
     return false;
 }
 
-static bool IsStrictlyPenetrableSurface(int type)
+static bool IsNativePenetrableSurface(int type)
 {
-    // dump1 cex. Keep this in sync with the project's tagged penetrable-surface
-    // scanner; unknown, character, ground, water and solid/no-hole types reject.
-    return (type >= 1 && type <= 9) || type == 11 || type == 12 ||
-        type == 16 || type == 17 || type == 22 || type == 26;
+    if (type <= 0 || !o_Surface_CanPenetrate) return false;
+    __try { return o_Surface_CanPenetrate(type, nullptr); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static bool NativeWallDamagePasses(const HitCasterCeq* castParameters,
+    int surfaceType, float thickness, float targetDistance)
+{
+    if (!castParameters) return true; // VEH captures ceq on this shot for later shots.
+    if (!o_Surface_PenetrationCost || !o_Ceq_DamageAtDistance ||
+        !isfinite(thickness) || thickness <= 0.0f)
+        return false;
+    __try {
+        HitCasterCeqAbi abi = {};
+        abi.damageDefinition = castParameters->damageDefinition;
+        abi.valueA = castParameters->valueA;
+        abi.valueB = castParameters->valueB;
+        abi.valueC = castParameters->valueC;
+        abi.padding = castParameters->padding;
+        const float penetrationCost = o_Surface_PenetrationCost(
+            surfaceType, thickness, nullptr);
+        const int damage = o_Ceq_DamageAtDistance(&abi, targetDistance, nullptr);
+        return isfinite(penetrationCost) && penetrationCost >= 0.0f &&
+            penetrationCost <= static_cast<float>(castParameters->valueC) &&
+            damage >= static_cast<int>(aimbotAutoWallMinDamage);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
 static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float distance,
-    void* targetPlayer, bool allowWallbang)
+    void* targetPlayer, bool allowWallbang, const HitCasterCeq* castParameters)
 {
     if (!targetPlayer || !o_Physics_RaycastAll || !o_RaycastHit_get_collider ||
         !o_Component_GetInParent || !g_PlayerControllerReflectionType)
@@ -5309,34 +5338,59 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
     if (!localPlayer) return false;
     __try {
         if (allowWallbang) {
-            // Match the working penetrable-surface scanner: inspect only the nearest
-            // physical obstruction. A tagged penetrable entrance is enough to pass
-            // the direction to the one real HitCaster; it decides exits and damage.
-            // This avoids both previous failures: rejecting multi-collider walls and
-            // redirecting through a solid/unknown first surface.
+            // Use the game's own surface classification and penetration formulas.
+            // The forward hit is the wall entrance; the closest non-player reverse
+            // hit from the target is the exit. This rejects solid and over-thick walls
+            // without executing a side-effectful HitCaster probe.
             if (!o_Physics_RaycastHit || !o_Component_get_tag ||
-                !o_SurfaceType_FromTag)
+                !o_SurfaceType_FromTag || !o_Surface_CanPenetrate)
                 return false;
-            RaycastHitNative firstHit = {};
-            if (!o_Physics_RaycastHit(origin, direction, &firstHit,
+            RaycastHitNative entryHit = {};
+            if (!o_Physics_RaycastHit(origin, direction, &entryHit,
                     distance + 0.35f, -1, 1, nullptr))
                 return true;
-            if (!isfinite(firstHit.distance) || firstHit.distance < 0.0f)
+            if (!isfinite(entryHit.distance) || entryHit.distance < 0.0f)
                 return false;
-            const uintptr_t firstCollider =
-                o_RaycastHit_get_collider(&firstHit, nullptr);
-            if (!firstCollider) return false;
-            const uintptr_t firstPlayer = o_Component_GetInParent(
-                firstCollider,
+            const uintptr_t entryCollider =
+                o_RaycastHit_get_collider(&entryHit, nullptr);
+            if (!entryCollider) return false;
+            const uintptr_t entryPlayer = o_Component_GetInParent(
+                entryCollider,
                 reinterpret_cast<uintptr_t>(g_PlayerControllerReflectionType),
                 true, nullptr);
-            if (firstPlayer)
-                return firstPlayer == localPlayer ||
-                    firstPlayer == reinterpret_cast<uintptr_t>(targetPlayer);
-            Il2CppString* firstTag = o_Component_get_tag(firstCollider, nullptr);
-            const int firstSurface = firstTag ?
-                o_SurfaceType_FromTag(firstTag, nullptr) : 0;
-            return IsStrictlyPenetrableSurface(firstSurface);
+            if (entryPlayer)
+                return entryPlayer == localPlayer ||
+                    entryPlayer == reinterpret_cast<uintptr_t>(targetPlayer);
+            Il2CppString* entryTag = o_Component_get_tag(entryCollider, nullptr);
+            const int entrySurface = entryTag ?
+                o_SurfaceType_FromTag(entryTag, nullptr) : 0;
+            if (!IsNativePenetrableSurface(entrySurface)) return false;
+
+            const Vector3 reverseDirection(-direction.x, -direction.y, -direction.z);
+            RaycastHitNative exitHit = {};
+            if (!o_Physics_RaycastHit(
+                    Vector3(origin.x + direction.x * distance,
+                        origin.y + direction.y * distance,
+                        origin.z + direction.z * distance),
+                    reverseDirection, &exitHit, distance + 0.35f, -1, 1, nullptr))
+                return false;
+            const uintptr_t exitCollider =
+                o_RaycastHit_get_collider(&exitHit, nullptr);
+            if (!exitCollider) return false;
+            const uintptr_t exitPlayer = o_Component_GetInParent(
+                exitCollider,
+                reinterpret_cast<uintptr_t>(g_PlayerControllerReflectionType),
+                true, nullptr);
+            if (exitPlayer) return false;
+            Il2CppString* exitTag = o_Component_get_tag(exitCollider, nullptr);
+            const int exitSurface = exitTag ?
+                o_SurfaceType_FromTag(exitTag, nullptr) : 0;
+            if (exitSurface != entrySurface ||
+                !IsNativePenetrableSurface(exitSurface))
+                return false;
+            const float thickness = entryHit.point.Distance(exitHit.point);
+            return NativeWallDamagePasses(castParameters, entrySurface,
+                thickness, distance);
         }
 
         // Target ownership is already known from CollectPlayers and the ray limit is
@@ -5471,12 +5525,12 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
         bool reachable = false;
         if (aimbotAutoWall)
             reachable = ValidateAimbotRayPath(origin, candidate, distance, player,
-                true);
+                true, castParameters);
         else if (!forceValidatedPath && !aimbotVisibleCheck)
             reachable = true;
         else
             reachable = ValidateAimbotRayPath(origin, candidate, distance, player,
-                false);
+                false, castParameters);
         if (!reachable) continue;
         ++visibleCount;
         if (distance < bestDistance) {
@@ -5825,6 +5879,20 @@ static LONG WINAPI HitCasterBreakpointHandler(EXCEPTION_POINTERS* info)
             hitCasterBreakpointAddress) {
         *reinterpret_cast<volatile uint8_t*>(hitCasterBreakpointAddress) =
             hitCasterOriginalByte;
+        const HitCasterCeqAbi* liveCeq = *reinterpret_cast<const HitCasterCeqAbi**>(
+            context->Rsp + 0x28);
+        const Il2CppMethod* liveMethod = *reinterpret_cast<const Il2CppMethod**>(
+            context->Rsp + 0x30);
+        if (insideLocalGunFire && liveCeq) {
+            aimbotLastCeq.damageDefinition = liveCeq->damageDefinition;
+            aimbotLastCeq.valueA = liveCeq->valueA;
+            aimbotLastCeq.valueB = liveCeq->valueB;
+            aimbotLastCeq.valueC = liveCeq->valueC;
+            aimbotLastCeq.padding = liveCeq->padding;
+            aimbotLastCeqValid = liveCeq->damageDefinition != 0;
+            aimbotLastCeqGun = activeLocalWeaponController;
+            aimbotLastHitCasterMethod = liveMethod;
+        }
         if (hitCasterDirectionPending && context->R8) {
             HitCasterVector3Abi* direction =
                 reinterpret_cast<HitCasterVector3Abi*>(context->R8);
@@ -5926,8 +5994,11 @@ static bool PrepareHitCasterDirectionForFire()
         }
         if (haveOrigin && (aimbotEnabled || visibleAimbotEnabled)) {
             Vector3 direction;
-            if (FindVisibleAimbotDirection(origin, false, nullptr, nullptr,
-                    direction)) {
+            const bool haveCachedCast = aimbotLastCeqValid &&
+                aimbotLastCeqGun == activeLocalWeaponController;
+            const HitCasterCeq* cached = haveCachedCast ? &aimbotLastCeq : nullptr;
+            if (FindVisibleAimbotDirection(origin, false, cached,
+                    aimbotLastHitCasterMethod, direction)) {
                 hitCasterPendingDirection = ToHitCasterVector3Abi(direction);
                 hitCasterDirectionPending = true;
                 localShotPendingOrigin = origin;
@@ -9899,6 +9970,9 @@ DWORD WINAPI HackThread(LPVOID)
     o_Component_GetInParent = (uintptr_t(__fastcall*)(uintptr_t, uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_COMPONENT_GET_IN_PARENT);
     o_Component_get_tag = (Il2CppString*(__fastcall*)(uintptr_t, const Il2CppMethod*))(base + OFFSET_COMPONENT_GET_TAG);
     o_SurfaceType_FromTag = (int(__fastcall*)(Il2CppString*, const Il2CppMethod*))(base + OFFSET_SURFACE_TYPE_FROM_TAG);
+    o_Surface_PenetrationCost = (float(__fastcall*)(int, float, const Il2CppMethod*))(base + OFFSET_SURFACE_PENETRATION_COST);
+    o_Surface_CanPenetrate = (bool(__fastcall*)(int, const Il2CppMethod*))(base + OFFSET_SURFACE_CAN_PENETRATE);
+    o_Ceq_DamageAtDistance = (int(__fastcall*)(const HitCasterCeqAbi*, float, const Il2CppMethod*))(base + OFFSET_CEQ_DAMAGE_AT_DISTANCE);
     o_Component_GetInChildren = (uintptr_t(__fastcall*)(uintptr_t, uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_COMPONENT_GET_IN_CHILDREN);
     o_Transform_get_parent = (uintptr_t(__fastcall*)(uintptr_t, const Il2CppMethod*))(base + OFFSET_TRANSFORM_GET_PARENT);
     o_GameObject_get_activeInHierarchy = (bool(__fastcall*)(uintptr_t))(base + OFFSET_GAMEOBJECT_GET_ACTIVEINHIERARCHY);
