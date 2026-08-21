@@ -786,6 +786,8 @@ SRWLOCK hitSoundLock = SRWLOCK_INIT;
 uintptr_t hitSoundLastResult = 0;
 ULONGLONG hitSoundLastResultAt = 0;
 volatile LONG pendingHitSound = 0;
+HANDLE hitSoundEvent = nullptr;
+HANDLE hitSoundThread = nullptr;
 char hitSoundStatus[128] = "No .wav files found";
 
 bool hitMarkerEnabled = false;
@@ -1615,23 +1617,59 @@ static void RefreshHitSounds()
         strcpy_s(hitSoundStatus, "Put .wav files in Documents\\ze0nware\\sound");
 }
 
-static bool PlaySelectedHitSound()
+static bool CopySelectedHitSoundPath(wchar_t* path, size_t pathCount)
 {
-    wchar_t path[MAX_PATH] = {};
+    if (!path || pathCount < 2) return false;
+    path[0] = L'\0';
     bool haveSound = false;
     AcquireSRWLockShared(&hitSoundLock);
     if (hitSoundSelectedIndex >= 0 &&
         hitSoundSelectedIndex < static_cast<int>(hitSoundFiles.size())) {
         const std::wstring fullPath = GetHitSoundDirectory() + L"\\" +
             hitSoundFiles[static_cast<size_t>(hitSoundSelectedIndex)];
-        if (fullPath.size() < MAX_PATH) {
-            wcscpy_s(path, fullPath.c_str());
+        if (fullPath.size() < pathCount) {
+            wcscpy_s(path, pathCount, fullPath.c_str());
             haveSound = true;
         }
     }
     ReleaseSRWLockShared(&hitSoundLock);
-    return haveSound && PlaySoundW(path, nullptr,
-        SND_ASYNC | SND_FILENAME | SND_NODEFAULT) != FALSE;
+    return haveSound;
+}
+
+static DWORD WINAPI HitSoundWorker(LPVOID)
+{
+    while (!unloadRequested) {
+        const DWORD waitResult = WaitForSingleObject(hitSoundEvent, 250);
+        if (waitResult != WAIT_OBJECT_0) continue;
+        if (unloadRequested) break;
+        wchar_t path[MAX_PATH] = {};
+        if (CopySelectedHitSoundPath(path, MAX_PATH)) {
+            // One persistent worker serializes playback. SND_ASYNC created overlapping
+            // WinMM/AudioSes workers; the captured crash was an invalid callback on one
+            // of those audio threads after repeated hits.
+            PlaySoundW(path, nullptr, SND_SYNC | SND_FILENAME | SND_NODEFAULT);
+        }
+    }
+    return 0;
+}
+
+static bool InitializeHitSoundWorker()
+{
+    if (hitSoundEvent && hitSoundThread) return true;
+    hitSoundEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!hitSoundEvent) return false;
+    hitSoundThread = CreateThread(nullptr, 0, HitSoundWorker, nullptr, 0, nullptr);
+    if (!hitSoundThread) {
+        CloseHandle(hitSoundEvent);
+        hitSoundEvent = nullptr;
+        return false;
+    }
+    return true;
+}
+
+static bool QueueSelectedHitSound()
+{
+    return hitSoundEvent && SetEvent(hitSoundEvent) != FALSE;
 }
 
 static std::string SanitizeConfigName(const char* input)
@@ -4651,7 +4689,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
         SendPendingPixelSurfChatMessageUnsafe();
     UpdateFrozenCorpses();
     if (InterlockedExchange(&pendingHitSound, 0))
-        PlaySelectedHitSound();
+        QueueSelectedHitSound();
     UpdatePenetrableSurfaceVisualization();
     UpdateVisibleAimbotCamera();
     InfinityAmmoLoop();
@@ -9073,7 +9111,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             }
             if (ImGui::Button("Refresh Hit Sounds")) RefreshHitSounds();
             ImGui::SameLine();
-            if (ImGui::Button("Test Hit Sound")) PlaySelectedHitSound();
+            if (ImGui::Button("Test Hit Sound")) QueueSelectedHitSound();
             ImGui::TextDisabled("%s", hitSoundStatus);
         }
         if (ImGui::Checkbox("Hit Log", &hitLogEnabled)) {
@@ -9226,6 +9264,7 @@ DWORD WINAPI HackThread(LPVOID)
 {
 
     InitializeCrashDumpCapture();
+    InitializeHitSoundWorker();
     MH_Initialize();
 
     // IL2CPP init: locate dump1 classes and singleton backing fields
