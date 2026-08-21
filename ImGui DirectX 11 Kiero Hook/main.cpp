@@ -5308,6 +5308,37 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
     const uintptr_t localPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
     if (!localPlayer) return false;
     __try {
+        if (allowWallbang) {
+            // Match the working penetrable-surface scanner: inspect only the nearest
+            // physical obstruction. A tagged penetrable entrance is enough to pass
+            // the direction to the one real HitCaster; it decides exits and damage.
+            // This avoids both previous failures: rejecting multi-collider walls and
+            // redirecting through a solid/unknown first surface.
+            if (!o_Physics_RaycastHit || !o_Component_get_tag ||
+                !o_SurfaceType_FromTag)
+                return false;
+            RaycastHitNative firstHit = {};
+            if (!o_Physics_RaycastHit(origin, direction, &firstHit,
+                    distance + 0.35f, -1, 1, nullptr))
+                return true;
+            if (!isfinite(firstHit.distance) || firstHit.distance < 0.0f)
+                return false;
+            const uintptr_t firstCollider =
+                o_RaycastHit_get_collider(&firstHit, nullptr);
+            if (!firstCollider) return false;
+            const uintptr_t firstPlayer = o_Component_GetInParent(
+                firstCollider,
+                reinterpret_cast<uintptr_t>(g_PlayerControllerReflectionType),
+                true, nullptr);
+            if (firstPlayer)
+                return firstPlayer == localPlayer ||
+                    firstPlayer == reinterpret_cast<uintptr_t>(targetPlayer);
+            Il2CppString* firstTag = o_Component_get_tag(firstCollider, nullptr);
+            const int firstSurface = firstTag ?
+                o_SurfaceType_FromTag(firstTag, nullptr) : 0;
+            return IsStrictlyPenetrableSurface(firstSurface);
+        }
+
         // Target ownership is already known from CollectPlayers and the ray limit is
         // the selected head position. Ignore trigger volumes here: using Collide made
         // invisible gameplay/volume triggers look like walls and reject clear shots.
@@ -5343,17 +5374,9 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
                 return false;
             }
             ++obstructionCount;
-            if (!allowWallbang || !o_Component_get_tag || !o_SurfaceType_FromTag)
-                return false;
-            Il2CppString* tag = o_Component_get_tag(collider, nullptr);
-            const int surface = tag ? o_SurfaceType_FromTag(tag, nullptr) : 0;
-            if (!IsStrictlyPenetrableSurface(surface)) return false;
+            return false;
         }
-        // One rendered wall can contain several physical child colliders. RaycastAll
-        // reports each one, while native HitCaster treats the assembly as one
-        // penetrable path and calculates the real penetration/damage during the only
-        // actual shot. Requiring exactly one collider rejected every such wall.
-        return obstructionCount == 0 || (allowWallbang && obstructionCount > 0);
+        return obstructionCount == 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
@@ -5441,15 +5464,14 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
         if (!isfinite(distance) || distance < 0.5f) continue;
         const Vector3 candidate(delta.x / distance, delta.y / distance, delta.z / distance);
 
-        // HitCaster is not a pure query. Never probe it while scanning candidates.
-        // Visible Check still requires a clear geometric path. Auto Wall, however,
-        // must pass the candidate direction to the one real native cast: only native
-        // HitCaster has the weapon penetration/damage state needed to decide whether
-        // that wall is actually penetrable. The old geometric wall gate rejected the
-        // direction before HitCaster could do any penetration work at all.
+        // Never probe HitCaster while scanning candidates. For Auto Wall, require
+        // the first physical obstruction to carry a known penetrable SurfaceType tag;
+        // then let the one real native HitCaster resolve exits and weapon damage.
+        // Solid/unknown entrance surfaces must never receive redirected aim.
         bool reachable = false;
         if (aimbotAutoWall)
-            reachable = true;
+            reachable = ValidateAimbotRayPath(origin, candidate, distance, player,
+                true);
         else if (!forceValidatedPath && !aimbotVisibleCheck)
             reachable = true;
         else
@@ -5719,8 +5741,8 @@ static ULONGLONG GetNativeAutoFireIntervalMs(uintptr_t gun)
 
 static bool HasVisibleTargetBeforeNativeFire(uintptr_t gun)
 {
-    // Visible targets are geometrically validated. With Auto Wall enabled, select a
-    // target direction and let the one real native HitCaster resolve penetration.
+    // Visible targets require a clear path. Auto Wall additionally requires tagged
+    // penetrable obstruction(s), then the one real HitCaster resolves actual damage.
     Vector3 origin;
     bool haveOrigin = false;
     __try {
@@ -5772,7 +5794,7 @@ void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command,
                 aimbotAutoFireNextDecisionAt = now;
                 InterlockedIncrement(&aimbotAutoFireRejected);
                 strcpy_s(aimbotStatus,
-                    "Auto Fire blocked: no target direction");
+                    "Auto Fire blocked: no direct or penetrable path");
             }
         }
     }
