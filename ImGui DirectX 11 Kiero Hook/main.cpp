@@ -487,6 +487,8 @@ bool showTrail = false;
 
 bool cameraFovEnabled = false;
 float cameraFov = 90.0f;
+bool scopedFovEnabled = false;
+float scopedFov = 40.0f;
 bool armsFovEnabled = false;
 float armsFov = 45.0f;
 bool weaponViewModelEnabled = false;
@@ -800,6 +802,7 @@ float customScopeGap = 0.0f;
 float customScopeThickness = 1.0f;
 bool customScopeShadow = true;
 bool customScopeReticleVisible = false;
+bool sniperScopeActive = false;
 uintptr_t liveAimView = 0;
 uintptr_t liveHudLocalPlayer = 0;
 uintptr_t sniperSightObject = 0;
@@ -1700,7 +1703,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(bulletTracerEnabled); SAVE_FLOAT(bulletTracerDuration); SAVE_FLOAT(bulletTracerThickness);
     SAVE_BOOL(bulletImpactsEnabled); SAVE_FLOAT(bulletImpactsDuration); SAVE_FLOAT(bulletImpactsSize);
     SAVE_BOOL(showVelocity); SAVE_BOOL(showTrail); SAVE_INT(maxTrailPoints); SAVE_FLOAT(trailMinDistance);
-    SAVE_BOOL(cameraFovEnabled); SAVE_FLOAT(cameraFov); SAVE_BOOL(armsFovEnabled); SAVE_FLOAT(armsFov);
+    SAVE_BOOL(cameraFovEnabled); SAVE_FLOAT(cameraFov); SAVE_BOOL(scopedFovEnabled); SAVE_FLOAT(scopedFov); SAVE_BOOL(armsFovEnabled); SAVE_FLOAT(armsFov);
     SAVE_BOOL(weaponViewModelEnabled); SAVE_FLOAT(weaponViewModelOffsetX); SAVE_FLOAT(weaponViewModelOffsetY); SAVE_FLOAT(weaponViewModelOffsetZ);
     SAVE_BOOL(viewModelEnabled); SAVE_FLOAT(viewModelOffsetX); SAVE_FLOAT(viewModelOffsetY); SAVE_FLOAT(viewModelOffsetZ);
     SAVE_FLOAT(aimbotFov); SAVE_FLOAT(visibleAimbotHoldMs);
@@ -1793,7 +1796,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(bulletTracerEnabled); LOAD_FLOAT(bulletTracerDuration); LOAD_FLOAT(bulletTracerThickness);
     LOAD_BOOL(bulletImpactsEnabled); LOAD_FLOAT(bulletImpactsDuration); LOAD_FLOAT(bulletImpactsSize);
     LOAD_BOOL(showVelocity); LOAD_BOOL(showTrail); LOAD_INT(maxTrailPoints); LOAD_FLOAT(trailMinDistance);
-    LOAD_BOOL(cameraFovEnabled); LOAD_FLOAT(cameraFov); LOAD_BOOL(armsFovEnabled); LOAD_FLOAT(armsFov);
+    LOAD_BOOL(cameraFovEnabled); LOAD_FLOAT(cameraFov); LOAD_BOOL(scopedFovEnabled); LOAD_FLOAT(scopedFov); LOAD_BOOL(armsFovEnabled); LOAD_FLOAT(armsFov);
     LOAD_BOOL(weaponViewModelEnabled); LOAD_FLOAT(weaponViewModelOffsetX); LOAD_FLOAT(weaponViewModelOffsetY); LOAD_FLOAT(weaponViewModelOffsetZ);
     LOAD_BOOL(viewModelEnabled); LOAD_FLOAT(viewModelOffsetX); LOAD_FLOAT(viewModelOffsetY); LOAD_FLOAT(viewModelOffsetZ);
     LOAD_FLOAT(aimbotFov); LOAD_FLOAT(visibleAimbotHoldMs);
@@ -1849,6 +1852,8 @@ static bool LoadConfig(const char* requestedName)
     if (customScopeThickness > 10.0f) customScopeThickness = 10.0f;
     if (!isfinite(cameraFov) || cameraFov < 30.0f) cameraFov = 30.0f;
     if (cameraFov > 150.0f) cameraFov = 150.0f;
+    if (!isfinite(scopedFov) || scopedFov < 5.0f) scopedFov = 5.0f;
+    if (scopedFov > 120.0f) scopedFov = 120.0f;
     if (!isfinite(armsFov) || armsFov < 20.0f) armsFov = 20.0f;
     if (armsFov > 120.0f) armsFov = 120.0f;
     if (!isfinite(weaponViewModelOffsetX)) weaponViewModelOffsetX = 0.0f;
@@ -2893,8 +2898,12 @@ void __fastcall hk_Camera_set_fieldOfView(uintptr_t camera, float value)
         const uintptr_t armsCamera = GetLocalArmsCameraUnsafe();
         if (armsFovEnabled && camera == armsCamera)
             value = armsFov;
-        else if (cameraFovEnabled && camera == GetCamera())
-            value = cameraFov;
+        else if (camera == GetCamera()) {
+            if (scopedFovEnabled && sniperScopeActive)
+                value = scopedFov;
+            else if (cameraFovEnabled)
+                value = cameraFov;
+        }
     }
     o_Camera_set_fieldOfView(camera, value);
 }
@@ -2902,10 +2911,13 @@ void __fastcall hk_Camera_set_fieldOfView(uintptr_t camera, float value)
 void ApplyCameraFov()
 {
     if (!o_Camera_set_fieldOfView) return;
-    const uintptr_t mainCamera = cameraFovEnabled ? GetCamera() : 0;
+    const bool overrideMainCamera = cameraFovEnabled ||
+        (scopedFovEnabled && sniperScopeActive);
+    const uintptr_t mainCamera = overrideMainCamera ? GetCamera() : 0;
     const uintptr_t armsCamera = armsFovEnabled ? GetLocalArmsCameraUnsafe() : 0;
     __try {
-        if (mainCamera) o_Camera_set_fieldOfView(mainCamera, cameraFov);
+        if (mainCamera) o_Camera_set_fieldOfView(mainCamera,
+            scopedFovEnabled && sniperScopeActive ? scopedFov : cameraFov);
         if (armsCamera && armsCamera != mainCamera)
             o_Camera_set_fieldOfView(armsCamera, armsFov);
     }
@@ -3464,7 +3476,10 @@ static void UpdateFrozenCorpses()
 
 void __fastcall hk_GameObject_SetActive(uintptr_t instance, bool active)
 {
-    if (instance && instance == sniperSightObject) customScopeReticleVisible = removeScopeBorders && active;
+    if (instance && instance == sniperSightObject) {
+        sniperScopeActive = active;
+        customScopeReticleVisible = removeScopeBorders && active;
+    }
     o_GameObject_SetActive(instance, active);
 }
 
@@ -3494,16 +3509,21 @@ void __fastcall hk_AimView_UpdateSniperPanels(uintptr_t instance, float a, float
 static void ApplyScopeOverlayState()
 {
     if (!liveAimView || !sniperSightObject || !o_GameObject_get_activeInHierarchy || !o_CanvasGroup_set_alpha) {
+        sniperScopeActive = false;
         customScopeReticleVisible = false;
         return;
     }
     __try {
         const bool scoped = o_GameObject_get_activeInHierarchy(sniperSightObject);
+        sniperScopeActive = scoped;
         customScopeReticleVisible = removeScopeBorders && scoped;
         const uintptr_t scopeCanvasGroup = *(uintptr_t*)(liveAimView + 0xB0);
         if (scopeCanvasGroup) o_CanvasGroup_set_alpha(scopeCanvasGroup, removeScopeBorders && scoped ? 0.0f : 1.0f);
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { customScopeReticleVisible = false; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        sniperScopeActive = false;
+        customScopeReticleVisible = false;
+    }
 }
 
 static float NormalizeAngle360(float angle)
@@ -8829,6 +8849,15 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&infinityAmmoRestores, 0);
         }
         ImGui::Checkbox("No Spread", &noSpreadEnabled);
+        ImGui::Checkbox("AWP Scoped FOV", &scopedFovEnabled);
+        if (scopedFovEnabled) {
+            ImGui::SliderFloat("AWP Scoped FOV Slider", &scopedFov, 5.0f, 120.0f, "%.1f");
+            ImGui::SetNextItemWidth(120.0f);
+            if (ImGui::InputFloat("AWP Scoped FOV Value", &scopedFov, 1.0f, 10.0f, "%.1f")) {
+                if (scopedFov < 5.0f) scopedFov = 5.0f;
+                if (scopedFov > 120.0f) scopedFov = 120.0f;
+            }
+        }
         if (ImGui::Checkbox("Remove Scope Borders", &removeScopeBorders))
             InterlockedExchange(&pendingScopeOverlayRefresh, 1);
         if (removeScopeBorders) {
