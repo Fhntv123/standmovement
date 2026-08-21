@@ -2449,31 +2449,13 @@ void(__fastcall* o_ArmsLod_SetGloveMaterials)(uintptr_t, uintptr_t, uintptr_t, c
 void(__fastcall* o_Weaponry_TakeWeapon)(uintptr_t, uint8_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Command)(uintptr_t, uintptr_t, float, float, const Il2CppMethod*) = nullptr;
-// Win64 lowering for dump1 HitCaster.vxe<ceq>:
-// RCX=sret cer*, RDX=origin*, R8=direction*, XMM3=maxDistance,
-// stack[0x28]=ceq*, stack[0x30]=MethodInfo*. Express it directly instead of
-// asking MSVC to synthesize hidden aggregate ABI around a detour/trampoline.
-using HitCasterCastAbiFn = void(__fastcall*)(HitCasterCerAbi*,
-    const HitCasterVector3Abi*, const HitCasterVector3Abi*, float,
-    const HitCasterCeqAbi*, const Il2CppMethod*);
-HitCasterCastAbiFn o_HitCaster_Cast = nullptr;
-// dump1 vxd<ceq>: cer(Vector3, Vector3, ceq). With the hidden cer sret,
-// RCX=sret, RDX=origin*, R8=direction*, R9=ceq*, MethodInfo is stack[0x28].
+// Exact Win64 lowering for dump1 HitCaster.vxd<ceq>:
+// RCX=sret cer*, RDX=origin*, R8=direction*, R9=ceq*, MethodInfo=stack[0x28].
+// Only this specialized wrapper is detoured and called through its MinHook trampoline.
 using HitCasterEntryAbiFn = void(__fastcall*)(HitCasterCerAbi*,
     const HitCasterVector3Abi*, const HitCasterVector3Abi*,
     const HitCasterCeqAbi*, const Il2CppMethod*);
-struct HitCasterMethodInfoPrefix {
-    uintptr_t methodPointer;
-    uintptr_t virtualMethodPointer;
-    uintptr_t invokerMethod;
-    const char* name;
-    uintptr_t klass;
-    uintptr_t returnType;
-    uintptr_t parameters;
-    uintptr_t rgctxData;
-};
-static_assert(offsetof(HitCasterMethodInfoPrefix, rgctxData) == 0x38,
-    "dump1 MethodInfo rgctx offset changed");
+HitCasterEntryAbiFn o_HitCaster_Entry = nullptr;
 thread_local bool insideLocalGunFire = false;
 thread_local bool insideAutoFireRequest = false;
 thread_local int activeLocalHitCastDepth = 0;
@@ -5410,7 +5392,8 @@ static HitCasterCer CallOriginalHitCaster(Vector3 origin, Vector3 direction,
     const HitCasterVector3Abi originAbi = ToHitCasterVector3Abi(origin);
     const HitCasterVector3Abi directionAbi = ToHitCasterVector3Abi(direction);
     const HitCasterCeqAbi parametersAbi = ToHitCasterCeqAbi(hitParameters);
-    o_HitCaster_Cast(&rawResult, &originAbi, &directionAbi, maxDistance,
+    (void)maxDistance; // vxd<ceq> owns the native 300-unit distance.
+    o_HitCaster_Entry(&rawResult, &originAbi, &directionAbi,
         &parametersAbi, method);
     return FromHitCasterCerAbi(rawResult);
 }
@@ -5448,7 +5431,7 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
         const Vector3 candidate(delta.x / distance, delta.y / distance, delta.z / distance);
 
         bool reachable = false;
-        if (castParameters && castMethod && o_HitCaster_Cast) {
+        if (castParameters && castMethod && o_HitCaster_Entry) {
             // This is the old working algorithm ported to dump1's value ABI: let the
             // game calculate penetration and damage, then accept only the exact target.
             const HitCasterCer probe = CallOriginalHitCaster(
@@ -5633,37 +5616,22 @@ void __fastcall hk_HitCaster_Cast(HitCasterCerAbi* returnValue,
     *returnValue = rawResult;
 }
 
-static const Il2CppMethod* GetVxeMethodFromVxdMethodUnsafe(
-    const Il2CppMethod* vxdMethod)
-{
-    if (!vxdMethod) return nullptr;
-    __try {
-        const HitCasterMethodInfoPrefix* info =
-            reinterpret_cast<const HitCasterMethodInfoPrefix*>(vxdMethod);
-        const uintptr_t rgctx = info->rgctxData;
-        if (!rgctx) return nullptr;
-        // dump1 MethodInfo_EEC9E0_rgctxs:
-        // +0x00 Il2CppClass* ceq, +0x08 MethodInfo* HitCaster.vxe<ceq>.
-        return *reinterpret_cast<const Il2CppMethod* const*>(rgctx + 0x08);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
-}
-
 void __fastcall hk_HitCaster_Entry(HitCasterCerAbi* returnValue,
     const HitCasterVector3Abi* originAbi,
     const HitCasterVector3Abi* directionAbi,
     const HitCasterCeqAbi* hitParametersAbi, const Il2CppMethod* method)
 {
     if (!returnValue) return;
-    const Il2CppMethod* vxeMethod = GetVxeMethodFromVxdMethodUnsafe(method);
-    if (!originAbi || !directionAbi || !hitParametersAbi || !vxeMethod) {
+    if (!originAbi || !directionAbi || !hitParametersAbi || !method ||
+        !o_HitCaster_Entry) {
         *returnValue = {};
         return;
     }
-    // vxd<ceq> is the gun-facing 300-unit wrapper. Reuse the exact old working
-    // vxe silent-aim body, but leave both generic implementations unpatched.
+    // Run the old HitCaster direction logic, then execute the original specialized
+    // vxd<ceq> trampoline. Do not manually call vxe<ceq>: vxd supplies its hidden
+    // RGCTX/MethodInfo using IL2CPP's own generated ABI.
     hk_HitCaster_Cast(returnValue, originAbi, directionAbi, 300.0f,
-        hitParametersAbi, vxeMethod);
+        hitParametersAbi, method);
 }
 
 void __fastcall hk_ArmsLod_SetVisible(uintptr_t instance, bool visible, const Il2CppMethod* method)
@@ -9546,95 +9514,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
 
 
-static void* AllocateRelayNear(uintptr_t callSite)
-{
-    SYSTEM_INFO info = {};
-    GetSystemInfo(&info);
-    const uintptr_t granularity = info.dwAllocationGranularity ?
-        static_cast<uintptr_t>(info.dwAllocationGranularity) : 0x10000;
-    const uintptr_t center = callSite & ~(granularity - 1);
-    const uintptr_t maxDelta = 0x7FFF0000ULL;
-    for (uintptr_t delta = granularity; delta <= maxDelta; delta += granularity) {
-        if (center >= delta) {
-            void* memory = VirtualAlloc(reinterpret_cast<void*>(center - delta),
-                granularity, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-            if (memory) return memory;
-        }
-        if (center <= UINTPTR_MAX - delta) {
-            void* memory = VirtualAlloc(reinterpret_cast<void*>(center + delta),
-                granularity, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-            if (memory) return memory;
-        }
-    }
-    return nullptr;
-}
-
-static bool InstallHitCasterGunCallsiteHook(int* patchedCallsOut)
-{
-    if (patchedCallsOut) *patchedCallsOut = 0;
-    if (!base) return false;
-    const uintptr_t originalTarget = base + OFFSET_HITCASTER_ENTRY;
-    const uintptr_t begin = base + OFFSET_GUNCONTROLLER_FIRE;
-    const uintptr_t end = base + OFFSET_GUNCONTROLLER_FIRE_END;
-    if (end <= begin || end - begin > 0x2000) return false;
-
-    uintptr_t callSites[8] = {};
-    int callCount = 0;
-    __try {
-        for (uintptr_t cursor = begin; cursor + 5 <= end; ++cursor) {
-            if (*reinterpret_cast<const uint8_t*>(cursor) != 0xE8) continue;
-            const int32_t relative = *reinterpret_cast<const int32_t*>(cursor + 1);
-            const uintptr_t target = cursor + 5 + static_cast<int64_t>(relative);
-            if (target == originalTarget && callCount < 8)
-                callSites[callCount++] = cursor;
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-    if (callCount <= 0) return false;
-
-    uint8_t* relay = reinterpret_cast<uint8_t*>(AllocateRelayNear(callSites[0]));
-    if (!relay) return false;
-    const uintptr_t relayAddress = reinterpret_cast<uintptr_t>(relay);
-    for (int i = 0; i < callCount; ++i) {
-        const int64_t displacement = static_cast<int64_t>(relayAddress) -
-            static_cast<int64_t>(callSites[i] + 5);
-        if (displacement < INT32_MIN || displacement > INT32_MAX) {
-            VirtualFree(relay, 0, MEM_RELEASE);
-            return false;
-        }
-    }
-
-    // mov rax, hk_HitCaster_Cast; jmp rax. The original CALL supplies the return
-    // address and the relay does not touch any HitCaster arguments or hidden sret.
-    relay[0] = 0x48; relay[1] = 0xB8;
-    *reinterpret_cast<uintptr_t*>(relay + 2) =
-        reinterpret_cast<uintptr_t>(&hk_HitCaster_Entry);
-    relay[10] = 0xFF; relay[11] = 0xE0;
-    FlushInstructionCache(GetCurrentProcess(), relay, 12);
-
-    for (int i = 0; i < callCount; ++i) {
-        DWORD oldProtect = 0;
-        if (!VirtualProtect(reinterpret_cast<void*>(callSites[i] + 1), 4,
-                PAGE_EXECUTE_READWRITE, &oldProtect)) {
-            return false;
-        }
-        const int64_t displacement = static_cast<int64_t>(relayAddress) -
-            static_cast<int64_t>(callSites[i] + 5);
-        *reinterpret_cast<int32_t*>(callSites[i] + 1) =
-            static_cast<int32_t>(displacement);
-        FlushInstructionCache(GetCurrentProcess(),
-            reinterpret_cast<void*>(callSites[i]), 5);
-        DWORD ignored = 0;
-        VirtualProtect(reinterpret_cast<void*>(callSites[i] + 1), 4,
-            oldProtect, &ignored);
-    }
-
-    o_HitCaster_Cast = reinterpret_cast<HitCasterCastAbiFn>(
-        base + OFFSET_HITCASTER_CAST);
-    if (patchedCallsOut) *patchedCallsOut = callCount;
-    return true;
-}
-
 DWORD WINAPI HackThread(LPVOID)
 
 {
@@ -9953,19 +9832,31 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_COMMAND));
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE));
-    // GunController.waa calls dump1 HitCaster.vxd<ceq> (0xEEC9E0), not vxe
-    // (0xEEE090) directly. Redirect that exact call to the matching vxd ABI adapter.
-    // Both generic implementations remain byte-for-byte untouched.
-    int hitCasterCallsites = 0;
-    const bool hitCasterCallsiteReady =
-        InstallHitCasterGunCallsiteHook(&hitCasterCallsites);
-    sprintf_s(aimbotStatus, hitCasterCallsiteReady ?
-        "Safe HitCaster.vxd gun hook (%d)" :
-        "HitCaster callsite not found; aimbot disabled",
-        hitCasterCallsites);
-    LINDY_LOG("[aimbot] callsite-hook ready=%d calls=%d generic-target=%p",
-        hitCasterCallsiteReady ? 1 : 0, hitCasterCallsites,
-        (void*)(base + OFFSET_HITCASTER_ENTRY));
+    // Hook the small specialized vxd<ceq> entry, not the large vxe<ceq> generic
+    // body that produced deferred heap corruption. The detour declaration mirrors
+    // dump1's exact hidden-sret ABI. All original/probe casts go back through
+    // this wrapper's trampoline, so IL2CPP itself supplies the inner vxe RGCTX ABI.
+    const MH_STATUS hitCasterEntryCreate = MH_CreateHook(
+        (LPVOID)(base + OFFSET_HITCASTER_ENTRY), hk_HitCaster_Entry,
+        (LPVOID*)&o_HitCaster_Entry);
+    const MH_STATUS hitCasterEntryEnable =
+        (hitCasterEntryCreate == MH_OK ||
+            hitCasterEntryCreate == MH_ERROR_ALREADY_CREATED) ?
+        MH_EnableHook((LPVOID)(base + OFFSET_HITCASTER_ENTRY)) :
+        hitCasterEntryCreate;
+    const bool hitCasterEntryReady =
+        (hitCasterEntryCreate == MH_OK ||
+            hitCasterEntryCreate == MH_ERROR_ALREADY_CREATED) &&
+        (hitCasterEntryEnable == MH_OK ||
+            hitCasterEntryEnable == MH_ERROR_ENABLED);
+    sprintf_s(aimbotStatus, hitCasterEntryReady ?
+        "Safe HitCaster.vxd hook active" :
+        "HitCaster.vxd hook failed: %d/%d",
+        (int)hitCasterEntryCreate, (int)hitCasterEntryEnable);
+    LINDY_LOG("[aimbot] vxd-hook create=%d enable=%d wrapper=%p trampoline=%p",
+        (int)hitCasterEntryCreate, (int)hitCasterEntryEnable,
+        (void*)(base + OFFSET_HITCASTER_ENTRY),
+        (void*)o_HitCaster_Entry);
 
     MH_CreateHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE), hk_RagdollActivate, (LPVOID*)&o_RagdollActivate);
     MH_EnableHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE));
