@@ -5414,7 +5414,9 @@ static bool IsNativePenetrableSurface(int type)
 static bool NativeWallDamagePasses(const HitCasterCeq* castParameters,
     int surfaceType, float thickness, float targetDistance)
 {
-    if (!castParameters) return true; // VEH captures ceq on this shot for later shots.
+    // Without live weapon parameters there is no penetration budget or reliable
+    // damage estimate. Fail closed for walls; direct target hits are accepted earlier.
+    if (!castParameters || !castParameters->damageDefinition) return false;
     if (!o_Surface_PenetrationCost || !o_Ceq_DamageAtDistance ||
         !isfinite(thickness) || thickness <= 0.0f)
         return false;
@@ -5588,7 +5590,6 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
     Vector3& outDirection)
 {
     void* localPlayer = GetLocalPC();
-    (void)castParameters;
     (void)castMethod;
     if (!localPlayer) return false;
     const unsigned char localTeam = GetPCTeam(localPlayer);
@@ -5621,11 +5622,12 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
 
         bool reachable = false;
         if (aimbotAutoWall) {
-            // Never execute extra HitCaster calls while selecting a target. Those are
-            // real stateful casts, not queries, and probing every player poisoned the
-            // shot path. VEH redirects the one genuine GunController cast; the game
-            // itself then performs penetration, surface and damage resolution once.
-            reachable = true;
+            // Auto Wall is not permission to target through every obstacle. Validate
+            // the first blocking collider with the game's surface classification,
+            // measure that exact collider's thickness and apply the cached weapon's
+            // native penetration budget/distance damage. No extra HitCaster cast runs.
+            reachable = ValidateAimbotRayPath(origin, candidate, distance, player,
+                true, castParameters);
         }
         else if (!forceValidatedPath && !aimbotVisibleCheck) {
             reachable = true;
