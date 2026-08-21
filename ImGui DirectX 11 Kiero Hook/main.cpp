@@ -5343,14 +5343,17 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
                 return false;
             }
             ++obstructionCount;
-            if (!allowWallbang || obstructionCount > 1 || !o_Component_get_tag ||
-                !o_SurfaceType_FromTag)
+            if (!allowWallbang || !o_Component_get_tag || !o_SurfaceType_FromTag)
                 return false;
             Il2CppString* tag = o_Component_get_tag(collider, nullptr);
             const int surface = tag ? o_SurfaceType_FromTag(tag, nullptr) : 0;
             if (!IsStrictlyPenetrableSurface(surface)) return false;
         }
-        return obstructionCount == 0 || (allowWallbang && obstructionCount == 1);
+        // One rendered wall can contain several physical child colliders. RaycastAll
+        // reports each one, while native HitCaster treats the assembly as one
+        // penetrable path and calculates the real penetration/damage during the only
+        // actual shot. Requiring exactly one collider rejected every such wall.
+        return obstructionCount == 0 || (allowWallbang && obstructionCount > 0);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
@@ -5713,8 +5716,8 @@ static ULONGLONG GetNativeAutoFireIntervalMs(uintptr_t gun)
 
 static bool HasVisibleTargetBeforeNativeFire(uintptr_t gun)
 {
-    // Auto Fire always requires a verified PlayerController collider. Auto Wall may
-    // additionally authorize exactly one known penetrable surface before that target.
+    // Auto Fire requires a geometrically validated target path. Auto Wall may cross
+    // one wall assembly made from multiple tagged penetrable child colliders.
     Vector3 origin;
     bool haveOrigin = false;
     __try {
