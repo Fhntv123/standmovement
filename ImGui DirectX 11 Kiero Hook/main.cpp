@@ -435,6 +435,7 @@ struct Matrix16 {
 #define OFFSET_ARMSLOD_SET_GLOVE_MATERIALS         0xBCD2B0
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0xBFA0C0
 #define OFFSET_GUNCONTROLLER_FIRE                  0xA21040
+#define OFFSET_GUNCONTROLLER_FIRE_END              0xA21990  // next dump1 method wab
 #define OFFSET_GUNCONTROLLER_COMMAND               0xA1E030
 #define OFFSET_HITCASTER_CAST                      0xEEE090  // HitCaster.vxe<ceq>
 #define OFFSET_RAGDOLL_ACTIVATE                    0xBF4810  // RagdollController.nol
@@ -9494,6 +9495,94 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
 
 
+static void* AllocateRelayNear(uintptr_t callSite)
+{
+    SYSTEM_INFO info = {};
+    GetSystemInfo(&info);
+    const uintptr_t granularity = info.dwAllocationGranularity ?
+        static_cast<uintptr_t>(info.dwAllocationGranularity) : 0x10000;
+    const uintptr_t center = callSite & ~(granularity - 1);
+    const uintptr_t maxDelta = 0x7FFF0000ULL;
+    for (uintptr_t delta = granularity; delta <= maxDelta; delta += granularity) {
+        if (center >= delta) {
+            void* memory = VirtualAlloc(reinterpret_cast<void*>(center - delta),
+                granularity, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+            if (memory) return memory;
+        }
+        if (center <= UINTPTR_MAX - delta) {
+            void* memory = VirtualAlloc(reinterpret_cast<void*>(center + delta),
+                granularity, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+            if (memory) return memory;
+        }
+    }
+    return nullptr;
+}
+
+static bool InstallHitCasterGunCallsiteHook(int* patchedCallsOut)
+{
+    if (patchedCallsOut) *patchedCallsOut = 0;
+    if (!base) return false;
+    const uintptr_t originalTarget = base + OFFSET_HITCASTER_CAST;
+    const uintptr_t begin = base + OFFSET_GUNCONTROLLER_FIRE;
+    const uintptr_t end = base + OFFSET_GUNCONTROLLER_FIRE_END;
+    if (end <= begin || end - begin > 0x2000) return false;
+
+    uintptr_t callSites[8] = {};
+    int callCount = 0;
+    __try {
+        for (uintptr_t cursor = begin; cursor + 5 <= end; ++cursor) {
+            if (*reinterpret_cast<const uint8_t*>(cursor) != 0xE8) continue;
+            const int32_t relative = *reinterpret_cast<const int32_t*>(cursor + 1);
+            const uintptr_t target = cursor + 5 + static_cast<int64_t>(relative);
+            if (target == originalTarget && callCount < 8)
+                callSites[callCount++] = cursor;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    if (callCount <= 0) return false;
+
+    uint8_t* relay = reinterpret_cast<uint8_t*>(AllocateRelayNear(callSites[0]));
+    if (!relay) return false;
+    const uintptr_t relayAddress = reinterpret_cast<uintptr_t>(relay);
+    for (int i = 0; i < callCount; ++i) {
+        const int64_t displacement = static_cast<int64_t>(relayAddress) -
+            static_cast<int64_t>(callSites[i] + 5);
+        if (displacement < INT32_MIN || displacement > INT32_MAX) {
+            VirtualFree(relay, 0, MEM_RELEASE);
+            return false;
+        }
+    }
+
+    // mov rax, hk_HitCaster_Cast; jmp rax. The original CALL supplies the return
+    // address and the relay does not touch any HitCaster arguments or hidden sret.
+    relay[0] = 0x48; relay[1] = 0xB8;
+    *reinterpret_cast<uintptr_t*>(relay + 2) =
+        reinterpret_cast<uintptr_t>(&hk_HitCaster_Cast);
+    relay[10] = 0xFF; relay[11] = 0xE0;
+    FlushInstructionCache(GetCurrentProcess(), relay, 12);
+
+    for (int i = 0; i < callCount; ++i) {
+        DWORD oldProtect = 0;
+        if (!VirtualProtect(reinterpret_cast<void*>(callSites[i] + 1), 4,
+                PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            return false;
+        }
+        const int64_t displacement = static_cast<int64_t>(relayAddress) -
+            static_cast<int64_t>(callSites[i] + 5);
+        *reinterpret_cast<int32_t*>(callSites[i] + 1) =
+            static_cast<int32_t>(displacement);
+        FlushInstructionCache(GetCurrentProcess(),
+            reinterpret_cast<void*>(callSites[i]), 5);
+        DWORD ignored = 0;
+        VirtualProtect(reinterpret_cast<void*>(callSites[i] + 1), 4,
+            oldProtect, &ignored);
+    }
+
+    o_HitCaster_Cast = reinterpret_cast<HitCasterCastAbiFn>(originalTarget);
+    if (patchedCallsOut) *patchedCallsOut = callCount;
+    return true;
+}
+
 DWORD WINAPI HackThread(LPVOID)
 
 {
@@ -9812,17 +9901,20 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_COMMAND));
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE));
-    // dump1/il2cpp.h exact POD ABI: Vector3=0x0C, ceq=0x18, cer=0x30.
-    // Use the explicit Win64 lowered ABI (sret + aggregate pointers), so neither
-    // the detour nor trampoline depends on MSVC inferring hidden struct conventions.
-    const MH_STATUS hitCasterCreate = MH_CreateHook(
-        (LPVOID)(base + OFFSET_HITCASTER_CAST), hk_HitCaster_Cast,
-        (LPVOID*)&o_HitCaster_Cast);
-    const MH_STATUS hitCasterEnable =
-        (hitCasterCreate == MH_OK || hitCasterCreate == MH_ERROR_ALREADY_CREATED) ?
-        MH_EnableHook((LPVOID)(base + OFFSET_HITCASTER_CAST)) : hitCasterCreate;
-    sprintf_s(aimbotStatus, "ABI-safe dump1 HitCaster hook=%d/%d",
-        (int)hitCasterCreate, (int)hitCasterEnable);
+    // Never patch the shared generic body at GameAssembly+0xEEE090: both prior
+    // variants eventually corrupted the process, and the crash register again points
+    // at that RVA. Patch only dump1 GunController.waa's direct CALL instruction.
+    // The original generic entry remains byte-for-byte untouched for every other caller.
+    int hitCasterCallsites = 0;
+    const bool hitCasterCallsiteReady =
+        InstallHitCasterGunCallsiteHook(&hitCasterCallsites);
+    sprintf_s(aimbotStatus, hitCasterCallsiteReady ?
+        "Safe GunController HitCaster callsite hook (%d)" :
+        "HitCaster callsite not found; aimbot disabled",
+        hitCasterCallsites);
+    LINDY_LOG("[aimbot] callsite-hook ready=%d calls=%d generic-target=%p",
+        hitCasterCallsiteReady ? 1 : 0, hitCasterCallsites,
+        (void*)(base + OFFSET_HITCASTER_CAST));
 
     MH_CreateHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE), hk_RagdollActivate, (LPVOID*)&o_RagdollActivate);
     MH_EnableHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE));
