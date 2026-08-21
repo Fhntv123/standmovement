@@ -5634,10 +5634,95 @@ static bool HasVisibleTargetBeforeNativeFire(uintptr_t gun)
         origin, true, cached, cachedMethod, direction);
 }
 
+static bool ApplyAimbotAimBeforeCommand(uintptr_t gun, Vector3* originalAim,
+    Vector3* originalEuler, uintptr_t* aimControllerOut, uintptr_t* aimingDataOut,
+    Vector3* targetAimOut)
+{
+    if (!gun || !originalAim || !originalEuler || !aimControllerOut ||
+        !aimingDataOut || !targetAimOut || !liveHudLocalPlayer ||
+        (!aimbotEnabled && !visibleAimbotEnabled))
+        return false;
+    __try {
+        const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
+        const uintptr_t owner = *reinterpret_cast<uintptr_t*>(gun + 0x20);
+        if (!((currentWeapon && gun == currentWeapon) || owner == liveHudLocalPlayer))
+            return false;
+        const uintptr_t aimController =
+            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
+        const uintptr_t aimingData = aimController ?
+            *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
+        const uintptr_t camera = GetCamera();
+        const uintptr_t transform = camera && o_Component_get_transform ?
+            o_Component_get_transform(camera) : 0;
+        if (!aimController || !aimingData || !transform ||
+            !o_Transform_get_position)
+            return false;
+        const Vector3 origin = o_Transform_get_position(transform);
+        Vector3 targetDirection;
+        if (!FindVisibleAimbotDirection(
+            origin, false, nullptr, nullptr, targetDirection))
+            return false;
+        const Vector3 targetAim = DirectionToCameraEuler(targetDirection);
+        *originalAim = *reinterpret_cast<Vector3*>(aimingData + 0x18);
+        *originalEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
+        *aimControllerOut = aimController;
+        *aimingDataOut = aimingData;
+        *targetAimOut = targetAim;
+        *reinterpret_cast<Vector3*>(aimingData + 0x18) = targetAim;
+        *reinterpret_cast<Vector3*>(aimingData + 0x24) = targetAim;
+        if (o_AimController_SetHeadDirective)
+            o_AimController_SetHeadDirective(aimController, targetAim, nullptr);
+        InterlockedIncrement(&aimbotShots);
+        InterlockedIncrement(&aimbotApplied);
+        strcpy_s(aimbotStatus, visibleAimbotEnabled ?
+            "Native aim applied before weapon command" :
+            "Silent native aim applied before weapon command");
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static void FinishAimbotAimAfterCommand(bool applied, uintptr_t aimController,
+    uintptr_t aimingData, Vector3 originalAim, Vector3 originalEuler,
+    Vector3 targetAim)
+{
+    if (!applied || !aimController || !aimingData) return;
+    __try {
+        if (visibleAimbotEnabled) {
+            visibleAimbotOwnerPlayer = liveHudLocalPlayer;
+            visibleAimbotAimController = aimController;
+            visibleAimbotAimingData = aimingData;
+            visibleAimbotOriginalAimAngle = originalAim;
+            visibleAimbotOriginalAimEuler = originalEuler;
+            visibleAimbotTargetAim = targetAim;
+            visibleAimbotRestoreAt = GetTickCount64() +
+                static_cast<ULONGLONG>(visibleAimbotHoldMs);
+            visibleAimbotCameraActive = true;
+        }
+        else {
+            *reinterpret_cast<Vector3*>(aimingData + 0x18) = originalAim;
+            *reinterpret_cast<Vector3*>(aimingData + 0x24) = originalEuler;
+            if (o_AimController_SetHeadDirective)
+                o_AimController_SetHeadDirective(aimController, originalAim, nullptr);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        ClearVisibleAimbotCameraStateUnsafe();
+    }
+}
+
 void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, float frameTime, float commandTime, const Il2CppMethod* method)
 {
     bool injectNativeFire = false;
     bool originalPrimaryFire = false;
+    Vector3 originalAim;
+    Vector3 originalEuler;
+    Vector3 targetAim;
+    uintptr_t commandAimController = 0;
+    uintptr_t commandAimingData = 0;
+    const bool commandAimApplied = ApplyAimbotAimBeforeCommand(instance,
+        &originalAim, &originalEuler, &commandAimController,
+        &commandAimingData, &targetAim);
     const ULONGLONG now = GetTickCount64();
     __try {
         const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
@@ -5668,6 +5753,8 @@ void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, 
     __except (EXCEPTION_EXECUTE_HANDLER) { injectNativeFire = false; }
 
     o_GunController_Command(instance, command, frameTime, commandTime, method);
+    FinishAimbotAimAfterCommand(commandAimApplied, commandAimController,
+        commandAimingData, originalAim, originalEuler, targetAim);
 
     if (injectNativeFire) {
         __try { *reinterpret_cast<bool*>(command + 0x10) = originalPrimaryFire; }
@@ -5695,46 +5782,6 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
     if (isLocalGun) activeLocalWeaponController = instance;
     const ULONGLONG fireNow = GetTickCount64();
-    Vector3 shotDirection = playSound;
-    bool applyVisibleSnapAfterFire = false;
-    if (isLocalGun && keyValidated && (aimbotEnabled || visibleAimbotEnabled)) {
-        InterlockedIncrement(&aimbotShots);
-        Vector3 origin;
-        bool haveOrigin = false;
-        __try {
-            const uintptr_t camera = GetCamera();
-            const uintptr_t transform = camera && o_Component_get_transform ?
-                o_Component_get_transform(camera) : 0;
-            if (transform && o_Transform_get_position) {
-                origin = o_Transform_get_position(transform);
-                haveOrigin = true;
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
-        Vector3 targetDirection;
-        if (haveOrigin && FindVisibleAimbotDirection(
-            origin, false, nullptr, nullptr, targetDirection)) {
-            shotDirection = targetDirection;
-            applyVisibleSnapAfterFire = visibleAimbotEnabled;
-            InterlockedIncrement(&aimbotApplied);
-            strcpy_s(aimbotStatus, visibleAimbotEnabled ?
-                "Target direction applied at GunController.waa" :
-                "Silent direction applied at GunController.waa");
-        }
-        else {
-            strcpy_s(aimbotStatus, "No reachable enemy; original shot kept");
-        }
-    }
-    else if (isLocalGun && keyValidated && noSpreadEnabled) {
-        __try {
-            const uintptr_t camera = GetCamera();
-            const uintptr_t transform = camera && o_Component_get_transform ?
-                o_Component_get_transform(camera) : 0;
-            if (transform && o_Transform_get_forward)
-                shotDirection = o_Transform_get_forward(transform);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
     if (isLocalGun && infinityAmmo) InterlockedIncrement(&infinityAmmoFireCalls);
     short ammoBeforeShot = -1;
     if (isLocalGun && (infinityAmmo || doubleTapEnabled)) {
@@ -5774,17 +5821,13 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     }
     const bool trackLocalHitCast = isLocalGun && NeedsLocalHitCastTracking();
     if (trackLocalHitCast) ++activeLocalHitCastDepth;
-    o_GunController_Fire(instance, shotDirection, method);
+    o_GunController_Fire(instance, playSound, method);
     if (trackLocalHitCast) --activeLocalHitCastDepth;
-    if (applyVisibleSnapAfterFire) {
-        BeginVisibleAimbotCameraSnap(shotDirection);
-        strcpy_s(aimbotStatus, "Shot fired; visible camera snap applied");
-    }
     if (fireSecondShot) {
         // Keep the real second cast/damage/ammo path, then restore only the native
         // recoil accumulator. Never lock or rewrite camera aim after the shot.
         if (trackLocalHitCast) ++activeLocalHitCastDepth;
-        o_GunController_Fire(instance, shotDirection, method);
+        o_GunController_Fire(instance, playSound, method);
         if (trackLocalHitCast) --activeLocalHitCastDepth;
         if (capturedDoubleTapRecoil) {
             __try {
@@ -9759,7 +9802,7 @@ DWORD WINAPI HackThread(LPVOID)
     aimbotLastCeqValid = false;
     aimbotLastCeqGun = 0;
     aimbotLastHitCasterMethod = nullptr;
-    strcpy_s(aimbotStatus, "Safe GunController.waa aim path ready");
+    strcpy_s(aimbotStatus, "Native pre-command aim path ready");
 
     MH_CreateHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE), hk_RagdollActivate, (LPVOID*)&o_RagdollActivate);
     MH_EnableHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE));
