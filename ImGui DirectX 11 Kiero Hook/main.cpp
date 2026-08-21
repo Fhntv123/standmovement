@@ -5301,8 +5301,12 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
         !o_Component_GetInParent || !g_PlayerControllerReflectionType)
         return false;
     __try {
+        // PlayerHitbox colliders are triggers. QueryTriggerInteraction.Ignore (1)
+        // omitted the target behind a wall, so targetDistance was never found and
+        // Auto Wall always failed before the real HitCaster ran. Collide (2) includes
+        // both world surfaces and the authoritative target hitbox.
         Il2CppArray* rayHits = o_Physics_RaycastAll(
-            origin, direction, distance + 0.35f, -1, 1, nullptr);
+            origin, direction, distance + 0.35f, -1, 2, nullptr);
         const uintptr_t array = reinterpret_cast<uintptr_t>(rayHits);
         const size_t count = array ? *reinterpret_cast<size_t*>(array + 0x18) : 0;
         if (!array || count == 0 || count > 128) return false;
