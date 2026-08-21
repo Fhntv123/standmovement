@@ -5441,17 +5441,20 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
         if (!isfinite(distance) || distance < 0.5f) continue;
         const Vector3 candidate(delta.x / distance, delta.y / distance, delta.z / distance);
 
-        // HitCaster is not a pure query. The old working detour called its native
-        // trampoline once per candidate as a "probe" and discarded each cer result.
-        // Those casts mutate managed hit/penetration state and were the real source of
-        // deferred heap corruption on the later audio/ntdll thread. Select geometrically
-        // here, then execute the native HitCaster exactly once for the chosen direction.
+        // HitCaster is not a pure query. Never probe it while scanning candidates.
+        // Visible Check still requires a clear geometric path. Auto Wall, however,
+        // must pass the candidate direction to the one real native cast: only native
+        // HitCaster has the weapon penetration/damage state needed to decide whether
+        // that wall is actually penetrable. The old geometric wall gate rejected the
+        // direction before HitCaster could do any penetration work at all.
         bool reachable = false;
-        if (!forceValidatedPath && !aimbotVisibleCheck && !aimbotAutoWall)
+        if (aimbotAutoWall)
+            reachable = true;
+        else if (!forceValidatedPath && !aimbotVisibleCheck)
             reachable = true;
         else
             reachable = ValidateAimbotRayPath(origin, candidate, distance, player,
-                aimbotAutoWall);
+                false);
         if (!reachable) continue;
         ++visibleCount;
         if (distance < bestDistance) {
@@ -5716,8 +5719,8 @@ static ULONGLONG GetNativeAutoFireIntervalMs(uintptr_t gun)
 
 static bool HasVisibleTargetBeforeNativeFire(uintptr_t gun)
 {
-    // Auto Fire requires a geometrically validated target path. Auto Wall may cross
-    // one wall assembly made from multiple tagged penetrable child colliders.
+    // Visible targets are geometrically validated. With Auto Wall enabled, select a
+    // target direction and let the one real native HitCaster resolve penetration.
     Vector3 origin;
     bool haveOrigin = false;
     __try {
@@ -5769,7 +5772,7 @@ void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command,
                 aimbotAutoFireNextDecisionAt = now;
                 InterlockedIncrement(&aimbotAutoFireRejected);
                 strcpy_s(aimbotStatus,
-                    "Auto Fire blocked: no direct shot or valid wallbang");
+                    "Auto Fire blocked: no target direction");
             }
         }
     }
