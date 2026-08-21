@@ -5300,6 +5300,8 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
     if (!targetPlayer || !o_Physics_RaycastAll || !o_RaycastHit_get_collider ||
         !o_Component_GetInParent || !g_PlayerControllerReflectionType)
         return false;
+    const uintptr_t localPlayer = reinterpret_cast<uintptr_t>(GetLocalPC());
+    if (!localPlayer) return false;
     __try {
         // Include trigger hitboxes as well as world surfaces. The result no longer
         // depends on receiving a target hit; the selected head position is the limit.
@@ -5326,9 +5328,13 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
                 collider, reinterpret_cast<uintptr_t>(g_PlayerControllerReflectionType),
                 true, nullptr);
             if (hitPlayer) {
-                // Any different player before the selected target blocks the shot.
-                if (hitPlayer != reinterpret_cast<uintptr_t>(targetPlayer)) return false;
-                continue;
+                // The ray starts at the local camera and can cross our own trigger
+                // colliders. Native HitCaster excludes its owner; mirror that here.
+                if (hitPlayer == localPlayer ||
+                    hitPlayer == reinterpret_cast<uintptr_t>(targetPlayer))
+                    continue;
+                // A third player before the selected target still blocks the shot.
+                return false;
             }
             ++obstructionCount;
             if (!allowWallbang || obstructionCount > 1 || !o_Component_get_tag ||
