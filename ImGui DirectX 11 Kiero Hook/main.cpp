@@ -2454,6 +2454,12 @@ using HitCasterCastAbiFn = void(__fastcall*)(HitCasterCerAbi*,
     const HitCasterVector3Abi*, const HitCasterVector3Abi*, float,
     const HitCasterCeqAbi*, const Il2CppMethod*);
 HitCasterCastAbiFn o_HitCaster_Cast = nullptr;
+static uintptr_t hitCasterBreakpointAddress = 0;
+static uint8_t hitCasterOriginalByte = 0;
+static bool hitCasterBreakpointInstalled = false;
+thread_local bool hitCasterBreakpointRearm = false;
+thread_local bool hitCasterDirectionPending = false;
+thread_local HitCasterVector3Abi hitCasterPendingDirection = {};
 thread_local bool insideLocalGunFire = false;
 thread_local bool insideAutoFireRequest = false;
 thread_local int activeLocalHitCastDepth = 0;
@@ -5770,6 +5776,105 @@ void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command,
     }
 }
 
+static LONG WINAPI HitCasterBreakpointHandler(EXCEPTION_POINTERS* info)
+{
+    if (!info || !info->ExceptionRecord || !info->ContextRecord ||
+        !hitCasterBreakpointInstalled || !hitCasterBreakpointAddress)
+        return EXCEPTION_CONTINUE_SEARCH;
+#if defined(_M_X64)
+    CONTEXT* context = info->ContextRecord;
+    const DWORD code = info->ExceptionRecord->ExceptionCode;
+    if (code == EXCEPTION_BREAKPOINT &&
+        reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress) ==
+            hitCasterBreakpointAddress) {
+        *reinterpret_cast<volatile uint8_t*>(hitCasterBreakpointAddress) =
+            hitCasterOriginalByte;
+        if (hitCasterDirectionPending && context->R8) {
+            HitCasterVector3Abi* direction =
+                reinterpret_cast<HitCasterVector3Abi*>(context->R8);
+            direction->x = hitCasterPendingDirection.x;
+            direction->y = hitCasterPendingDirection.y;
+            direction->z = hitCasterPendingDirection.z;
+            InterlockedIncrement(&aimbotShots);
+            InterlockedIncrement(&aimbotApplied);
+        }
+        context->Rip = hitCasterBreakpointAddress;
+        context->EFlags |= 0x100UL;
+        hitCasterBreakpointRearm = true;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (code == EXCEPTION_SINGLE_STEP && hitCasterBreakpointRearm) {
+        *reinterpret_cast<volatile uint8_t*>(hitCasterBreakpointAddress) = 0xCC;
+        context->EFlags &= ~0x100UL;
+        hitCasterBreakpointRearm = false;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+#endif
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static bool InstallHitCasterBreakpoint()
+{
+    if (!base) return false;
+    hitCasterBreakpointAddress = base + OFFSET_HITCASTER_CAST;
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(reinterpret_cast<void*>(hitCasterBreakpointAddress), 1,
+            PAGE_EXECUTE_READWRITE, &oldProtect))
+        return false;
+    hitCasterOriginalByte =
+        *reinterpret_cast<volatile uint8_t*>(hitCasterBreakpointAddress);
+    if (hitCasterOriginalByte == 0xCC) return false;
+    // Register VEH before publishing INT3; there must be no interval in which the
+    // process can execute a breakpoint without our handler installed.
+    if (!AddVectoredExceptionHandler(1, HitCasterBreakpointHandler)) return false;
+    hitCasterBreakpointInstalled = true;
+    *reinterpret_cast<volatile uint8_t*>(hitCasterBreakpointAddress) = 0xCC;
+    FlushInstructionCache(GetCurrentProcess(),
+        reinterpret_cast<void*>(hitCasterBreakpointAddress), 1);
+    return true;
+}
+
+static bool PrepareHitCasterDirectionForFire()
+{
+    hitCasterDirectionPending = false;
+    if (!keyValidated || (!aimbotEnabled && !visibleAimbotEnabled &&
+        !noSpreadEnabled))
+        return false;
+    Vector3 origin;
+    bool haveOrigin = false;
+    __try {
+        const uintptr_t camera = GetCamera();
+        const uintptr_t transform = camera && o_Component_get_transform ?
+            o_Component_get_transform(camera) : 0;
+        if (transform && o_Transform_get_position) {
+            origin = o_Transform_get_position(transform);
+            haveOrigin = true;
+        }
+        if (haveOrigin && (aimbotEnabled || visibleAimbotEnabled)) {
+            Vector3 direction;
+            if (FindVisibleAimbotDirection(origin, false, nullptr, nullptr,
+                    direction)) {
+                hitCasterPendingDirection = ToHitCasterVector3Abi(direction);
+                hitCasterDirectionPending = true;
+                strcpy_s(aimbotStatus, "Breakpoint HitCaster direction ready");
+                return true;
+            }
+        }
+        if (noSpreadEnabled && transform && o_Transform_get_forward) {
+            hitCasterPendingDirection = ToHitCasterVector3Abi(
+                o_Transform_get_forward(transform));
+            hitCasterDirectionPending = true;
+            return true;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        hitCasterDirectionPending = false;
+    }
+    if (aimbotEnabled || visibleAimbotEnabled)
+        strcpy_s(aimbotStatus, "No reachable enemy; original shot kept");
+    return false;
+}
+
 void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, const Il2CppMethod* method)
 {
     // Fire must remain latency-free: never create materials, inspect renderers,
@@ -5803,6 +5908,7 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
         fireNow <= aimbotAutoFirePendingUntil;
     insideAutoFireRequest = persistentAutoRequest;
     insideLocalGunFire = isLocalGun;
+    if (isLocalGun) PrepareHitCasterDirectionForFire();
     uintptr_t doubleTapRecoilController = 0;
     unsigned char doubleTapRecoilState[0x28] = {};
     float doubleTapRecoilProgress = 0.0f;
@@ -5842,6 +5948,7 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
         }
         InterlockedIncrement(&doubleTapExtraShots);
     }
+    hitCasterDirectionPending = false;
     insideLocalGunFire = false;
     insideAutoFireRequest = false;
     if (persistentAutoRequest) {
@@ -9794,21 +9901,18 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_COMMAND));
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE));
-    // Restore the old working HitCaster.vxe<ceq> detour. The crash was in our
-    // detour logic, not evidence that MinHook itself damaged the ABI: the old code
-    // executed side-effectful native HitCaster probes for every candidate. This version
-    // calls the original trampoline exactly once per real shot.
-    const MH_STATUS hitCasterCreate = MH_CreateHook(
-        (LPVOID)(base + OFFSET_HITCASTER_CAST), hk_HitCaster_Cast,
-        (LPVOID*)&o_HitCaster_Cast);
-    const MH_STATUS hitCasterEnable =
-        (hitCasterCreate == MH_OK || hitCasterCreate == MH_ERROR_ALREADY_CREATED) ?
-        MH_EnableHook((LPVOID)(base + OFFSET_HITCASTER_CAST)) : hitCasterCreate;
-    sprintf_s(aimbotStatus, "HitCaster single-cast hook=%d/%d",
-        (int)hitCasterCreate, (int)hitCasterEnable);
-    LINDY_LOG("[aimbot] vxe single-cast create=%d enable=%d target=%p trampoline=%p",
-        (int)hitCasterCreate, (int)hitCasterEnable,
-        (void*)(base + OFFSET_HITCASTER_CAST), (void*)o_HitCaster_Cast);
+    // Do not trampoline the generic 0xEEE090 body. The repeated logs prove that
+    // merely having that MinHook installed poisons later heap work. A one-byte INT3
+    // preserves the original IL2CPP ABI: VEH changes only the existing R8 direction
+    // buffer, then executes the untouched first instruction and rearms the breakpoint.
+    const bool hitCasterBreakpointReady = InstallHitCasterBreakpoint();
+    strcpy_s(aimbotStatus, hitCasterBreakpointReady ?
+        "HitCaster ABI-transparent breakpoint active" :
+        "HitCaster breakpoint install failed");
+    LINDY_LOG("[aimbot] breakpoint ready=%d target=%p original-byte=%02X",
+        hitCasterBreakpointReady ? 1 : 0,
+        (void*)hitCasterBreakpointAddress,
+        static_cast<unsigned>(hitCasterOriginalByte));
 
     MH_CreateHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE), hk_RagdollActivate, (LPVOID*)&o_RagdollActivate);
     MH_EnableHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE));
