@@ -920,8 +920,7 @@ std::vector<std::wstring> hitSoundFiles;
 SRWLOCK hitSoundLock = SRWLOCK_INIT;
 uintptr_t hitSoundLastResult = 0;
 ULONGLONG hitSoundLastResultAt = 0;
-volatile LONG pendingHitSound = 0;
-HANDLE hitSoundEvent = nullptr;
+HANDLE hitSoundSemaphore = nullptr;
 HANDLE hitSoundThread = nullptr;
 char hitSoundStatus[128] = "No .wav files found";
 
@@ -1786,14 +1785,14 @@ static bool CopySelectedHitSoundPath(wchar_t* path, size_t pathCount)
 static DWORD WINAPI HitSoundWorker(LPVOID)
 {
     while (!unloadRequested) {
-        const DWORD waitResult = WaitForSingleObject(hitSoundEvent, 250);
+        const DWORD waitResult = WaitForSingleObject(hitSoundSemaphore, 250);
         if (waitResult != WAIT_OBJECT_0) continue;
         if (unloadRequested) break;
         wchar_t path[MAX_PATH] = {};
         if (CopySelectedHitSoundPath(path, MAX_PATH)) {
-            // One persistent worker serializes playback. SND_ASYNC created overlapping
-            // WinMM/AudioSes workers; the captured crash was an invalid callback on one
-            // of those audio threads after repeated hits.
+            // One persistent playback worker avoids overlapping WinMM callback
+            // threads. A new request stops this synchronous playback from the caller,
+            // unblocks the worker, and immediately starts the next queued hit sound.
             RecordCrashBreadcrumb(CrashHitSoundPlayEnter);
             PlaySoundW(path, nullptr, SND_SYNC | SND_FILENAME | SND_NODEFAULT);
             RecordCrashBreadcrumb(CrashHitSoundPlayDone);
@@ -1804,13 +1803,13 @@ static DWORD WINAPI HitSoundWorker(LPVOID)
 
 static bool InitializeHitSoundWorker()
 {
-    if (hitSoundEvent && hitSoundThread) return true;
-    hitSoundEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!hitSoundEvent) return false;
+    if (hitSoundSemaphore && hitSoundThread) return true;
+    hitSoundSemaphore = CreateSemaphoreW(nullptr, 0, 64, nullptr);
+    if (!hitSoundSemaphore) return false;
     hitSoundThread = CreateThread(nullptr, 0, HitSoundWorker, nullptr, 0, nullptr);
     if (!hitSoundThread) {
-        CloseHandle(hitSoundEvent);
-        hitSoundEvent = nullptr;
+        CloseHandle(hitSoundSemaphore);
+        hitSoundSemaphore = nullptr;
         return false;
     }
     return true;
@@ -1819,7 +1818,10 @@ static bool InitializeHitSoundWorker()
 static bool QueueSelectedHitSound()
 {
     RecordCrashBreadcrumb(CrashHitSoundQueued);
-    return hitSoundEvent && SetEvent(hitSoundEvent) != FALSE;
+    if (!hitSoundSemaphore) return false;
+    // Interrupt a long WAV instead of making the next confirmed hit wait for it.
+    PlaySoundW(nullptr, nullptr, 0);
+    return ReleaseSemaphore(hitSoundSemaphore, 1, nullptr) != FALSE;
 }
 
 static std::string SanitizeConfigName(const char* input)
@@ -4871,8 +4873,6 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
         SendPendingPixelSurfChatMessageUnsafe();
     UpdateFrozenCorpses();
-    if (InterlockedExchange(&pendingHitSound, 0))
-        QueueSelectedHitSound();
     UpdatePenetrableSurfaceVisualization();
     UpdateVisibleAimbotCamera();
     InfinityAmmoLoop();
@@ -5050,7 +5050,7 @@ static void ProcessLocalHitUnsafe(uintptr_t instance, void* victim,
             (shotData != hitSoundLastResult || now - hitSoundLastResultAt > 250)) {
             hitSoundLastResult = shotData;
             hitSoundLastResultAt = now;
-            InterlockedExchange(&pendingHitSound, 1);
+            QueueSelectedHitSound();
         }
     }
     if (keyValidated && hitLogEnabled && instance && instance == liveHitMarkerView && victim && shotData) {
@@ -5520,19 +5520,38 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
         if (!isfinite(distance) || distance < 0.5f) continue;
         const Vector3 candidate(delta.x / distance, delta.y / distance, delta.z / distance);
 
-        // Never probe HitCaster while scanning candidates. For Auto Wall, require
-        // the first physical obstruction to carry a known penetrable SurfaceType tag;
-        // then let the one real native HitCaster resolve exits and weapon damage.
-        // Solid/unknown entrance surfaces must never receive redirected aim.
         bool reachable = false;
-        if (aimbotAutoWall)
-            reachable = ValidateAimbotRayPath(origin, candidate, distance, player,
-                true, castParameters);
-        else if (!forceValidatedPath && !aimbotVisibleCheck)
+        if (castParameters && castMethod && o_HitCaster_Cast) {
+            // dump1 exact path: HitCaster.vxe<ceq> returns cer with authoritative
+            // Dictionary<bal,ccr> ownership and List<cew> penetration data. The unsafe
+            // MinHook detour is gone; call the original ABI directly for validation,
+            // then redirect only the one real GunController shot through VEH.
+            const HitCasterCer probe = CallOriginalHitCaster(
+                origin, candidate, distance + 0.35f, *castParameters, castMethod);
+            int nativeDamage = 0;
+            const bool hitExactTarget =
+                ReadDump1NativeTargetDamage(probe, player, nativeDamage);
+            int penetrationCount = -1;
+            __try {
+                penetrationCount = probe.penetrations ?
+                    *reinterpret_cast<int*>(probe.penetrations + 0x18) : 0;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) { penetrationCount = -1; }
+            const bool directShot = penetrationCount == 0;
+            const bool validWallbang = aimbotAutoWall &&
+                penetrationCount > 0 && penetrationCount <= 64 &&
+                nativeDamage >= static_cast<int>(aimbotAutoWallMinDamage);
+            reachable = hitExactTarget && (directShot || validWallbang);
+        }
+        else if (!forceValidatedPath && !aimbotVisibleCheck && !aimbotAutoWall) {
             reachable = true;
-        else
+        }
+        else {
+            // No live ceq yet: fail closed for Auto Wall and use geometry only for a
+            // direct visible shot. The first real shot captures ceq in the VEH handler.
             reachable = ValidateAimbotRayPath(origin, candidate, distance, player,
-                false, castParameters);
+                false, nullptr);
+        }
         if (!reachable) continue;
         ++visibleCount;
         if (distance < bestDistance) {
@@ -5797,8 +5816,8 @@ static ULONGLONG GetNativeAutoFireIntervalMs(uintptr_t gun)
 
 static bool HasVisibleTargetBeforeNativeFire(uintptr_t gun)
 {
-    // Visible targets require a clear path. Auto Wall additionally requires tagged
-    // penetrable obstruction(s), then the one real HitCaster resolves actual damage.
+    // Reuse the live weapon ceq captured by VEH. HitCaster's cer result verifies exact
+    // target ownership, penetration count and native damage before Auto Fire is armed.
     Vector3 origin;
     bool haveOrigin = false;
     __try {
@@ -5850,7 +5869,7 @@ void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command,
                 aimbotAutoFireNextDecisionAt = now;
                 InterlockedIncrement(&aimbotAutoFireRejected);
                 strcpy_s(aimbotStatus,
-                    "Auto Fire blocked: no direct or penetrable path");
+                    "Auto Fire blocked: native HitCaster rejected target");
             }
         }
     }
@@ -6450,6 +6469,14 @@ bool __fastcall hk_CC_get_isGrounded(uintptr_t instance)
 
 
 
+static float GetMovementDeltaTime()
+{
+    float deltaTime = o_Time_get_deltaTime ? o_Time_get_deltaTime() : (1.0f / 60.0f);
+    if (!isfinite(deltaTime) || deltaTime < (1.0f / 2000.0f) || deltaTime > 0.1f)
+        deltaTime = 1.0f / 60.0f;
+    return deltaTime;
+}
+
 Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 {
     Vector3 vel = o_CC_get_velocity(instance);
@@ -6459,9 +6486,10 @@ Vector3 __fastcall hk_CC_get_velocity(uintptr_t instance)
 
     if (jbActive) {
         const float horSpeed = sqrtf(vel.x * vel.x + vel.z * vel.z);
-        if (horSpeed < surfSpeed * 3.0f) {
-            vel.x *= 1.05f;
-            vel.z *= 1.05f;
+        const float targetSpeed = surfSpeed * 10.0f;
+        if (horSpeed > 0.00001f && horSpeed < targetSpeed) {
+            vel.x = (vel.x / horSpeed) * targetSpeed;
+            vel.z = (vel.z / horSpeed) * targetSpeed;
         }
         vel.y = 0.0f;
     }
@@ -6479,9 +6507,7 @@ static Vector3 ApplyVelocityLimitToMotion(const Vector3& motion)
     velocityLimiterLastAppliedScale = 1.0f;
     if (!velocityLimiterEnabled || velocityLimit <= 0.0f) return motion;
 
-    float deltaTime = o_Time_get_deltaTime ? o_Time_get_deltaTime() : (1.0f / 60.0f);
-    if (!isfinite(deltaTime) || deltaTime < (1.0f / 240.0f) || deltaTime > 0.1f)
-        deltaTime = 1.0f / 60.0f;
+    const float deltaTime = GetMovementDeltaTime();
 
     Vector3 result = motion;
     const float horizontalMotion = sqrtf(result.x * result.x + result.z * result.z);
@@ -7932,15 +7958,17 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 
 
 
+    const float movementDeltaTime = GetMovementDeltaTime();
     if (keyValidated && jbActive) {
         pixelSurfCharacterController = instance;
-        float speed = sqrt(motion.x * motion.x + motion.z * motion.z);
-        if (speed > 0.1f) {
-            motion.x = (motion.x / speed) * surfSpeed * 10.0f;
-            motion.z = (motion.z / speed) * surfSpeed * 10.0f;
+        const float speed = sqrtf(motion.x * motion.x + motion.z * motion.z);
+        if (speed > 0.00001f) {
+            const float targetMotion = surfSpeed * 10.0f * movementDeltaTime;
+            motion.x = (motion.x / speed) * targetMotion;
+            motion.z = (motion.z / speed) * targetMotion;
         }
 
-        motion.y = 0;
+        motion.y = 0.0f;
     }
     else if (keyValidated) {
         const LONG64 now = static_cast<LONG64>(GetTickCount64());
@@ -7955,9 +7983,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
             instance == pixelSurfCharacterController && motion.y < 0.0f) {
             // Normal release: never fake grounded. Keep replacing the stale accumulated
             // gravity until this exact controller actually lands; do not expire mid-air.
-            float deltaTime = o_Time_get_deltaTime ? o_Time_get_deltaTime() : (1.0f / 60.0f);
-            if (!isfinite(deltaTime) || deltaTime < (1.0f / 240.0f) || deltaTime > 0.1f)
-                deltaTime = 1.0f / 60.0f;
+            const float deltaTime = movementDeltaTime;
             const float elapsed = static_cast<float>(now - releasedAt) * 0.001f;
             float normalDownSpeed = 0.5f + 4.0f * elapsed;
             if (normalDownSpeed > 8.0f) normalDownSpeed = 8.0f;
@@ -7967,7 +7993,8 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
     }
 
     if (keyValidated) {
-        motion = EdgeBug::ApplyDownwardPull(motion, edgeBugEnabled, edgeBugPullForce);
+        motion = EdgeBug::ApplyDownwardPull(
+            motion, edgeBugEnabled, edgeBugPullForce, movementDeltaTime);
         // Enforce the configured horizontal units/second cap on the movement
         // passed to Unity, using the real frame delta.
         motion = ApplyVelocityLimitToMotion(motion);

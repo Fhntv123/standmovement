@@ -1,12 +1,14 @@
-#pragma once
+﻿#pragma once
 
-// Simple downward pull applied to CharacterController::Move while Edge Bug is active.
-// The 0.02 factor converts the user-facing force to an approximate per-frame motion.
+// Frame-rate independent downward acceleration applied to the displacement passed to
+// CharacterController::Move. force is user-facing units/second, deltaTime is seconds.
 namespace EdgeBug {
-    static inline Vector3 ApplyDownwardPull(Vector3 motion, bool enabled, float force) {
-        if (!enabled || force <= 0.0f) return motion;
+    static inline Vector3 ApplyDownwardPull(Vector3 motion, bool enabled,
+        float force, float deltaTime) {
+        if (!enabled || force <= 0.0f || !isfinite(deltaTime) || deltaTime <= 0.0f)
+            return motion;
 
-        motion.y -= force * 0.02f;
+        motion.y -= force * deltaTime;
         return motion;
     }
 }
