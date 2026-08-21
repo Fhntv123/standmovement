@@ -435,9 +435,7 @@ struct Matrix16 {
 #define OFFSET_ARMSLOD_SET_GLOVE_MATERIALS         0xBCD2B0
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0xBFA0C0
 #define OFFSET_GUNCONTROLLER_FIRE                  0xA21040
-#define OFFSET_GUNCONTROLLER_FIRE_END              0xA21990  // next dump1 method wab
 #define OFFSET_GUNCONTROLLER_COMMAND               0xA1E030
-#define OFFSET_HITCASTER_ENTRY                     0xEEC9E0  // HitCaster.vxd<ceq>
 #define OFFSET_HITCASTER_CAST                      0xEEE090  // HitCaster.vxe<ceq>
 #define OFFSET_RAGDOLL_ACTIVATE                    0xBF4810  // RagdollController.nol
 #define OFFSET_RAGDOLL_MANAGER_RELEASE             0xBF67B0  // RagdollManager.npc
@@ -2449,13 +2447,13 @@ void(__fastcall* o_ArmsLod_SetGloveMaterials)(uintptr_t, uintptr_t, uintptr_t, c
 void(__fastcall* o_Weaponry_TakeWeapon)(uintptr_t, uint8_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Command)(uintptr_t, uintptr_t, float, float, const Il2CppMethod*) = nullptr;
-// Exact Win64 lowering for dump1 HitCaster.vxd<ceq>:
-// RCX=sret cer*, RDX=origin*, R8=direction*, R9=ceq*, MethodInfo=stack[0x28].
-// Only this specialized wrapper is detoured and called through its MinHook trampoline.
-using HitCasterEntryAbiFn = void(__fastcall*)(HitCasterCerAbi*,
-    const HitCasterVector3Abi*, const HitCasterVector3Abi*,
+// Win64 lowering for dump1 HitCaster.vxe<ceq>:
+// RCX=sret cer*, RDX=origin*, R8=direction*, XMM3=maxDistance,
+// stack[0x28]=ceq*, stack[0x30]=MethodInfo*.
+using HitCasterCastAbiFn = void(__fastcall*)(HitCasterCerAbi*,
+    const HitCasterVector3Abi*, const HitCasterVector3Abi*, float,
     const HitCasterCeqAbi*, const Il2CppMethod*);
-HitCasterEntryAbiFn o_HitCaster_Entry = nullptr;
+HitCasterCastAbiFn o_HitCaster_Cast = nullptr;
 thread_local bool insideLocalGunFire = false;
 thread_local bool insideAutoFireRequest = false;
 thread_local int activeLocalHitCastDepth = 0;
@@ -5392,8 +5390,7 @@ static HitCasterCer CallOriginalHitCaster(Vector3 origin, Vector3 direction,
     const HitCasterVector3Abi originAbi = ToHitCasterVector3Abi(origin);
     const HitCasterVector3Abi directionAbi = ToHitCasterVector3Abi(direction);
     const HitCasterCeqAbi parametersAbi = ToHitCasterCeqAbi(hitParameters);
-    (void)maxDistance; // vxd<ceq> owns the native 300-unit distance.
-    o_HitCaster_Entry(&rawResult, &originAbi, &directionAbi,
+    o_HitCaster_Cast(&rawResult, &originAbi, &directionAbi, maxDistance,
         &parametersAbi, method);
     return FromHitCasterCerAbi(rawResult);
 }
@@ -5412,6 +5409,8 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
     CollectPlayers(players, 64, playerCount);
     InterlockedExchange(&aimbotTargetsScanned, playerCount);
 
+    (void)castParameters;
+    (void)castMethod;
     bool found = false;
     int visibleCount = 0;
     float bestDistance = 3.402823466e+38F;
@@ -5430,36 +5429,17 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
         if (!isfinite(distance) || distance < 0.5f) continue;
         const Vector3 candidate(delta.x / distance, delta.y / distance, delta.z / distance);
 
+        // HitCaster is not a pure query. The old working detour called its native
+        // trampoline once per candidate as a "probe" and discarded each cer result.
+        // Those casts mutate managed hit/penetration state and were the real source of
+        // deferred heap corruption on the later audio/ntdll thread. Select geometrically
+        // here, then execute the native HitCaster exactly once for the chosen direction.
         bool reachable = false;
-        if (castParameters && castMethod && o_HitCaster_Entry) {
-            // This is the old working algorithm ported to dump1's value ABI: let the
-            // game calculate penetration and damage, then accept only the exact target.
-            const HitCasterCer probe = CallOriginalHitCaster(
-                origin, candidate, distance + 0.35f, *castParameters, castMethod);
-            int nativeDamage = 0;
-            const bool hitExactTarget =
-                ReadDump1NativeTargetDamage(probe, player, nativeDamage);
-            int penetrationCount = 0;
-            __try {
-                penetrationCount = probe.penetrations ?
-                    *reinterpret_cast<int*>(probe.penetrations + 0x18) : 0;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) { penetrationCount = -1; }
-            const bool directShot = penetrationCount == 0;
-            const bool validWallbang = aimbotAutoWall &&
-                penetrationCount > 0 && penetrationCount <= 64 &&
-                nativeDamage >= static_cast<int>(aimbotAutoWallMinDamage);
-            reachable = hitExactTarget && (directShot || validWallbang);
-        }
-        else if (!forceValidatedPath && !aimbotVisibleCheck) {
+        if (!forceValidatedPath && !aimbotVisibleCheck && !aimbotAutoWall)
             reachable = true;
-        }
-        else {
-            // Before the first real ceq is observed, only a verified geometric path is
-            // accepted. An Auto Wall bootstrap is later revalidated inside HitCaster.
+        else
             reachable = ValidateAimbotRayPath(origin, candidate, distance, player,
                 aimbotAutoWall);
-        }
         if (!reachable) continue;
         ++visibleCount;
         if (distance < bestDistance) {
@@ -5614,24 +5594,6 @@ void __fastcall hk_HitCaster_Cast(HitCasterCerAbi* returnValue,
     rawResult.value = result.value;
     rawResult.padding = result.padding;
     *returnValue = rawResult;
-}
-
-void __fastcall hk_HitCaster_Entry(HitCasterCerAbi* returnValue,
-    const HitCasterVector3Abi* originAbi,
-    const HitCasterVector3Abi* directionAbi,
-    const HitCasterCeqAbi* hitParametersAbi, const Il2CppMethod* method)
-{
-    if (!returnValue) return;
-    if (!originAbi || !directionAbi || !hitParametersAbi || !method ||
-        !o_HitCaster_Entry) {
-        *returnValue = {};
-        return;
-    }
-    // Run the old HitCaster direction logic, then execute the original specialized
-    // vxd<ceq> trampoline. Do not manually call vxe<ceq>: vxd supplies its hidden
-    // RGCTX/MethodInfo using IL2CPP's own generated ABI.
-    hk_HitCaster_Cast(returnValue, originAbi, directionAbi, 300.0f,
-        hitParametersAbi, method);
 }
 
 void __fastcall hk_ArmsLod_SetVisible(uintptr_t instance, bool visible, const Il2CppMethod* method)
@@ -9832,31 +9794,21 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_COMMAND));
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE));
-    // Hook the small specialized vxd<ceq> entry, not the large vxe<ceq> generic
-    // body that produced deferred heap corruption. The detour declaration mirrors
-    // dump1's exact hidden-sret ABI. All original/probe casts go back through
-    // this wrapper's trampoline, so IL2CPP itself supplies the inner vxe RGCTX ABI.
-    const MH_STATUS hitCasterEntryCreate = MH_CreateHook(
-        (LPVOID)(base + OFFSET_HITCASTER_ENTRY), hk_HitCaster_Entry,
-        (LPVOID*)&o_HitCaster_Entry);
-    const MH_STATUS hitCasterEntryEnable =
-        (hitCasterEntryCreate == MH_OK ||
-            hitCasterEntryCreate == MH_ERROR_ALREADY_CREATED) ?
-        MH_EnableHook((LPVOID)(base + OFFSET_HITCASTER_ENTRY)) :
-        hitCasterEntryCreate;
-    const bool hitCasterEntryReady =
-        (hitCasterEntryCreate == MH_OK ||
-            hitCasterEntryCreate == MH_ERROR_ALREADY_CREATED) &&
-        (hitCasterEntryEnable == MH_OK ||
-            hitCasterEntryEnable == MH_ERROR_ENABLED);
-    sprintf_s(aimbotStatus, hitCasterEntryReady ?
-        "Safe HitCaster.vxd hook active" :
-        "HitCaster.vxd hook failed: %d/%d",
-        (int)hitCasterEntryCreate, (int)hitCasterEntryEnable);
-    LINDY_LOG("[aimbot] vxd-hook create=%d enable=%d wrapper=%p trampoline=%p",
-        (int)hitCasterEntryCreate, (int)hitCasterEntryEnable,
-        (void*)(base + OFFSET_HITCASTER_ENTRY),
-        (void*)o_HitCaster_Entry);
+    // Restore the old working HitCaster.vxe<ceq> detour. The crash was in our
+    // detour logic, not evidence that MinHook itself damaged the ABI: the old code
+    // executed side-effectful native HitCaster probes for every candidate. This version
+    // calls the original trampoline exactly once per real shot.
+    const MH_STATUS hitCasterCreate = MH_CreateHook(
+        (LPVOID)(base + OFFSET_HITCASTER_CAST), hk_HitCaster_Cast,
+        (LPVOID*)&o_HitCaster_Cast);
+    const MH_STATUS hitCasterEnable =
+        (hitCasterCreate == MH_OK || hitCasterCreate == MH_ERROR_ALREADY_CREATED) ?
+        MH_EnableHook((LPVOID)(base + OFFSET_HITCASTER_CAST)) : hitCasterCreate;
+    sprintf_s(aimbotStatus, "HitCaster single-cast hook=%d/%d",
+        (int)hitCasterCreate, (int)hitCasterEnable);
+    LINDY_LOG("[aimbot] vxe single-cast create=%d enable=%d target=%p trampoline=%p",
+        (int)hitCasterCreate, (int)hitCasterEnable,
+        (void*)(base + OFFSET_HITCASTER_CAST), (void*)o_HitCaster_Cast);
 
     MH_CreateHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE), hk_RagdollActivate, (LPVOID*)&o_RagdollActivate);
     MH_EnableHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE));
