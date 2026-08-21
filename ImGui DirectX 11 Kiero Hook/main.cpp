@@ -8849,11 +8849,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&infinityAmmoRestores, 0);
         }
         ImGui::Checkbox("No Spread", &noSpreadEnabled);
-        ImGui::Checkbox("AWP Scoped FOV", &scopedFovEnabled);
+        ImGui::Checkbox("Scope FOV", &scopedFovEnabled);
         if (scopedFovEnabled) {
-            ImGui::SliderFloat("AWP Scoped FOV Slider", &scopedFov, 5.0f, 120.0f, "%.1f");
+            ImGui::SliderFloat("FOV##scope", &scopedFov, 5.0f, 120.0f, "%.1f");
             ImGui::SetNextItemWidth(120.0f);
-            if (ImGui::InputFloat("AWP Scoped FOV Value", &scopedFov, 1.0f, 10.0f, "%.1f")) {
+            if (ImGui::InputFloat("Value##scope_fov", &scopedFov, 1.0f, 10.0f, "%.1f")) {
                 if (scopedFov < 5.0f) scopedFov = 5.0f;
                 if (scopedFov > 120.0f) scopedFov = 120.0f;
             }
