@@ -749,6 +749,7 @@ std::vector<std::wstring> hitSoundFiles;
 SRWLOCK hitSoundLock = SRWLOCK_INIT;
 uintptr_t hitSoundLastResult = 0;
 ULONGLONG hitSoundLastResultAt = 0;
+volatile LONG pendingHitSound = 0;
 char hitSoundStatus[128] = "No .wav files found";
 
 bool hitMarkerEnabled = false;
@@ -3371,15 +3372,20 @@ void __fastcall hk_RagdollActivate(uintptr_t ragdoll, uintptr_t biped, Vector3 v
     corpse.materialMode = freezeCorpsesChamsMode;
     SetCorpseRigidbodiesFrozen(corpse, true);
     SetupFrozenCorpseMaterial(corpse);
+    std::vector<FrozenCorpseEntry> replaced;
     AcquireSRWLockExclusive(&frozenCorpseLock);
     for (auto it = frozenCorpses.begin(); it != frozenCorpses.end();) {
         if (it->ragdoll != ragdoll) { ++it; continue; }
-        RestoreFrozenCorpseMaterial(*it);
-        SetCorpseRigidbodiesFrozen(*it, false);
+        replaced.push_back(std::move(*it));
         it = frozenCorpses.erase(it);
     }
     frozenCorpses.push_back(std::move(corpse));
     ReleaseSRWLockExclusive(&frozenCorpseLock);
+    // Unity calls can re-enter ragdoll code. Keep them outside the SRW lock.
+    for (FrozenCorpseEntry& oldCorpse : replaced) {
+        RestoreFrozenCorpseMaterial(oldCorpse);
+        SetCorpseRigidbodiesFrozen(oldCorpse, false);
+    }
 }
 
 void __fastcall hk_RagdollManagerRelease(uintptr_t manager, uintptr_t ragdoll,
@@ -4566,6 +4572,8 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
         SendPendingPixelSurfChatMessageUnsafe();
     UpdateFrozenCorpses();
+    if (InterlockedExchange(&pendingHitSound, 0))
+        PlaySelectedHitSound();
     UpdatePenetrableSurfaceVisualization();
     UpdateVisibleAimbotCamera();
     InfinityAmmoLoop();
@@ -4578,71 +4586,28 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
 
 static bool ProjectTracerEnd(const Vector3& pos, ImVec2& screen);
 
-static bool ResolveConfirmedPlayerImpact(Vector3& impactPoint, Vector3& castEndFallback)
+static bool ResolveConfirmedPlayerImpact(Vector3& impactPoint,
+    Vector3& castEndFallback)
 {
-    Vector3 castStart, castEnd;
+    Vector3 castEnd;
     ULONGLONG castAt = 0;
+    bool castValid = false;
     AcquireSRWLockShared(&hitMarkerLock);
-    castStart = latestHitMarkerCastStart;
     castEnd = latestHitMarkerCastEnd;
     castAt = latestHitMarkerCastAt;
-    const bool castValid = latestHitMarkerCastValid;
+    castValid = latestHitMarkerCastValid;
     ReleaseSRWLockShared(&hitMarkerLock);
 
     const ULONGLONG now = GetTickCount64();
-    if (!castValid || !castAt || now < castAt || now - castAt > 2000) return false;
+    if (!castValid || !castAt || now < castAt || now - castAt > 2000 ||
+        !isfinite(castEnd.x) || !isfinite(castEnd.y) || !isfinite(castEnd.z))
+        return false;
+    // The HitCaster result endpoint is already validated when it is published.
+    // Do not enumerate players or call Transform methods from the synchronous
+    // hit/death callback: victims can be destroyed during the same callback.
+    impactPoint = castEnd;
     castEndFallback = castEnd;
-    const Vector3 segment = castEnd - castStart;
-    const float segmentLengthSquared = segment.x * segment.x + segment.y * segment.y + segment.z * segment.z;
-    if (segmentLengthSquared <= 0.0001f) return false;
-
-    void* players[64];
-    int playerCount = 0;
-    CollectPlayers(players, 64, playerCount);
-    void* localPlayer = GetLocalPC();
-    bool found = false;
-    float bestDistance = 6.0f;
-    Vector3 bestPoint;
-
-    for (int i = 0; i < playerCount; ++i) {
-        if (!players[i] || players[i] == localPlayer) continue;
-        Vector3 anchors[6];
-        int anchorCount = 0;
-        Vector3 playerAnchor;
-        if (GetPCPosition(players[i], playerAnchor)) anchors[anchorCount++] = playerAnchor;
-        __try {
-            const uintptr_t bipedMap = *reinterpret_cast<uintptr_t*>(
-                reinterpret_cast<uintptr_t>(players[i]) + 0x118);
-            if (bipedMap && o_Transform_get_position) {
-                const uintptr_t boneOffsets[] = { 0x20, 0x28, 0x30, 0x38, 0x40 };
-                for (uintptr_t boneOffset : boneOffsets) {
-                    const uintptr_t bone = *reinterpret_cast<uintptr_t*>(bipedMap + boneOffset);
-                    if (bone && anchorCount < 6)
-                        anchors[anchorCount++] = o_Transform_get_position(bone);
-                }
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-
-        for (int anchorIndex = 0; anchorIndex < anchorCount; ++anchorIndex) {
-            const Vector3 toAnchor = anchors[anchorIndex] - castStart;
-            float t = (toAnchor.x * segment.x + toAnchor.y * segment.y + toAnchor.z * segment.z) /
-                segmentLengthSquared;
-            if (t < 0.0f || t > 1.05f) continue;
-            const Vector3 point(
-                castStart.x + segment.x * t,
-                castStart.y + segment.y * t,
-                castStart.z + segment.z * t);
-            const float distance = point.Distance(anchors[anchorIndex]);
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                bestPoint = point;
-                found = true;
-            }
-        }
-    }
-    if (found) impactPoint = bestPoint;
-    return found;
+    return true;
 }
 
 static void ReadLocalHitPayload(uintptr_t shotData, int& damage, char* hitbox, size_t hitboxSize)
@@ -4760,8 +4725,8 @@ static void AddBulletImpact(const Vector3& position, bool serverConfirmed)
     ReleaseSRWLockExclusive(&bulletImpactLock);
 }
 
-void __fastcall hk_HitMarkerView_LocalHit(uintptr_t instance, void* victim,
-    uintptr_t shotData, const Il2CppMethod* method)
+static void ProcessLocalHitUnsafe(uintptr_t instance, void* victim,
+    uintptr_t shotData)
 {
     // bbru supplies the exact victim PlayerController and ccv payload. ccv.cgjc (+0x2C)
     // and its ccr[] (+0x38, each ccr.cgid +0x2C) are real calculated weapon damage.
@@ -4784,10 +4749,9 @@ void __fastcall hk_HitMarkerView_LocalHit(uintptr_t instance, void* victim,
         if (localPlayer && victim != localPlayer && localTeam && localTeam != 3 &&
             victimTeam && victimTeam != 3 && victimTeam != localTeam &&
             (shotData != hitSoundLastResult || now - hitSoundLastResultAt > 250)) {
-            if (PlaySelectedHitSound()) {
-                hitSoundLastResult = shotData;
-                hitSoundLastResultAt = now;
-            }
+            hitSoundLastResult = shotData;
+            hitSoundLastResultAt = now;
+            InterlockedExchange(&pendingHitSound, 1);
         }
     }
     if (keyValidated && hitLogEnabled && instance && instance == liveHitMarkerView && victim && shotData) {
@@ -4817,10 +4781,17 @@ void __fastcall hk_HitMarkerView_LocalHit(uintptr_t instance, void* victim,
             }
         }
     }
+}
+
+void __fastcall hk_HitMarkerView_LocalHit(uintptr_t instance, void* victim,
+    uintptr_t shotData, const Il2CppMethod* method)
+{
+    __try { ProcessLocalHitUnsafe(instance, victim, shotData); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
     o_HitMarkerView_LocalHit(instance, victim, shotData, method);
 }
 
-void __fastcall hk_HitMarkerView_Show(uintptr_t instance, bool value, bool playSound, const Il2CppMethod* method)
+static void ProcessHitMarkerShowUnsafe(uintptr_t instance, bool value)
 {
     // HitMarkerView.bbcx is the game's confirmed marker-display path. Restrict the
     // overlay to the marker owned by the active local HUD; remote HUD instances and
@@ -4846,6 +4817,13 @@ void __fastcall hk_HitMarkerView_Show(uintptr_t instance, bool value, bool playS
             InterlockedIncrement(resolved ? &hitMarkerResolvedCalls : &hitMarkerFallbackCalls);
         }
     }
+}
+
+void __fastcall hk_HitMarkerView_Show(uintptr_t instance, bool value,
+    bool playSound, const Il2CppMethod* method)
+{
+    __try { ProcessHitMarkerShowUnsafe(instance, value); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
     o_HitMarkerView_Show(instance, value, playSound, method);
 }
 
