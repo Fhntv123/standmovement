@@ -792,6 +792,15 @@ float bulletImpactsClientColor[3] = { 1.0f, 0.215f, 0.215f };
 float bulletImpactsConfirmedColor[3] = { 0.176f, 0.49f, 1.0f };
 bool noSpreadEnabled = false;
 bool removeScopeBorders = false;
+int removeScopeMode = 0; // 0 = Current, 1 = Custom
+float customScopeColor[3] = { 0.0f, 0.0f, 0.0f };
+float customScopeOpacity = 0.92f;
+float customScopeHorizontalLength = 420.0f;
+float customScopeVerticalLength = 260.0f;
+float customScopeGap = 0.0f;
+float customScopeThickness = 1.0f;
+float customScopeCenterDotSize = 2.0f;
+bool customScopeShadow = true;
 bool customScopeReticleVisible = false;
 uintptr_t liveAimView = 0;
 uintptr_t liveHudLocalPlayer = 0;
@@ -1682,6 +1691,9 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(fogEnabled); SAVE_FLOAT(fogStartDistance); SAVE_FLOAT(fogEndDistance); SAVE_FLOAT(fogDensity);
     SAVE_BOOL(thirdPersonEnabled); SAVE_FLOAT(thirdPersonHorizontalOffset); SAVE_FLOAT(thirdPersonHeightAdjustment); SAVE_FLOAT(thirdPersonDistanceAdjustment);
     SAVE_BOOL(infinityAmmo); SAVE_BOOL(doubleTapEnabled); SAVE_BOOL(noSpreadEnabled); SAVE_BOOL(removeScopeBorders);
+    SAVE_INT(removeScopeMode); SAVE_FLOAT(customScopeOpacity); SAVE_FLOAT(customScopeHorizontalLength);
+    SAVE_FLOAT(customScopeVerticalLength); SAVE_FLOAT(customScopeGap); SAVE_FLOAT(customScopeThickness);
+    SAVE_FLOAT(customScopeCenterDotSize); SAVE_BOOL(customScopeShadow);
     SAVE_BOOL(weaponChamsEnabled); SAVE_INT(weaponChamsMode); SAVE_BOOL(armChamsEnabled); SAVE_INT(armChamsMode);
     SAVE_BOOL(gloveChamsEnabled); SAVE_INT(gloveChamsMode); SAVE_BOOL(localPlayerChamsEnabled); SAVE_INT(localPlayerChamsMode);
     SAVE_BOOL(enemyChamsEnabled); SAVE_BOOL(enemyChamsThroughWalls); SAVE_INT(enemyChamsMode);
@@ -1726,6 +1738,7 @@ static bool SaveConfig(const char* requestedName)
     WriteConfigColor(path, "penetrableSurfaceFillColor", penetrableSurfaceFillColor);
     WriteConfigColor(path, "penetrableSurfaceOutlineColor", penetrableSurfaceOutlineColor);
     WriteConfigColor(path, "customSkyboxColor", customSkyboxColor);
+    WriteConfigColor(path, "customScopeColor", customScopeColor);
     WriteConfigColor(path, "hitMarkerColor", hitMarkerColor);
     WriteConfigColor(path, "freezeCorpsesChamsColor", freezeCorpsesChamsColor);
     WriteConfigColor(path, "bulletTracerStartColor", bulletTracerStartColor); WriteConfigColor(path, "bulletTracerEndColor", bulletTracerEndColor);
@@ -1772,6 +1785,9 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(fogEnabled); LOAD_FLOAT(fogStartDistance); LOAD_FLOAT(fogEndDistance); LOAD_FLOAT(fogDensity);
     LOAD_BOOL(thirdPersonEnabled); LOAD_FLOAT(thirdPersonHorizontalOffset); LOAD_FLOAT(thirdPersonHeightAdjustment); LOAD_FLOAT(thirdPersonDistanceAdjustment);
     LOAD_BOOL(infinityAmmo); LOAD_BOOL(doubleTapEnabled); LOAD_BOOL(noSpreadEnabled); LOAD_BOOL(removeScopeBorders);
+    LOAD_INT(removeScopeMode); LOAD_FLOAT(customScopeOpacity); LOAD_FLOAT(customScopeHorizontalLength);
+    LOAD_FLOAT(customScopeVerticalLength); LOAD_FLOAT(customScopeGap); LOAD_FLOAT(customScopeThickness);
+    LOAD_FLOAT(customScopeCenterDotSize); LOAD_BOOL(customScopeShadow);
     LOAD_BOOL(weaponChamsEnabled); LOAD_INT(weaponChamsMode); LOAD_BOOL(armChamsEnabled); LOAD_INT(armChamsMode);
     LOAD_BOOL(gloveChamsEnabled); LOAD_INT(gloveChamsMode); LOAD_BOOL(localPlayerChamsEnabled); LOAD_INT(localPlayerChamsMode);
     LOAD_BOOL(enemyChamsEnabled); LOAD_BOOL(enemyChamsThroughWalls); LOAD_INT(enemyChamsMode);
@@ -1822,6 +1838,25 @@ static bool LoadConfig(const char* requestedName)
     if (localPlayerChamsMode < 0 || localPlayerChamsMode > 7)
         localPlayerChamsMode = 0;
     if (enemyChamsMode < 0 || enemyChamsMode > 8) enemyChamsMode = 0;
+    if (removeScopeMode < 0 || removeScopeMode > 1) removeScopeMode = 0;
+    if (!isfinite(customScopeOpacity)) customScopeOpacity = 0.92f;
+    if (customScopeOpacity < 0.05f) customScopeOpacity = 0.05f;
+    if (customScopeOpacity > 1.0f) customScopeOpacity = 1.0f;
+    if (!isfinite(customScopeHorizontalLength)) customScopeHorizontalLength = 420.0f;
+    if (customScopeHorizontalLength < 10.0f) customScopeHorizontalLength = 10.0f;
+    if (customScopeHorizontalLength > 2000.0f) customScopeHorizontalLength = 2000.0f;
+    if (!isfinite(customScopeVerticalLength)) customScopeVerticalLength = 260.0f;
+    if (customScopeVerticalLength < 10.0f) customScopeVerticalLength = 10.0f;
+    if (customScopeVerticalLength > 1200.0f) customScopeVerticalLength = 1200.0f;
+    if (!isfinite(customScopeGap)) customScopeGap = 0.0f;
+    if (customScopeGap < 0.0f) customScopeGap = 0.0f;
+    if (customScopeGap > 100.0f) customScopeGap = 100.0f;
+    if (!isfinite(customScopeThickness)) customScopeThickness = 1.0f;
+    if (customScopeThickness < 0.5f) customScopeThickness = 0.5f;
+    if (customScopeThickness > 10.0f) customScopeThickness = 10.0f;
+    if (!isfinite(customScopeCenterDotSize)) customScopeCenterDotSize = 2.0f;
+    if (customScopeCenterDotSize < 0.0f) customScopeCenterDotSize = 0.0f;
+    if (customScopeCenterDotSize > 20.0f) customScopeCenterDotSize = 20.0f;
     if (!isfinite(cameraFov) || cameraFov < 30.0f) cameraFov = 30.0f;
     if (cameraFov > 150.0f) cameraFov = 150.0f;
     if (!isfinite(armsFov) || armsFov < 20.0f) armsFov = 20.0f;
@@ -1859,6 +1894,7 @@ static bool LoadConfig(const char* requestedName)
     ReadConfigColor(path, "penetrableSurfaceFillColor", penetrableSurfaceFillColor);
     ReadConfigColor(path, "penetrableSurfaceOutlineColor", penetrableSurfaceOutlineColor);
     ReadConfigColor(path, "customSkyboxColor", customSkyboxColor);
+    ReadConfigColor(path, "customScopeColor", customScopeColor);
     ReadConfigColor(path, "hitMarkerColor", hitMarkerColor);
     ReadConfigColor(path, "freezeCorpsesChamsColor", freezeCorpsesChamsColor);
     ReadConfigColor(path, "bulletTracerStartColor", bulletTracerStartColor); ReadConfigColor(path, "bulletTracerEndColor", bulletTracerEndColor);
@@ -4897,13 +4933,47 @@ void DrawBorderlessScopeReticle()
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const ImVec2 center(display.x * 0.5f, display.y * 0.5f);
     ImDrawList* draw = ImGui::GetForegroundDrawList();
-    const ImU32 shadow = IM_COL32(255, 255, 255, 90);
-    const ImU32 line = IM_COL32(0, 0, 0, 235);
-    draw->AddLine(ImVec2(0.0f, center.y + 1.0f), ImVec2(display.x, center.y + 1.0f), shadow, 1.0f);
-    draw->AddLine(ImVec2(center.x + 1.0f, 0.0f), ImVec2(center.x + 1.0f, display.y), shadow, 1.0f);
-    draw->AddLine(ImVec2(0.0f, center.y), ImVec2(display.x, center.y), line, 1.0f);
-    draw->AddLine(ImVec2(center.x, 0.0f), ImVec2(center.x, display.y), line, 1.0f);
-    draw->AddCircleFilled(center, 2.0f, line);
+    if (removeScopeMode == 0) {
+        // Original mode: keep the existing full-screen black cross unchanged.
+        const ImU32 shadow = IM_COL32(255, 255, 255, 90);
+        const ImU32 line = IM_COL32(0, 0, 0, 235);
+        draw->AddLine(ImVec2(0.0f, center.y + 1.0f), ImVec2(display.x, center.y + 1.0f), shadow, 1.0f);
+        draw->AddLine(ImVec2(center.x + 1.0f, 0.0f), ImVec2(center.x + 1.0f, display.y), shadow, 1.0f);
+        draw->AddLine(ImVec2(0.0f, center.y), ImVec2(display.x, center.y), line, 1.0f);
+        draw->AddLine(ImVec2(center.x, 0.0f), ImVec2(center.x, display.y), line, 1.0f);
+        draw->AddCircleFilled(center, 2.0f, line);
+        return;
+    }
+
+    const ImU32 line = ImGui::ColorConvertFloat4ToU32(ImVec4(
+        customScopeColor[0], customScopeColor[1], customScopeColor[2],
+        customScopeOpacity));
+    const ImU32 shadow = IM_COL32(0, 0, 0,
+        static_cast<int>(customScopeOpacity * 180.0f));
+    const float halfHorizontal = customScopeHorizontalLength * 0.5f;
+    const float halfVertical = customScopeVerticalLength * 0.5f;
+    const float gap = customScopeGap;
+    const float thickness = customScopeThickness;
+    const ImVec2 horizontalLeft(center.x - gap, center.y);
+    const ImVec2 horizontalRight(center.x + gap, center.y);
+    const ImVec2 verticalTop(center.x, center.y - gap);
+    const ImVec2 verticalBottom(center.x, center.y + gap);
+    if (customScopeShadow) {
+        const float shadowThickness = thickness + 2.0f;
+        draw->AddLine(ImVec2(center.x - halfHorizontal, center.y), horizontalLeft, shadow, shadowThickness);
+        draw->AddLine(horizontalRight, ImVec2(center.x + halfHorizontal, center.y), shadow, shadowThickness);
+        draw->AddLine(ImVec2(center.x, center.y - halfVertical), verticalTop, shadow, shadowThickness);
+        draw->AddLine(verticalBottom, ImVec2(center.x, center.y + halfVertical), shadow, shadowThickness);
+    }
+    draw->AddLine(ImVec2(center.x - halfHorizontal, center.y), horizontalLeft, line, thickness);
+    draw->AddLine(horizontalRight, ImVec2(center.x + halfHorizontal, center.y), line, thickness);
+    draw->AddLine(ImVec2(center.x, center.y - halfVertical), verticalTop, line, thickness);
+    draw->AddLine(verticalBottom, ImVec2(center.x, center.y + halfVertical), line, thickness);
+    if (customScopeCenterDotSize > 0.0f) {
+        if (customScopeShadow)
+            draw->AddCircleFilled(center, customScopeCenterDotSize + 1.0f, shadow);
+        draw->AddCircleFilled(center, customScopeCenterDotSize, line);
+    }
 }
 
 static bool GetAimbotHead(void* player, Vector3& headPosition)
@@ -8776,7 +8846,33 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&infinityAmmoRestores, 0);
         }
         ImGui::Checkbox("No Spread", &noSpreadEnabled);
-        if (ImGui::Checkbox("Remove Scope Borders", &removeScopeBorders)) InterlockedExchange(&pendingScopeOverlayRefresh, 1);
+        if (ImGui::Checkbox("Remove Scope Borders", &removeScopeBorders))
+            InterlockedExchange(&pendingScopeOverlayRefresh, 1);
+        if (removeScopeBorders) {
+            const char* removeScopeModes[] = { "Current", "Custom" };
+            ImGui::Combo("Remove Scope Mode", &removeScopeMode,
+                removeScopeModes, IM_ARRAYSIZE(removeScopeModes));
+            if (removeScopeMode == 1) {
+                ImGui::ColorEdit3("Custom Scope Color", customScopeColor);
+                ImGui::SliderFloat("Custom Scope Opacity", &customScopeOpacity, 0.05f, 1.0f, "%.2f");
+                ImGui::SliderFloat("Custom Scope Horizontal", &customScopeHorizontalLength, 10.0f, 2000.0f, "%.0f px");
+                ImGui::SliderFloat("Custom Scope Vertical", &customScopeVerticalLength, 10.0f, 1200.0f, "%.0f px");
+                ImGui::SliderFloat("Custom Scope Gap", &customScopeGap, 0.0f, 100.0f, "%.0f px");
+                ImGui::SliderFloat("Custom Scope Thickness", &customScopeThickness, 0.5f, 10.0f, "%.1f px");
+                ImGui::SliderFloat("Custom Scope Dot", &customScopeCenterDotSize, 0.0f, 20.0f, "%.1f px");
+                ImGui::Checkbox("Custom Scope Shadow", &customScopeShadow);
+                if (ImGui::Button("Reset Custom Scope")) {
+                    customScopeColor[0] = 0.0f; customScopeColor[1] = 0.0f; customScopeColor[2] = 0.0f;
+                    customScopeOpacity = 0.92f;
+                    customScopeHorizontalLength = 420.0f;
+                    customScopeVerticalLength = 260.0f;
+                    customScopeGap = 0.0f;
+                    customScopeThickness = 1.0f;
+                    customScopeCenterDotSize = 2.0f;
+                    customScopeShadow = true;
+                }
+            }
+        }
         if (ImGui::Checkbox("Weapon Chams", &weaponChamsEnabled)) {
             strcpy_s(weaponChamsStatus, weaponChamsEnabled ? "Applying to equipped weapon" : "Restoring original materials");
             InterlockedExchange(&pendingWeaponChamsRefresh, 1);
