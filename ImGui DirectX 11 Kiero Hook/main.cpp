@@ -5301,41 +5301,24 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
         !o_Component_GetInParent || !g_PlayerControllerReflectionType)
         return false;
     __try {
-        // PlayerHitbox colliders are triggers. QueryTriggerInteraction.Ignore (1)
-        // omitted the target behind a wall, so targetDistance was never found and
-        // Auto Wall always failed before the real HitCaster ran. Collide (2) includes
-        // both world surfaces and the authoritative target hitbox.
+        // Include trigger hitboxes as well as world surfaces. The result no longer
+        // depends on receiving a target hit; the selected head position is the limit.
         Il2CppArray* rayHits = o_Physics_RaycastAll(
             origin, direction, distance + 0.35f, -1, 2, nullptr);
         const uintptr_t array = reinterpret_cast<uintptr_t>(rayHits);
         const size_t count = array ? *reinterpret_cast<size_t*>(array + 0x18) : 0;
-        if (!array || count == 0 || count > 128) return false;
+        if (!array || count > 128) return false;
 
-        // RaycastAll is not guaranteed to be ordered. Find the target's nearest hit and
-        // independently inspect every collider before it. No collider-free fallback.
-        float targetDistance = 3.402823466e+38F;
-        for (size_t i = 0; i < count; ++i) {
-            RaycastHitNative* hit = reinterpret_cast<RaycastHitNative*>(
-                array + 0x20 + i * sizeof(RaycastHitNative));
-            if (!isfinite(hit->distance) || hit->distance < 0.0f) continue;
-            const uintptr_t collider = o_RaycastHit_get_collider(hit, nullptr);
-            if (!collider) continue;
-            const uintptr_t hitPlayer = o_Component_GetInParent(
-                collider, reinterpret_cast<uintptr_t>(g_PlayerControllerReflectionType),
-                true, nullptr);
-            if (hitPlayer == reinterpret_cast<uintptr_t>(targetPlayer) &&
-                hit->distance < targetDistance)
-                targetDistance = hit->distance;
-        }
-        if (!isfinite(targetDistance) || targetDistance == 3.402823466e+38F)
-            return false;
-
+        // The candidate head distance is authoritative. Do not require RaycastAll to
+        // return the target's trigger collider: at long range Unity can omit that hit,
+        // which previously rejected a clear shot. Inspect only colliders before the
+        // selected head position; the target's own colliders are ignored below.
         int obstructionCount = 0;
         for (size_t i = 0; i < count; ++i) {
             RaycastHitNative* hit = reinterpret_cast<RaycastHitNative*>(
                 array + 0x20 + i * sizeof(RaycastHitNative));
             if (!isfinite(hit->distance) || hit->distance < 0.0f ||
-                hit->distance >= targetDistance - 0.05f)
+                hit->distance >= distance - 0.05f)
                 continue;
             const uintptr_t collider = o_RaycastHit_get_collider(hit, nullptr);
             if (!collider) return false;
