@@ -9,6 +9,7 @@
 #include <fstream>
 #include <cstring>
 #include <cmath>
+#include <type_traits>
 
 #include <string>
 
@@ -308,6 +309,36 @@ struct HitCasterCer {
     int padding;                // +0x2C
 };
 static_assert(sizeof(HitCasterCer) == 0x30, "dump1 cer layout changed");
+
+// Exact POD ABI mirrors of dump1/il2cpp.h UnityEngine_Vector3_o,
+// ceq_o and cer_o. Do not use the convenience Vector3 type at the detour
+// boundary: it has user-provided constructors and can change MSVC's hidden
+// struct-return/aggregate argument lowering for the 0x30-byte cer return.
+struct HitCasterVector3Abi { float x, y, z; };
+struct HitCasterCeqAbi {
+    uintptr_t damageDefinition;
+    float valueA;
+    float valueB;
+    int32_t valueC;
+    int32_t padding;
+};
+struct HitCasterCerAbi {
+    HitCasterVector3Abi start;
+    HitCasterVector3Abi end;
+    uintptr_t hitDictionary;
+    uintptr_t penetrations;
+    float value;
+    int32_t padding;
+};
+static_assert(sizeof(HitCasterVector3Abi) == 0x0C, "dump1 Vector3 ABI changed");
+static_assert(sizeof(HitCasterCeqAbi) == 0x18, "dump1 ceq ABI changed");
+static_assert(sizeof(HitCasterCerAbi) == 0x30, "dump1 cer ABI changed");
+static_assert(std::is_standard_layout_v<HitCasterVector3Abi> &&
+    std::is_trivially_copyable_v<HitCasterVector3Abi>, "Vector3 ABI must stay POD");
+static_assert(std::is_standard_layout_v<HitCasterCeqAbi> &&
+    std::is_trivially_copyable_v<HitCasterCeqAbi>, "ceq ABI must stay POD");
+static_assert(std::is_standard_layout_v<HitCasterCerAbi> &&
+    std::is_trivially_copyable_v<HitCasterCerAbi>, "cer ABI must stay POD");
 
 struct Color {
 
@@ -2416,20 +2447,17 @@ void(__fastcall* o_ArmsLod_SetGloveMaterials)(uintptr_t, uintptr_t, uintptr_t, c
 void(__fastcall* o_Weaponry_TakeWeapon)(uintptr_t, uint8_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Command)(uintptr_t, uintptr_t, float, float, const Il2CppMethod*) = nullptr;
-HitCasterCer(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float,
-    HitCasterCeq, const Il2CppMethod*) = nullptr;
+// Win64 lowering for dump1 HitCaster.vxe<ceq>:
+// RCX=sret cer*, RDX=origin*, R8=direction*, XMM3=maxDistance,
+// stack[0x28]=ceq*, stack[0x30]=MethodInfo*. Express it directly instead of
+// asking MSVC to synthesize hidden aggregate ABI around a detour/trampoline.
+using HitCasterCastAbiFn = void(__fastcall*)(HitCasterCerAbi*,
+    const HitCasterVector3Abi*, const HitCasterVector3Abi*, float,
+    const HitCasterCeqAbi*, const Il2CppMethod*);
+HitCasterCastAbiFn o_HitCaster_Cast = nullptr;
 thread_local bool insideLocalGunFire = false;
 thread_local bool insideAutoFireRequest = false;
 thread_local int activeLocalHitCastDepth = 0;
-thread_local bool silentAimbotAimPending = false;
-thread_local uintptr_t silentAimbotPendingGun = 0;
-thread_local uintptr_t silentAimbotPendingController = 0;
-thread_local uintptr_t silentAimbotPendingData = 0;
-thread_local Vector3 silentAimbotPendingOriginalAim;
-thread_local Vector3 silentAimbotPendingOriginalEuler;
-thread_local ULONGLONG silentAimbotPendingAt = 0;
-thread_local bool aimbotCommandAimActive = false;
-thread_local bool aimbotCommandFireConsumed = false;
 
 static bool NeedsLocalHitCastTracking()
 {
@@ -5321,6 +5349,53 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+static HitCasterVector3Abi ToHitCasterVector3Abi(Vector3 value)
+{
+    HitCasterVector3Abi result = { value.x, value.y, value.z };
+    return result;
+}
+
+static Vector3 FromHitCasterVector3Abi(HitCasterVector3Abi value)
+{
+    return Vector3(value.x, value.y, value.z);
+}
+
+static HitCasterCeqAbi ToHitCasterCeqAbi(const HitCasterCeq& value)
+{
+    HitCasterCeqAbi result = {};
+    result.damageDefinition = value.damageDefinition;
+    result.valueA = value.valueA;
+    result.valueB = value.valueB;
+    result.valueC = value.valueC;
+    result.padding = value.padding;
+    return result;
+}
+
+static HitCasterCer FromHitCasterCerAbi(const HitCasterCerAbi& value)
+{
+    HitCasterCer result = {};
+    result.start = FromHitCasterVector3Abi(value.start);
+    result.end = FromHitCasterVector3Abi(value.end);
+    result.hitDictionary = value.hitDictionary;
+    result.penetrations = value.penetrations;
+    result.value = value.value;
+    result.padding = value.padding;
+    return result;
+}
+
+static HitCasterCer CallOriginalHitCaster(Vector3 origin, Vector3 direction,
+    float maxDistance, const HitCasterCeq& hitParameters,
+    const Il2CppMethod* method)
+{
+    HitCasterCerAbi rawResult = {};
+    const HitCasterVector3Abi originAbi = ToHitCasterVector3Abi(origin);
+    const HitCasterVector3Abi directionAbi = ToHitCasterVector3Abi(direction);
+    const HitCasterCeqAbi parametersAbi = ToHitCasterCeqAbi(hitParameters);
+    o_HitCaster_Cast(&rawResult, &originAbi, &directionAbi, maxDistance,
+        &parametersAbi, method);
+    return FromHitCasterCerAbi(rawResult);
+}
+
 static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
     const HitCasterCeq* castParameters, const Il2CppMethod* castMethod,
     Vector3& outDirection)
@@ -5357,7 +5432,7 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
         if (castParameters && castMethod && o_HitCaster_Cast) {
             // This is the old working algorithm ported to dump1's value ABI: let the
             // game calculate penetration and damage, then accept only the exact target.
-            const HitCasterCer probe = o_HitCaster_Cast(
+            const HitCasterCer probe = CallOriginalHitCaster(
                 origin, candidate, distance + 0.35f, *castParameters, castMethod);
             int nativeDamage = 0;
             const bool hitExactTarget =
@@ -5396,9 +5471,24 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
     return found;
 }
 
-HitCasterCer __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction,
-    float maxDistance, HitCasterCeq hitParameters, const Il2CppMethod* method)
+void __fastcall hk_HitCaster_Cast(HitCasterCerAbi* returnValue,
+    const HitCasterVector3Abi* originAbi,
+    const HitCasterVector3Abi* directionAbi, float maxDistance,
+    const HitCasterCeqAbi* hitParametersAbi, const Il2CppMethod* method)
 {
+    if (!returnValue) return;
+    if (!originAbi || !directionAbi || !hitParametersAbi) {
+        *returnValue = {};
+        return;
+    }
+    const Vector3 origin = FromHitCasterVector3Abi(*originAbi);
+    Vector3 direction = FromHitCasterVector3Abi(*directionAbi);
+    HitCasterCeq hitParameters = {};
+    hitParameters.damageDefinition = hitParametersAbi->damageDefinition;
+    hitParameters.valueA = hitParametersAbi->valueA;
+    hitParameters.valueB = hitParametersAbi->valueB;
+    hitParameters.valueC = hitParametersAbi->valueC;
+    hitParameters.padding = hitParametersAbi->padding;
     RecordCrashBreadcrumb(CrashCastEnter, hitParameters.damageDefinition, reinterpret_cast<uintptr_t>(method));
     bool applyVisibleSnapAfterCast = false;
     Vector3 visibleSnapDirection;
@@ -5435,8 +5525,8 @@ HitCasterCer __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction,
             if (insideAutoFireRequest) {
                 InterlockedIncrement(&aimbotAutoFireRejected);
                 strcpy_s(aimbotStatus, "Auto Fire suppressed: native cast rejected path");
-                HitCasterCer rejected = {};
-                return rejected;
+                *returnValue = {};
+                return;
             }
             strcpy_s(aimbotStatus, "No reachable enemy; original shot kept");
         }
@@ -5456,7 +5546,7 @@ HitCasterCer __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction,
         NeedsLocalHitCastTracking() && insideLocalGunFire;
     if (markLocalHitCast) ++activeLocalHitCastDepth;
     RecordCrashBreadcrumb(CrashCastOriginalEnter, hitParameters.damageDefinition, reinterpret_cast<uintptr_t>(method));
-    const HitCasterCer result = o_HitCaster_Cast(
+    const HitCasterCer result = CallOriginalHitCaster(
         origin, direction, maxDistance, hitParameters, method);
     RecordCrashBreadcrumb(CrashCastOriginalDone, result.hitDictionary, result.penetrations);
     if (markLocalHitCast) --activeLocalHitCastDepth;
@@ -5514,7 +5604,14 @@ HitCasterCer __fastcall hk_HitCaster_Cast(Vector3 origin, Vector3 direction,
         }
     }
     RecordCrashBreadcrumb(CrashCastExit, result.hitDictionary, result.penetrations);
-    return result;
+    HitCasterCerAbi rawResult = {};
+    rawResult.start = ToHitCasterVector3Abi(result.start);
+    rawResult.end = ToHitCasterVector3Abi(result.end);
+    rawResult.hitDictionary = result.hitDictionary;
+    rawResult.penetrations = result.penetrations;
+    rawResult.value = result.value;
+    rawResult.padding = result.padding;
+    *returnValue = rawResult;
 }
 
 void __fastcall hk_ArmsLod_SetVisible(uintptr_t instance, bool visible, const Il2CppMethod* method)
@@ -5643,141 +5740,11 @@ static bool HasVisibleTargetBeforeNativeFire(uintptr_t gun)
         origin, true, cached, cachedMethod, direction);
 }
 
-static void ClearSilentAimbotPendingState()
-{
-    silentAimbotAimPending = false;
-    silentAimbotPendingGun = 0;
-    silentAimbotPendingController = 0;
-    silentAimbotPendingData = 0;
-    silentAimbotPendingAt = 0;
-}
-
-static void RestoreSilentAimbotAimPending()
-{
-    if (!silentAimbotAimPending) return;
-    __try {
-        if (silentAimbotPendingController && silentAimbotPendingData) {
-            *reinterpret_cast<Vector3*>(silentAimbotPendingData + 0x18) =
-                silentAimbotPendingOriginalAim;
-            *reinterpret_cast<Vector3*>(silentAimbotPendingData + 0x24) =
-                silentAimbotPendingOriginalEuler;
-            if (o_AimController_SetHeadDirective)
-                o_AimController_SetHeadDirective(silentAimbotPendingController,
-                    silentAimbotPendingOriginalAim, nullptr);
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-    ClearSilentAimbotPendingState();
-}
-
-static bool ApplyAimbotAimBeforeCommand(uintptr_t gun, Vector3* originalAim,
-    Vector3* originalEuler, uintptr_t* aimControllerOut, uintptr_t* aimingDataOut,
-    Vector3* targetAimOut)
-{
-    if (!gun || !originalAim || !originalEuler || !aimControllerOut ||
-        !aimingDataOut || !targetAimOut || !liveHudLocalPlayer ||
-        (!aimbotEnabled && !visibleAimbotEnabled))
-        return false;
-    if (silentAimbotAimPending) {
-        const ULONGLONG now = GetTickCount64();
-        if (silentAimbotPendingGun != gun || now < silentAimbotPendingAt ||
-            now - silentAimbotPendingAt > 250)
-            RestoreSilentAimbotAimPending();
-        else
-            return false;
-    }
-    __try {
-        const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
-        const uintptr_t owner = *reinterpret_cast<uintptr_t*>(gun + 0x20);
-        if (!((currentWeapon && gun == currentWeapon) || owner == liveHudLocalPlayer))
-            return false;
-        const uintptr_t aimController =
-            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
-        const uintptr_t aimingData = aimController ?
-            *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
-        const uintptr_t camera = GetCamera();
-        const uintptr_t transform = camera && o_Component_get_transform ?
-            o_Component_get_transform(camera) : 0;
-        if (!aimController || !aimingData || !transform ||
-            !o_Transform_get_position)
-            return false;
-        const Vector3 origin = o_Transform_get_position(transform);
-        Vector3 targetDirection;
-        if (!FindVisibleAimbotDirection(
-            origin, false, nullptr, nullptr, targetDirection))
-            return false;
-        const Vector3 targetAim = DirectionToCameraEuler(targetDirection);
-        activeLocalWeaponController = gun;
-        *originalAim = *reinterpret_cast<Vector3*>(aimingData + 0x18);
-        *originalEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
-        *aimControllerOut = aimController;
-        *aimingDataOut = aimingData;
-        *targetAimOut = targetAim;
-        *reinterpret_cast<Vector3*>(aimingData + 0x18) = targetAim;
-        *reinterpret_cast<Vector3*>(aimingData + 0x24) = targetAim;
-        if (o_AimController_SetHeadDirective)
-            o_AimController_SetHeadDirective(aimController, targetAim, nullptr);
-        InterlockedIncrement(&aimbotShots);
-        InterlockedIncrement(&aimbotApplied);
-        strcpy_s(aimbotStatus, visibleAimbotEnabled ?
-            "Native aim applied before weapon command" :
-            "Silent native aim applied before weapon command");
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
-
-static void FinishAimbotAimAfterCommand(bool applied, bool fireConsumed,
-    uintptr_t aimController, uintptr_t aimingData, Vector3 originalAim,
-    Vector3 originalEuler, Vector3 targetAim)
-{
-    if (!applied || !aimController || !aimingData) return;
-    __try {
-        if (visibleAimbotEnabled) {
-            visibleAimbotOwnerPlayer = liveHudLocalPlayer;
-            visibleAimbotAimController = aimController;
-            visibleAimbotAimingData = aimingData;
-            visibleAimbotOriginalAimAngle = originalAim;
-            visibleAimbotOriginalAimEuler = originalEuler;
-            visibleAimbotTargetAim = targetAim;
-            visibleAimbotRestoreAt = GetTickCount64() +
-                static_cast<ULONGLONG>(visibleAimbotHoldMs);
-            visibleAimbotCameraActive = true;
-        }
-        else if (fireConsumed) {
-            *reinterpret_cast<Vector3*>(aimingData + 0x18) = originalAim;
-            *reinterpret_cast<Vector3*>(aimingData + 0x24) = originalEuler;
-            if (o_AimController_SetHeadDirective)
-                o_AimController_SetHeadDirective(aimController, originalAim, nullptr);
-            strcpy_s(aimbotStatus, "Silent aim consumed by native Fire");
-        }
-        else {
-            silentAimbotAimPending = true;
-            silentAimbotPendingGun = activeLocalWeaponController;
-            silentAimbotPendingController = aimController;
-            silentAimbotPendingData = aimingData;
-            silentAimbotPendingOriginalAim = originalAim;
-            silentAimbotPendingOriginalEuler = originalEuler;
-            silentAimbotPendingAt = GetTickCount64();
-            strcpy_s(aimbotStatus, "Silent aim waiting for delayed native Fire");
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        ClearVisibleAimbotCameraStateUnsafe();
-    }
-}
-
-void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, float frameTime, float commandTime, const Il2CppMethod* method)
+void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command,
+    float frameTime, float commandTime, const Il2CppMethod* method)
 {
     bool injectNativeFire = false;
     bool originalPrimaryFire = false;
-    Vector3 originalAim;
-    Vector3 originalEuler;
-    Vector3 targetAim;
-    uintptr_t commandAimController = 0;
-    uintptr_t commandAimingData = 0;
-    bool commandAimApplied = false;
-    bool shouldAimThisCommand = false;
     const ULONGLONG now = GetTickCount64();
     __try {
         const uintptr_t currentWeapon = GetCurrentLocalWeaponController();
@@ -5792,38 +5759,24 @@ void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, 
                 originalPrimaryFire = *reinterpret_cast<bool*>(command + 0x10);
                 *reinterpret_cast<bool*>(command + 0x10) = true;
                 injectNativeFire = true;
-                // Persist across this command call: some weapon states schedule the
-                // actual Fire/HitCaster after wfz returns.
                 aimbotAutoFirePendingGun = instance;
-                aimbotAutoFirePendingUntil = now + GetNativeAutoFireIntervalMs(instance) + 100;
-                aimbotAutoFireNextDecisionAt = now + GetNativeAutoFireIntervalMs(instance);
+                aimbotAutoFirePendingUntil = now +
+                    GetNativeAutoFireIntervalMs(instance) + 100;
+                aimbotAutoFireNextDecisionAt = now +
+                    GetNativeAutoFireIntervalMs(instance);
                 InterlockedIncrement(&aimbotAutoFireNativeCommands);
-            } else {
+            }
+            else {
                 aimbotAutoFireNextDecisionAt = now;
                 InterlockedIncrement(&aimbotAutoFireRejected);
-                strcpy_s(aimbotStatus, "Auto Fire blocked: no direct shot or valid wallbang");
+                strcpy_s(aimbotStatus,
+                    "Auto Fire blocked: no direct shot or valid wallbang");
             }
         }
-        shouldAimThisCommand = isLocalGun &&
-            *reinterpret_cast<bool*>(command + 0x10);
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        injectNativeFire = false;
-        shouldAimThisCommand = false;
-    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { injectNativeFire = false; }
 
-    if (shouldAimThisCommand)
-        commandAimApplied = ApplyAimbotAimBeforeCommand(instance,
-            &originalAim, &originalEuler, &commandAimController,
-            &commandAimingData, &targetAim);
-    aimbotCommandAimActive = commandAimApplied;
-    aimbotCommandFireConsumed = false;
     o_GunController_Command(instance, command, frameTime, commandTime, method);
-    aimbotCommandAimActive = false;
-    FinishAimbotAimAfterCommand(commandAimApplied,
-        aimbotCommandFireConsumed, commandAimController, commandAimingData,
-        originalAim, originalEuler, targetAim);
-    aimbotCommandFireConsumed = false;
 
     if (injectNativeFire) {
         __try { *reinterpret_cast<bool*>(command + 0x10) = originalPrimaryFire; }
@@ -5834,7 +5787,6 @@ void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, 
         aimbotAutoFirePendingUntil = 0;
     }
 }
-
 
 void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, const Il2CppMethod* method)
 {
@@ -5850,8 +5802,6 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
     if (isLocalGun) activeLocalWeaponController = instance;
-    if (isLocalGun && aimbotCommandAimActive)
-        aimbotCommandFireConsumed = true;
     const ULONGLONG fireNow = GetTickCount64();
     if (isLocalGun && infinityAmmo) InterlockedIncrement(&infinityAmmoFireCalls);
     short ammoBeforeShot = -1;
@@ -5910,9 +5860,6 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
         }
         InterlockedIncrement(&doubleTapExtraShots);
     }
-    if (isLocalGun && silentAimbotAimPending &&
-        silentAimbotPendingGun == instance)
-        RestoreSilentAimbotAimPending();
     insideLocalGunFire = false;
     insideAutoFireRequest = false;
     if (persistentAutoRequest) {
@@ -9865,18 +9812,17 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_COMMAND));
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE));
-    // Do not detour the shared generic HitCaster.vxe<ceq> entry point. The crash log
-    // repeatedly captured ntdll unwinding/scanning this exact patched address
-    // (GameAssembly + 0xEEE090) on a separate worker after every kill hook had returned.
-    // A native generic method returning the 0x30-byte cer value uses hidden ABI state
-    // that MinHook cannot safely reproduce at this entry. Keep the unpatched address
-    // only for direct native probes; local-hit tracking remains around GunController.Fire.
-    o_HitCaster_Cast = reinterpret_cast<decltype(o_HitCaster_Cast)>(
-        base + OFFSET_HITCASTER_CAST);
-    aimbotLastCeqValid = false;
-    aimbotLastCeqGun = 0;
-    aimbotLastHitCasterMethod = nullptr;
-    strcpy_s(aimbotStatus, "Silent aim held through native Fire");
+    // dump1/il2cpp.h exact POD ABI: Vector3=0x0C, ceq=0x18, cer=0x30.
+    // Use the explicit Win64 lowered ABI (sret + aggregate pointers), so neither
+    // the detour nor trampoline depends on MSVC inferring hidden struct conventions.
+    const MH_STATUS hitCasterCreate = MH_CreateHook(
+        (LPVOID)(base + OFFSET_HITCASTER_CAST), hk_HitCaster_Cast,
+        (LPVOID*)&o_HitCaster_Cast);
+    const MH_STATUS hitCasterEnable =
+        (hitCasterCreate == MH_OK || hitCasterCreate == MH_ERROR_ALREADY_CREATED) ?
+        MH_EnableHook((LPVOID)(base + OFFSET_HITCASTER_CAST)) : hitCasterCreate;
+    sprintf_s(aimbotStatus, "ABI-safe dump1 HitCaster hook=%d/%d",
+        (int)hitCasterCreate, (int)hitCasterEnable);
 
     MH_CreateHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE), hk_RagdollActivate, (LPVOID*)&o_RagdollActivate);
     MH_EnableHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE));
