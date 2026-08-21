@@ -2460,6 +2460,12 @@ static bool hitCasterBreakpointInstalled = false;
 thread_local bool hitCasterBreakpointRearm = false;
 thread_local bool hitCasterDirectionPending = false;
 thread_local HitCasterVector3Abi hitCasterPendingDirection = {};
+thread_local bool localShotGeometryPending = false;
+thread_local Vector3 localShotPendingOrigin;
+thread_local Vector3 localShotPendingDirection;
+thread_local Vector3 localShotPendingTarget;
+thread_local bool aimbotSelectedTargetPointValid = false;
+thread_local Vector3 aimbotSelectedTargetPoint;
 thread_local bool visibleAimbotSnapPending = false;
 thread_local Vector3 visibleAimbotPendingDirection;
 thread_local bool insideLocalGunFire = false;
@@ -5287,11 +5293,10 @@ static bool ReadDump1NativeTargetDamage(const HitCasterCer& castResult,
 
 static bool IsStrictlyPenetrableSurface(int type)
 {
-    // dump1 cex. Fail closed: only thin/breakable materials are accepted without
-    // weapon-specific native damage data. Concrete, brick, metal, ground, etc. reject.
-    return type == 1 || type == 2 || type == 3 || type == 4 ||
-        type == 5 || type == 6 || type == 11 || type == 12 ||
-        type == 22 || type == 26;
+    // dump1 cex. Keep this in sync with the project's tagged penetrable-surface
+    // scanner; unknown, character, ground, water and solid/no-hole types reject.
+    return (type >= 1 && type <= 9) || type == 11 || type == 12 ||
+        type == 16 || type == 17 || type == 22 || type == 26;
 }
 
 static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float distance,
@@ -5413,10 +5418,12 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
 
     (void)castParameters;
     (void)castMethod;
+    aimbotSelectedTargetPointValid = false;
     bool found = false;
     int visibleCount = 0;
     float bestDistance = 3.402823466e+38F;
     Vector3 bestDirection;
+    Vector3 bestTargetPoint;
     for (int i = 0; i < playerCount; ++i) {
         void* player = players[i];
         if (!player || player == localPlayer) continue;
@@ -5447,11 +5454,16 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
         if (distance < bestDistance) {
             bestDistance = distance;
             bestDirection = candidate;
+            bestTargetPoint = head;
             found = true;
         }
     }
     InterlockedExchange(&aimbotVisibleTargets, visibleCount);
-    if (found) outDirection = bestDirection;
+    if (found) {
+        outDirection = bestDirection;
+        aimbotSelectedTargetPoint = bestTargetPoint;
+        aimbotSelectedTargetPointValid = true;
+    }
     return found;
 }
 
@@ -5830,12 +5842,49 @@ static bool InstallHitCasterBreakpoint()
     return true;
 }
 
+static void PublishPreparedLocalShotVisuals()
+{
+    if (!localShotGeometryPending) return;
+    const ULONGLONG now = GetTickCount64();
+    Vector3 visualEnd = localShotPendingTarget;
+    Vector3 firstImpact = visualEnd;
+    __try {
+        RaycastHitNative hit = {};
+        if (o_Physics_RaycastHit && o_Physics_RaycastHit(localShotPendingOrigin,
+                localShotPendingDirection, &hit, 300.0f, -1, 1, nullptr) &&
+            isfinite(hit.point.x) && isfinite(hit.point.y) && isfinite(hit.point.z))
+            firstImpact = hit.point;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { firstImpact = visualEnd; }
+
+    if (bulletTracerEnabled) {
+        AcquireSRWLockExclusive(&bulletTracerLock);
+        bulletTracers.push_back({ localShotPendingOrigin, visualEnd, now });
+        if (bulletTracers.size() > 128)
+            bulletTracers.erase(bulletTracers.begin(),
+                bulletTracers.begin() + (bulletTracers.size() - 128));
+        ReleaseSRWLockExclusive(&bulletTracerLock);
+    }
+    if (bulletImpactsEnabled) AddBulletImpact(firstImpact, false);
+    if (hitMarkerEnabled || hitLogEnabled || bulletImpactsEnabled) {
+        AcquireSRWLockExclusive(&hitMarkerLock);
+        latestHitMarkerCastStart = localShotPendingOrigin;
+        latestHitMarkerCastEnd = visualEnd;
+        latestHitMarkerCastAt = now;
+        latestHitMarkerCastValid = true;
+        ReleaseSRWLockExclusive(&hitMarkerLock);
+    }
+}
+
 static bool PrepareHitCasterDirectionForFire()
 {
     hitCasterDirectionPending = false;
+    localShotGeometryPending = false;
     visibleAimbotSnapPending = false;
+    const bool needsGeometry = bulletTracerEnabled || bulletImpactsEnabled ||
+        hitMarkerEnabled || hitLogEnabled;
     if (!keyValidated || (!aimbotEnabled && !visibleAimbotEnabled &&
-        !noSpreadEnabled))
+        !noSpreadEnabled && !needsGeometry))
         return false;
     Vector3 origin;
     bool haveOrigin = false;
@@ -5853,6 +5902,14 @@ static bool PrepareHitCasterDirectionForFire()
                     direction)) {
                 hitCasterPendingDirection = ToHitCasterVector3Abi(direction);
                 hitCasterDirectionPending = true;
+                localShotPendingOrigin = origin;
+                localShotPendingDirection = direction;
+                localShotPendingTarget = aimbotSelectedTargetPointValid ?
+                    aimbotSelectedTargetPoint : Vector3(
+                        origin.x + direction.x * 300.0f,
+                        origin.y + direction.y * 300.0f,
+                        origin.z + direction.z * 300.0f);
+                localShotGeometryPending = needsGeometry;
                 if (visibleAimbotEnabled) {
                     visibleAimbotPendingDirection = direction;
                     visibleAimbotSnapPending = true;
@@ -5863,15 +5920,31 @@ static bool PrepareHitCasterDirectionForFire()
                 return true;
             }
         }
-        if (noSpreadEnabled && transform && o_Transform_get_forward) {
-            hitCasterPendingDirection = ToHitCasterVector3Abi(
-                o_Transform_get_forward(transform));
-            hitCasterDirectionPending = true;
-            return true;
+        if (haveOrigin && transform && o_Transform_get_forward &&
+            (noSpreadEnabled || needsGeometry)) {
+            const Vector3 direction = o_Transform_get_forward(transform);
+            if (noSpreadEnabled) {
+                hitCasterPendingDirection = ToHitCasterVector3Abi(direction);
+                hitCasterDirectionPending = true;
+            }
+            localShotPendingOrigin = origin;
+            localShotPendingDirection = direction;
+            RaycastHitNative hit = {};
+            if (o_Physics_RaycastHit && o_Physics_RaycastHit(origin, direction,
+                    &hit, 300.0f, -1, 1, nullptr) &&
+                isfinite(hit.point.x) && isfinite(hit.point.y) && isfinite(hit.point.z))
+                localShotPendingTarget = hit.point;
+            else
+                localShotPendingTarget = Vector3(origin.x + direction.x * 300.0f,
+                    origin.y + direction.y * 300.0f,
+                    origin.z + direction.z * 300.0f);
+            localShotGeometryPending = needsGeometry;
+            return hitCasterDirectionPending || localShotGeometryPending;
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         hitCasterDirectionPending = false;
+        localShotGeometryPending = false;
     }
     if (aimbotEnabled || visibleAimbotEnabled)
         strcpy_s(aimbotStatus, "No reachable enemy; original shot kept");
@@ -5932,6 +6005,8 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
         __except (EXCEPTION_EXECUTE_HANDLER) { capturedDoubleTapRecoil = false; }
     }
     const bool trackLocalHitCast = isLocalGun && NeedsLocalHitCastTracking();
+    if (isLocalGun && localShotGeometryPending)
+        PublishPreparedLocalShotVisuals();
     if (trackLocalHitCast) ++activeLocalHitCastDepth;
     o_GunController_Fire(instance, playSound, method);
     if (trackLocalHitCast) --activeLocalHitCastDepth;
@@ -5943,6 +6018,8 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     if (fireSecondShot) {
         // Keep the real second cast/damage/ammo path, then restore only the native
         // recoil accumulator. Never lock or rewrite camera aim after the shot.
+        if (isLocalGun && localShotGeometryPending)
+            PublishPreparedLocalShotVisuals();
         if (trackLocalHitCast) ++activeLocalHitCastDepth;
         o_GunController_Fire(instance, playSound, method);
         if (trackLocalHitCast) --activeLocalHitCastDepth;
@@ -5957,6 +6034,7 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
         InterlockedIncrement(&doubleTapExtraShots);
     }
     hitCasterDirectionPending = false;
+    localShotGeometryPending = false;
     visibleAimbotSnapPending = false;
     insideLocalGunFire = false;
     insideAutoFireRequest = false;
