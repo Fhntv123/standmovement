@@ -5584,17 +5584,33 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
         const Vector3 candidate(delta.x / distance, delta.y / distance, delta.z / distance);
 
         bool reachable = false;
-        if (aimbotAutoWall) {
-            // Reject solid/unknown entrance surfaces, then redirect only the genuine
-            // GunController cast. HitCaster's own PostCast/ReverseCast state machine
-            // decides whether the wall can actually be crossed and applies ceq damage.
-            reachable = ValidateAimbotRayPath(origin, candidate, distance, player,
-                true, castParameters);
+        if (castParameters && o_HitCaster_Cast) {
+            // Use the game's complete native HitCaster result. Accept only when the
+            // result dictionary owns this exact PlayerHitController. A wallbang also
+            // requires native penetration entries and the configured minimum damage.
+            const HitCasterCer probe = CallOriginalHitCaster(
+                origin, candidate, distance + 0.35f, *castParameters, castMethod);
+            int nativeDamage = 0;
+            const bool hitExactTarget =
+                ReadDump1NativeTargetDamage(probe, player, nativeDamage);
+            int penetrationCount = -1;
+            __try {
+                penetrationCount = probe.penetrations ?
+                    *reinterpret_cast<int*>(probe.penetrations + 0x18) : 0;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) { penetrationCount = -1; }
+            const bool directShot = penetrationCount == 0;
+            const bool validWallbang = aimbotAutoWall &&
+                penetrationCount > 0 && penetrationCount <= 64 &&
+                nativeDamage >= static_cast<int>(aimbotAutoWallMinDamage);
+            reachable = hitExactTarget && (directShot || validWallbang);
         }
-        else if (!forceValidatedPath && !aimbotVisibleCheck) {
+        else if (!forceValidatedPath && !aimbotVisibleCheck && !aimbotAutoWall) {
             reachable = true;
         }
         else {
+            // Bootstrap only: the first genuine shot captures ceq/MethodInfo in VEH.
+            // Auto Wall remains fail-closed until a native result can be queried.
             reachable = ValidateAimbotRayPath(origin, candidate, distance, player,
                 false, nullptr);
         }
@@ -5987,6 +6003,11 @@ static bool InstallHitCasterBreakpoint()
 {
     if (!base) return false;
     hitCasterBreakpointAddress = base + OFFSET_HITCASTER_CAST;
+    // The VEH breakpoint replaced MinHook, so there is no trampoline to populate this
+    // pointer. Keep the original specialized body callable for native result probes;
+    // calls enter through the same INT3 and continue after one ABI-transparent step.
+    o_HitCaster_Cast = reinterpret_cast<HitCasterCastAbiFn>(
+        hitCasterBreakpointAddress);
     DWORD oldProtect = 0;
     if (!VirtualProtect(reinterpret_cast<void*>(hitCasterBreakpointAddress), 1,
             PAGE_EXECUTE_READWRITE, &oldProtect))
