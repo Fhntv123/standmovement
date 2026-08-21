@@ -5411,31 +5411,6 @@ static bool IsNativePenetrableSurface(int type)
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-static bool NativeWallDamagePasses(const HitCasterCeq* castParameters,
-    int surfaceType, float thickness, float targetDistance)
-{
-    // Without live weapon parameters there is no penetration budget or reliable
-    // damage estimate. Fail closed for walls; direct target hits are accepted earlier.
-    if (!castParameters || !castParameters->damageDefinition) return false;
-    if (!o_Surface_PenetrationCost || !o_Ceq_DamageAtDistance ||
-        !isfinite(thickness) || thickness <= 0.0f)
-        return false;
-    __try {
-        HitCasterCeqAbi abi = {};
-        abi.damageDefinition = castParameters->damageDefinition;
-        abi.valueA = castParameters->valueA;
-        abi.valueB = castParameters->valueB;
-        abi.valueC = castParameters->valueC;
-        abi.padding = castParameters->padding;
-        const float penetrationCost = o_Surface_PenetrationCost(
-            surfaceType, thickness, nullptr);
-        const int damage = o_Ceq_DamageAtDistance(&abi, targetDistance, nullptr);
-        return isfinite(penetrationCost) && penetrationCost >= 0.0f &&
-            penetrationCost <= static_cast<float>(castParameters->valueC) &&
-            damage >= static_cast<int>(aimbotAutoWallMinDamage);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
 
 static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float distance,
     void* targetPlayer, bool allowWallbang, const HitCasterCeq* castParameters)
@@ -5475,25 +5450,13 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
                 o_SurfaceType_FromTag(entryTag, nullptr) : 0;
             if (!IsNativePenetrableSurface(entrySurface)) return false;
 
-            if (!o_Collider_Raycast) return false;
-            const Vector3 reverseDirection(-direction.x, -direction.y, -direction.z);
-            RayNative reverseRay = {};
-            reverseRay.origin = Vector3(
-                origin.x + direction.x * (distance + 0.35f),
-                origin.y + direction.y * (distance + 0.35f),
-                origin.z + direction.z * (distance + 0.35f));
-            reverseRay.direction = reverseDirection;
-            // Measure the back face on the exact collider that produced the entrance.
-            // Matching only SurfaceType could pair the entrance with another wall of
-            // the same material, causing both false positives and false negatives.
-            RaycastHitNative exitHit = {};
-            if (!o_Collider_Raycast(entryCollider, reverseRay, &exitHit,
-                    distance + 0.70f, nullptr) ||
-                !isfinite(exitHit.distance) || exitHit.distance < 0.0f)
-                return false;
-            const float thickness = entryHit.point.Distance(exitHit.point);
-            return NativeWallDamagePasses(castParameters, entrySurface,
-                thickness, distance);
+            // dump1 shows that HitCaster.vxe<ceq> owns the complete native sequence:
+            // InitialCast -> PostCast -> ReverseCast, then ceq.vxn computes hit damage.
+            // Do not duplicate that state machine with Collider.Raycast or a guessed
+            // thickness formula. This prefilter only rejects a solid/unknown entrance;
+            // the one genuine GunController HitCaster call resolves exits, remaining
+            // penetration budget, exact target ownership and final damage.
+            return true;
         }
 
         // Target ownership is already known from CollectPlayers and the ray limit is
@@ -5622,10 +5585,9 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
 
         bool reachable = false;
         if (aimbotAutoWall) {
-            // Auto Wall is not permission to target through every obstacle. Validate
-            // the first blocking collider with the game's surface classification,
-            // measure that exact collider's thickness and apply the cached weapon's
-            // native penetration budget/distance damage. No extra HitCaster cast runs.
+            // Reject solid/unknown entrance surfaces, then redirect only the genuine
+            // GunController cast. HitCaster's own PostCast/ReverseCast state machine
+            // decides whether the wall can actually be crossed and applies ceq damage.
             reachable = ValidateAimbotRayPath(origin, candidate, distance, player,
                 true, castParameters);
         }
