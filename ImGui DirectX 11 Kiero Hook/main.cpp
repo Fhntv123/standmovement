@@ -437,6 +437,7 @@ struct Matrix16 {
 #define OFFSET_GUNCONTROLLER_FIRE                  0xA21040
 #define OFFSET_GUNCONTROLLER_FIRE_END              0xA21990  // next dump1 method wab
 #define OFFSET_GUNCONTROLLER_COMMAND               0xA1E030
+#define OFFSET_HITCASTER_ENTRY                     0xEEC9E0  // HitCaster.vxd<ceq>
 #define OFFSET_HITCASTER_CAST                      0xEEE090  // HitCaster.vxe<ceq>
 #define OFFSET_RAGDOLL_ACTIVATE                    0xBF4810  // RagdollController.nol
 #define OFFSET_RAGDOLL_MANAGER_RELEASE             0xBF67B0  // RagdollManager.npc
@@ -2456,6 +2457,23 @@ using HitCasterCastAbiFn = void(__fastcall*)(HitCasterCerAbi*,
     const HitCasterVector3Abi*, const HitCasterVector3Abi*, float,
     const HitCasterCeqAbi*, const Il2CppMethod*);
 HitCasterCastAbiFn o_HitCaster_Cast = nullptr;
+// dump1 vxd<ceq>: cer(Vector3, Vector3, ceq). With the hidden cer sret,
+// RCX=sret, RDX=origin*, R8=direction*, R9=ceq*, MethodInfo is stack[0x28].
+using HitCasterEntryAbiFn = void(__fastcall*)(HitCasterCerAbi*,
+    const HitCasterVector3Abi*, const HitCasterVector3Abi*,
+    const HitCasterCeqAbi*, const Il2CppMethod*);
+struct HitCasterMethodInfoPrefix {
+    uintptr_t methodPointer;
+    uintptr_t virtualMethodPointer;
+    uintptr_t invokerMethod;
+    const char* name;
+    uintptr_t klass;
+    uintptr_t returnType;
+    uintptr_t parameters;
+    uintptr_t rgctxData;
+};
+static_assert(offsetof(HitCasterMethodInfoPrefix, rgctxData) == 0x38,
+    "dump1 MethodInfo rgctx offset changed");
 thread_local bool insideLocalGunFire = false;
 thread_local bool insideAutoFireRequest = false;
 thread_local int activeLocalHitCastDepth = 0;
@@ -5613,6 +5631,39 @@ void __fastcall hk_HitCaster_Cast(HitCasterCerAbi* returnValue,
     rawResult.value = result.value;
     rawResult.padding = result.padding;
     *returnValue = rawResult;
+}
+
+static const Il2CppMethod* GetVxeMethodFromVxdMethodUnsafe(
+    const Il2CppMethod* vxdMethod)
+{
+    if (!vxdMethod) return nullptr;
+    __try {
+        const HitCasterMethodInfoPrefix* info =
+            reinterpret_cast<const HitCasterMethodInfoPrefix*>(vxdMethod);
+        const uintptr_t rgctx = info->rgctxData;
+        if (!rgctx) return nullptr;
+        // dump1 MethodInfo_EEC9E0_rgctxs:
+        // +0x00 Il2CppClass* ceq, +0x08 MethodInfo* HitCaster.vxe<ceq>.
+        return *reinterpret_cast<const Il2CppMethod* const*>(rgctx + 0x08);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
+void __fastcall hk_HitCaster_Entry(HitCasterCerAbi* returnValue,
+    const HitCasterVector3Abi* originAbi,
+    const HitCasterVector3Abi* directionAbi,
+    const HitCasterCeqAbi* hitParametersAbi, const Il2CppMethod* method)
+{
+    if (!returnValue) return;
+    const Il2CppMethod* vxeMethod = GetVxeMethodFromVxdMethodUnsafe(method);
+    if (!originAbi || !directionAbi || !hitParametersAbi || !vxeMethod) {
+        *returnValue = {};
+        return;
+    }
+    // vxd<ceq> is the gun-facing 300-unit wrapper. Reuse the exact old working
+    // vxe silent-aim body, but leave both generic implementations unpatched.
+    hk_HitCaster_Cast(returnValue, originAbi, directionAbi, 300.0f,
+        hitParametersAbi, vxeMethod);
 }
 
 void __fastcall hk_ArmsLod_SetVisible(uintptr_t instance, bool visible, const Il2CppMethod* method)
@@ -9522,7 +9573,7 @@ static bool InstallHitCasterGunCallsiteHook(int* patchedCallsOut)
 {
     if (patchedCallsOut) *patchedCallsOut = 0;
     if (!base) return false;
-    const uintptr_t originalTarget = base + OFFSET_HITCASTER_CAST;
+    const uintptr_t originalTarget = base + OFFSET_HITCASTER_ENTRY;
     const uintptr_t begin = base + OFFSET_GUNCONTROLLER_FIRE;
     const uintptr_t end = base + OFFSET_GUNCONTROLLER_FIRE_END;
     if (end <= begin || end - begin > 0x2000) return false;
@@ -9557,7 +9608,7 @@ static bool InstallHitCasterGunCallsiteHook(int* patchedCallsOut)
     // address and the relay does not touch any HitCaster arguments or hidden sret.
     relay[0] = 0x48; relay[1] = 0xB8;
     *reinterpret_cast<uintptr_t*>(relay + 2) =
-        reinterpret_cast<uintptr_t>(&hk_HitCaster_Cast);
+        reinterpret_cast<uintptr_t>(&hk_HitCaster_Entry);
     relay[10] = 0xFF; relay[11] = 0xE0;
     FlushInstructionCache(GetCurrentProcess(), relay, 12);
 
@@ -9578,7 +9629,8 @@ static bool InstallHitCasterGunCallsiteHook(int* patchedCallsOut)
             oldProtect, &ignored);
     }
 
-    o_HitCaster_Cast = reinterpret_cast<HitCasterCastAbiFn>(originalTarget);
+    o_HitCaster_Cast = reinterpret_cast<HitCasterCastAbiFn>(
+        base + OFFSET_HITCASTER_CAST);
     if (patchedCallsOut) *patchedCallsOut = callCount;
     return true;
 }
@@ -9901,20 +9953,19 @@ DWORD WINAPI HackThread(LPVOID)
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_COMMAND));
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE));
-    // Never patch the shared generic body at GameAssembly+0xEEE090: both prior
-    // variants eventually corrupted the process, and the crash register again points
-    // at that RVA. Patch only dump1 GunController.waa's direct CALL instruction.
-    // The original generic entry remains byte-for-byte untouched for every other caller.
+    // GunController.waa calls dump1 HitCaster.vxd<ceq> (0xEEC9E0), not vxe
+    // (0xEEE090) directly. Redirect that exact call to the matching vxd ABI adapter.
+    // Both generic implementations remain byte-for-byte untouched.
     int hitCasterCallsites = 0;
     const bool hitCasterCallsiteReady =
         InstallHitCasterGunCallsiteHook(&hitCasterCallsites);
     sprintf_s(aimbotStatus, hitCasterCallsiteReady ?
-        "Safe GunController HitCaster callsite hook (%d)" :
+        "Safe HitCaster.vxd gun hook (%d)" :
         "HitCaster callsite not found; aimbot disabled",
         hitCasterCallsites);
     LINDY_LOG("[aimbot] callsite-hook ready=%d calls=%d generic-target=%p",
         hitCasterCallsiteReady ? 1 : 0, hitCasterCallsites,
-        (void*)(base + OFFSET_HITCASTER_CAST));
+        (void*)(base + OFFSET_HITCASTER_ENTRY));
 
     MH_CreateHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE), hk_RagdollActivate, (LPVOID*)&o_RagdollActivate);
     MH_EnableHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE));
