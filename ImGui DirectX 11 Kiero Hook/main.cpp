@@ -1779,21 +1779,123 @@ static bool CopySelectedHitSoundPath(wchar_t* path, size_t pathCount)
     return haveSound;
 }
 
+static bool ReadWaveFileForPlayback(const wchar_t* path,
+    std::vector<unsigned char>& bytes, WAVEFORMATEX& format,
+    const unsigned char*& audioData, DWORD& audioSize)
+{
+    bytes.clear();
+    ZeroMemory(&format, sizeof(format));
+    audioData = nullptr;
+    audioSize = 0;
+    if (!path || !path[0]) return false;
+
+    HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER size = {};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < 44 ||
+        size.QuadPart > 16 * 1024 * 1024) {
+        CloseHandle(file);
+        return false;
+    }
+    bytes.resize(static_cast<size_t>(size.QuadPart));
+    DWORD read = 0;
+    const bool readOk = ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()),
+        &read, nullptr) != FALSE && read == bytes.size();
+    CloseHandle(file);
+    if (!readOk || memcmp(bytes.data(), "RIFF", 4) != 0 ||
+        memcmp(bytes.data() + 8, "WAVE", 4) != 0)
+        return false;
+
+    bool haveFormat = false;
+    size_t offset = 12;
+    while (offset + 8 <= bytes.size()) {
+        const unsigned char* chunk = bytes.data() + offset;
+        DWORD chunkSize = 0;
+        memcpy(&chunkSize, chunk + 4, sizeof(chunkSize));
+        const size_t dataOffset = offset + 8;
+        if (dataOffset > bytes.size() || chunkSize > bytes.size() - dataOffset)
+            return false;
+        if (memcmp(chunk, "fmt ", 4) == 0 && chunkSize >= 16) {
+            const size_t copySize = chunkSize < sizeof(format) ?
+                static_cast<size_t>(chunkSize) : sizeof(format);
+            memcpy(&format, bytes.data() + dataOffset, copySize);
+            haveFormat = format.nChannels > 0 && format.nSamplesPerSec > 0 &&
+                format.nBlockAlign > 0 &&
+                (format.wFormatTag == WAVE_FORMAT_PCM ||
+                 format.wFormatTag == WAVE_FORMAT_IEEE_FLOAT);
+        }
+        else if (memcmp(chunk, "data", 4) == 0 && chunkSize > 0) {
+            audioData = bytes.data() + dataOffset;
+            audioSize = chunkSize;
+        }
+        offset = dataOffset + chunkSize + (chunkSize & 1U);
+    }
+    return haveFormat && audioData && audioSize > 0;
+}
+
 static DWORD WINAPI HitSoundWorker(LPVOID)
 {
+    std::vector<unsigned char> waveBytes;
+    std::wstring loadedPath;
+    WAVEFORMATEX loadedFormat = {};
+    const unsigned char* audioData = nullptr;
+    DWORD audioSize = 0;
+    HWAVEOUT output = nullptr;
+    WAVEHDR header = {};
+    bool headerPrepared = false;
+
     while (!unloadRequested) {
         const DWORD waitResult = WaitForSingleObject(hitSoundSemaphore, 250);
         if (waitResult != WAIT_OBJECT_0) continue;
         if (unloadRequested) break;
+
         wchar_t path[MAX_PATH] = {};
-        if (CopySelectedHitSoundPath(path, MAX_PATH)) {
-            // One persistent playback worker avoids overlapping WinMM callback
-            // threads. A new request stops this synchronous playback from the caller,
-            // unblocks the worker, and immediately starts the next queued hit sound.
-            RecordCrashBreadcrumb(CrashHitSoundPlayEnter);
-            PlaySoundW(path, nullptr, SND_SYNC | SND_FILENAME | SND_NODEFAULT);
-            RecordCrashBreadcrumb(CrashHitSoundPlayDone);
+        if (!CopySelectedHitSoundPath(path, MAX_PATH)) continue;
+        if (loadedPath != path) {
+            if (output) {
+                waveOutReset(output);
+                if (headerPrepared) waveOutUnprepareHeader(output, &header, sizeof(header));
+                waveOutClose(output);
+                output = nullptr;
+                headerPrepared = false;
+            }
+            if (!ReadWaveFileForPlayback(path, waveBytes, loadedFormat,
+                    audioData, audioSize)) {
+                loadedPath.clear();
+                continue;
+            }
+            if (waveOutOpen(&output, WAVE_MAPPER, &loadedFormat, 0, 0,
+                    CALLBACK_NULL) != MMSYSERR_NOERROR) {
+                output = nullptr;
+                loadedPath.clear();
+                continue;
+            }
+            loadedPath = path;
         }
+
+        // Only this worker touches the waveOut device. Restarting a short hitsound is
+        // asynchronous and never blocks the game/hit callback, even on the second hit.
+        waveOutReset(output);
+        if (headerPrepared) {
+            waveOutUnprepareHeader(output, &header, sizeof(header));
+            headerPrepared = false;
+        }
+        ZeroMemory(&header, sizeof(header));
+        header.lpData = reinterpret_cast<LPSTR>(const_cast<unsigned char*>(audioData));
+        header.dwBufferLength = audioSize;
+        RecordCrashBreadcrumb(CrashHitSoundPlayEnter);
+        if (waveOutPrepareHeader(output, &header, sizeof(header)) == MMSYSERR_NOERROR) {
+            headerPrepared = true;
+            waveOutWrite(output, &header, sizeof(header));
+        }
+        RecordCrashBreadcrumb(CrashHitSoundPlayDone);
+    }
+
+    if (output) {
+        waveOutReset(output);
+        if (headerPrepared) waveOutUnprepareHeader(output, &header, sizeof(header));
+        waveOutClose(output);
     }
     return 0;
 }
@@ -1815,10 +1917,10 @@ static bool InitializeHitSoundWorker()
 static bool QueueSelectedHitSound()
 {
     RecordCrashBreadcrumb(CrashHitSoundQueued);
-    if (!hitSoundSemaphore) return false;
-    // Interrupt a long WAV instead of making the next confirmed hit wait for it.
-    PlaySoundW(nullptr, nullptr, 0);
-    return ReleaseSemaphore(hitSoundSemaphore, 1, nullptr) != FALSE;
+    // O(1) notification only. No PlaySound/waveOut or file I/O is allowed on the
+    // local-hit/game thread.
+    return hitSoundSemaphore &&
+        ReleaseSemaphore(hitSoundSemaphore, 1, nullptr) != FALSE;
 }
 
 static std::string SanitizeConfigName(const char* input)
@@ -5486,6 +5588,8 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
     Vector3& outDirection)
 {
     void* localPlayer = GetLocalPC();
+    (void)castParameters;
+    (void)castMethod;
     if (!localPlayer) return false;
     const unsigned char localTeam = GetPCTeam(localPlayer);
     if (localTeam == 0 || localTeam == 3) return false;
@@ -5516,35 +5620,17 @@ static bool FindVisibleAimbotDirection(Vector3 origin, bool forceValidatedPath,
         const Vector3 candidate(delta.x / distance, delta.y / distance, delta.z / distance);
 
         bool reachable = false;
-        if (castParameters && o_HitCaster_Cast) {
-            // dump1 exact path: HitCaster.vxe<ceq> returns cer with authoritative
-            // Dictionary<bal,ccr> ownership and List<cew> penetration data. The unsafe
-            // MinHook detour is gone; call the original ABI directly for validation.
-            // Its specialized MethodInfo can be null, so ceq—not MethodInfo—is the
-            // readiness gate. Redirect only the real GunController shot through VEH.
-            const HitCasterCer probe = CallOriginalHitCaster(
-                origin, candidate, distance + 0.35f, *castParameters, castMethod);
-            int nativeDamage = 0;
-            const bool hitExactTarget =
-                ReadDump1NativeTargetDamage(probe, player, nativeDamage);
-            int penetrationCount = -1;
-            __try {
-                penetrationCount = probe.penetrations ?
-                    *reinterpret_cast<int*>(probe.penetrations + 0x18) : 0;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) { penetrationCount = -1; }
-            const bool directShot = penetrationCount == 0;
-            const bool validWallbang = aimbotAutoWall &&
-                penetrationCount > 0 && penetrationCount <= 64 &&
-                nativeDamage >= static_cast<int>(aimbotAutoWallMinDamage);
-            reachable = hitExactTarget && (directShot || validWallbang);
+        if (aimbotAutoWall) {
+            // Never execute extra HitCaster calls while selecting a target. Those are
+            // real stateful casts, not queries, and probing every player poisoned the
+            // shot path. VEH redirects the one genuine GunController cast; the game
+            // itself then performs penetration, surface and damage resolution once.
+            reachable = true;
         }
-        else if (!forceValidatedPath && !aimbotVisibleCheck && !aimbotAutoWall) {
+        else if (!forceValidatedPath && !aimbotVisibleCheck) {
             reachable = true;
         }
         else {
-            // No live ceq yet: fail closed for Auto Wall and use geometry only for a
-            // direct visible shot. The first real shot captures ceq in the VEH handler.
             reachable = ValidateAimbotRayPath(origin, candidate, distance, player,
                 false, nullptr);
         }
@@ -5864,7 +5950,7 @@ void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command,
                 aimbotAutoFireNextDecisionAt = now;
                 InterlockedIncrement(&aimbotAutoFireRejected);
                 strcpy_s(aimbotStatus,
-                    "Auto Fire blocked: native HitCaster rejected target");
+                    "Auto Fire blocked: no eligible target");
             }
         }
     }
