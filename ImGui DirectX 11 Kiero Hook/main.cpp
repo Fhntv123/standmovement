@@ -403,6 +403,7 @@ struct Matrix16 {
 #define OFFSET_ARMSLOD_SET_ARMS_MATERIALS          0xBCD260
 #define OFFSET_ARMSLOD_SET_GLOVE_MATERIALS         0xBCD2B0
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0xBFA0C0
+#define OFFSET_GUNCONTROLLER_DIRECTION             0xA20CE0  // GunController.vzy(Vector3)
 #define OFFSET_GUNCONTROLLER_FIRE                  0xA21040
 #define OFFSET_GUNCONTROLLER_COMMAND               0xA1E030
 #define OFFSET_HITCASTER_CAST                      0xEEE090  // HitCaster.vxe<ceq>
@@ -2415,12 +2416,16 @@ void(__fastcall* o_ArmsLod_SetArmsMaterials)(uintptr_t, uintptr_t, uintptr_t, co
 void(__fastcall* o_ArmsLod_SetGloveMaterials)(uintptr_t, uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_Weaponry_TakeWeapon)(uintptr_t, uint8_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Fire)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
+Vector3(__fastcall* o_GunController_Direction)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_GunController_Command)(uintptr_t, uintptr_t, float, float, const Il2CppMethod*) = nullptr;
 HitCasterCer(__fastcall* o_HitCaster_Cast)(Vector3, Vector3, float,
     HitCasterCeq, const Il2CppMethod*) = nullptr;
 thread_local bool insideLocalGunFire = false;
 thread_local bool insideAutoFireRequest = false;
 thread_local int activeLocalHitCastDepth = 0;
+thread_local Vector3 aimbotShotDirection;
+thread_local bool aimbotShotDirectionValid = false;
+thread_local bool visibleAimbotSnapPending = false;
 
 static bool NeedsLocalHitCastTracking()
 {
@@ -5680,6 +5685,60 @@ void __fastcall hk_GunController_Command(uintptr_t instance, uintptr_t command, 
 }
 
 
+Vector3 __fastcall hk_GunController_Direction(uintptr_t instance,
+    Vector3 nativeDirection, const Il2CppMethod* method)
+{
+    Vector3 direction = o_GunController_Direction(instance, nativeDirection, method);
+    if (!insideLocalGunFire || !keyValidated) {
+        aimbotShotDirection = direction;
+        aimbotShotDirectionValid = true;
+        return direction;
+    }
+
+    if (aimbotEnabled || visibleAimbotEnabled) {
+        InterlockedIncrement(&aimbotShots);
+        Vector3 origin;
+        bool haveOrigin = false;
+        __try {
+            const uintptr_t camera = GetCamera();
+            const uintptr_t transform = camera && o_Component_get_transform ?
+                o_Component_get_transform(camera) : 0;
+            if (transform && o_Transform_get_position) {
+                origin = o_Transform_get_position(transform);
+                haveOrigin = true;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { haveOrigin = false; }
+        Vector3 targetDirection;
+        if (haveOrigin && FindVisibleAimbotDirection(
+            origin, false, nullptr, nullptr, targetDirection)) {
+            direction = targetDirection;
+            visibleAimbotSnapPending = visibleAimbotEnabled;
+            InterlockedIncrement(&aimbotApplied);
+            strcpy_s(aimbotStatus, visibleAimbotEnabled ?
+                "Target locked at GunController.vzy" :
+                "Silent direction applied at GunController.vzy");
+        }
+        else {
+            strcpy_s(aimbotStatus, "No reachable enemy; original shot kept");
+        }
+    }
+    else if (noSpreadEnabled) {
+        __try {
+            const uintptr_t camera = GetCamera();
+            const uintptr_t transform = camera && o_Component_get_transform ?
+                o_Component_get_transform(camera) : 0;
+            if (transform && o_Transform_get_forward)
+                direction = o_Transform_get_forward(transform);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
+    aimbotShotDirection = direction;
+    aimbotShotDirectionValid = true;
+    return direction;
+}
+
 void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, const Il2CppMethod* method)
 {
     // Fire must remain latency-free: never create materials, inspect renderers,
@@ -5694,6 +5753,9 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { isLocalGun = false; }
     if (isLocalGun) activeLocalWeaponController = instance;
+    aimbotShotDirection = playSound;
+    aimbotShotDirectionValid = false;
+    visibleAimbotSnapPending = false;
     if (isLocalGun && infinityAmmo) InterlockedIncrement(&infinityAmmoFireCalls);
     short ammoBeforeShot = -1;
     if (isLocalGun && (infinityAmmo || doubleTapEnabled)) {
@@ -5736,6 +5798,11 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
     if (trackLocalHitCast) ++activeLocalHitCastDepth;
     o_GunController_Fire(instance, playSound, method);
     if (trackLocalHitCast) --activeLocalHitCastDepth;
+    if (isLocalGun && visibleAimbotSnapPending && aimbotShotDirectionValid) {
+        BeginVisibleAimbotCameraSnap(aimbotShotDirection);
+        visibleAimbotSnapPending = false;
+        strcpy_s(aimbotStatus, "Shot fired; visible camera snap applied");
+    }
     if (fireSecondShot) {
         // Keep the real second cast/damage/ammo path, then restore only the native
         // recoil accumulator. Never lock or rewrite camera aim after the shot.
@@ -9702,6 +9769,11 @@ DWORD WINAPI HackThread(LPVOID)
     // Fire remains a fallback for guns injected after the equip event.
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_COMMAND), hk_GunController_Command, (LPVOID*)&o_GunController_Command);
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_COMMAND));
+    const MH_STATUS directionCreate = MH_CreateHook(
+        (LPVOID)(base + OFFSET_GUNCONTROLLER_DIRECTION), hk_GunController_Direction,
+        (LPVOID*)&o_GunController_Direction);
+    const MH_STATUS directionEnable = directionCreate == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_DIRECTION)) : directionCreate;
     MH_CreateHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE), hk_GunController_Fire, (LPVOID*)&o_GunController_Fire);
     MH_EnableHook((LPVOID)(base + OFFSET_GUNCONTROLLER_FIRE));
     // Do not detour the shared generic HitCaster.vxe<ceq> entry point. The crash log
@@ -9715,7 +9787,8 @@ DWORD WINAPI HackThread(LPVOID)
     aimbotLastCeqValid = false;
     aimbotLastCeqGun = 0;
     aimbotLastHitCasterMethod = nullptr;
-    strcpy_s(aimbotStatus, "HitCaster direct detour disabled for stability");
+    sprintf_s(aimbotStatus, "Safe GunController direction hook=%d/%d",
+        static_cast<int>(directionCreate), static_cast<int>(directionEnable));
 
     MH_CreateHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE), hk_RagdollActivate, (LPVOID*)&o_RagdollActivate);
     MH_EnableHook((LPVOID)(base + OFFSET_RAGDOLL_ACTIVATE));
