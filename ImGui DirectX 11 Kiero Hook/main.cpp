@@ -289,6 +289,12 @@ struct RaycastHitNative {
 };
 static_assert(sizeof(RaycastHitNative) == 0x2C, "Unity RaycastHit layout changed");
 
+struct RayNative {
+    Vector3 origin;
+    Vector3 direction;
+};
+static_assert(sizeof(RayNative) == 0x18, "Unity Ray layout changed");
+
 
 // dump1 exact value-type layouts used by HitCaster.vxe<ceq>.
 struct HitCasterCeq {
@@ -407,6 +413,7 @@ struct Matrix16 {
 #define OFFSET_PHYSICS_RAYCAST_HIT                    0x34D70B0
 #define OFFSET_PHYSICS_RAYCAST_ALL                    0x34D5130
 #define OFFSET_RAYCASTHIT_GET_COLLIDER                0x34D8B70
+#define OFFSET_COLLIDER_RAYCAST                        0x34CF370
 #define OFFSET_COMPONENT_GET_IN_PARENT                0x3474410
 #define OFFSET_COMPONENT_GET_TAG                      0x3474760
 #define OFFSET_SURFACE_TYPE_FROM_TAG                  0xA2A1B0
@@ -2490,6 +2497,7 @@ bool(__fastcall* o_Object_IsAlive)(uintptr_t, const Il2CppMethod*) = nullptr;
 bool(__fastcall* o_Physics_RaycastHit)(Vector3, Vector3, RaycastHitNative*, float, int, int, const Il2CppMethod*) = nullptr;
 Il2CppArray*(__fastcall* o_Physics_RaycastAll)(Vector3, Vector3, float, int, int, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_RaycastHit_get_collider)(RaycastHitNative*, const Il2CppMethod*) = nullptr;
+bool(__fastcall* o_Collider_Raycast)(uintptr_t, RayNative, RaycastHitNative*, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_Component_GetInParent)(uintptr_t, uintptr_t, bool, const Il2CppMethod*) = nullptr;
 Il2CppString*(__fastcall* o_Component_get_tag)(uintptr_t, const Il2CppMethod*) = nullptr;
 int(__fastcall* o_SurfaceType_FromTag)(Il2CppString*, const Il2CppMethod*) = nullptr;
@@ -5339,8 +5347,8 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
     __try {
         if (allowWallbang) {
             // Use the game's own surface classification and penetration formulas.
-            // The forward hit is the wall entrance; the closest non-player reverse
-            // hit from the target is the exit. This rejects solid and over-thick walls
+            // The forward hit is the wall entrance; Collider.Raycast on that exact
+            // collider finds its exit. This rejects solid and over-thick walls
             // without executing a side-effectful HitCaster probe.
             if (!o_Physics_RaycastHit || !o_Component_get_tag ||
                 !o_SurfaceType_FromTag || !o_Surface_CanPenetrate)
@@ -5366,50 +5374,22 @@ static bool ValidateAimbotRayPath(Vector3 origin, Vector3 direction, float dista
                 o_SurfaceType_FromTag(entryTag, nullptr) : 0;
             if (!IsNativePenetrableSurface(entrySurface)) return false;
 
+            if (!o_Collider_Raycast) return false;
             const Vector3 reverseDirection(-direction.x, -direction.y, -direction.z);
-            const Vector3 reverseOrigin(
+            RayNative reverseRay = {};
+            reverseRay.origin = Vector3(
                 origin.x + direction.x * (distance + 0.35f),
                 origin.y + direction.y * (distance + 0.35f),
                 origin.z + direction.z * (distance + 0.35f));
-            // A reverse single-hit starts at/inside the selected enemy and commonly
-            // returns that PlayerHitbox, not the wall exit. Enumerate all reverse hits,
-            // skip every player collider, and choose the closest matching back face.
-            Il2CppArray* reverseHits = o_Physics_RaycastAll(
-                reverseOrigin, reverseDirection, distance + 0.70f, -1, 2, nullptr);
-            const uintptr_t reverseArray = reinterpret_cast<uintptr_t>(reverseHits);
-            const size_t reverseCount = reverseArray ?
-                *reinterpret_cast<size_t*>(reverseArray + 0x18) : 0;
-            if (!reverseArray || reverseCount == 0 || reverseCount > 128)
-                return false;
-            bool haveExit = false;
-            float closestExitDistance = 3.402823466e+38F;
+            reverseRay.direction = reverseDirection;
+            // Measure the back face on the exact collider that produced the entrance.
+            // Matching only SurfaceType could pair the entrance with another wall of
+            // the same material, causing both false positives and false negatives.
             RaycastHitNative exitHit = {};
-            for (size_t i = 0; i < reverseCount; ++i) {
-                RaycastHitNative* candidateExit = reinterpret_cast<RaycastHitNative*>(
-                    reverseArray + 0x20 + i * sizeof(RaycastHitNative));
-                if (!isfinite(candidateExit->distance) || candidateExit->distance < 0.0f ||
-                    candidateExit->distance >= closestExitDistance)
-                    continue;
-                const uintptr_t candidateCollider =
-                    o_RaycastHit_get_collider(candidateExit, nullptr);
-                if (!candidateCollider) continue;
-                const uintptr_t candidatePlayer = o_Component_GetInParent(
-                    candidateCollider,
-                    reinterpret_cast<uintptr_t>(g_PlayerControllerReflectionType),
-                    true, nullptr);
-                if (candidatePlayer) continue;
-                Il2CppString* candidateTag =
-                    o_Component_get_tag(candidateCollider, nullptr);
-                const int candidateSurface = candidateTag ?
-                    o_SurfaceType_FromTag(candidateTag, nullptr) : 0;
-                if (candidateSurface != entrySurface ||
-                    !IsNativePenetrableSurface(candidateSurface))
-                    continue;
-                exitHit = *candidateExit;
-                closestExitDistance = candidateExit->distance;
-                haveExit = true;
-            }
-            if (!haveExit) return false;
+            if (!o_Collider_Raycast(entryCollider, reverseRay, &exitHit,
+                    distance + 0.70f, nullptr) ||
+                !isfinite(exitHit.distance) || exitHit.distance < 0.0f)
+                return false;
             const float thickness = entryHit.point.Distance(exitHit.point);
             return NativeWallDamagePasses(castParameters, entrySurface,
                 thickness, distance);
@@ -9989,6 +9969,7 @@ DWORD WINAPI HackThread(LPVOID)
     o_Physics_RaycastHit = (bool(__fastcall*)(Vector3, Vector3, RaycastHitNative*, float, int, int, const Il2CppMethod*))(base + OFFSET_PHYSICS_RAYCAST_HIT);
     o_Physics_RaycastAll = (Il2CppArray*(__fastcall*)(Vector3, Vector3, float, int, int, const Il2CppMethod*))(base + OFFSET_PHYSICS_RAYCAST_ALL);
     o_RaycastHit_get_collider = (uintptr_t(__fastcall*)(RaycastHitNative*, const Il2CppMethod*))(base + OFFSET_RAYCASTHIT_GET_COLLIDER);
+    o_Collider_Raycast = (bool(__fastcall*)(uintptr_t, RayNative, RaycastHitNative*, float, const Il2CppMethod*))(base + OFFSET_COLLIDER_RAYCAST);
     o_Component_GetInParent = (uintptr_t(__fastcall*)(uintptr_t, uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_COMPONENT_GET_IN_PARENT);
     o_Component_get_tag = (Il2CppString*(__fastcall*)(uintptr_t, const Il2CppMethod*))(base + OFFSET_COMPONENT_GET_TAG);
     o_SurfaceType_FromTag = (int(__fastcall*)(Il2CppString*, const Il2CppMethod*))(base + OFFSET_SURFACE_TYPE_FROM_TAG);
