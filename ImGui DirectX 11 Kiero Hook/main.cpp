@@ -1068,6 +1068,9 @@ Vector3 silentAntiAimLatestFakeAngles;
 float silentAntiAimMoveYawCorrection = 0.0f;
 bool silentAntiAimMoveYawCorrectionValid = false;
 ULONGLONG silentAntiAimMoveYawCorrectionTick = 0;
+Vector3 silentAntiAimLastGroundMotion;
+bool silentAntiAimLastGroundMotionValid = false;
+bool silentAntiAimWasGrounded = true;
 Vector3 silentAntiAimRealCameraAngles;
 bool silentAntiAimRealCameraValid = false;
 Vector3 silentAntiAimOriginalAngles;  // Real angles from DeltaAimAngles
@@ -4711,6 +4714,8 @@ static void ClearRotationAntiAimTargetUnsafe()
     silentAntiAimMoveYawCorrection = 0.0f;
     silentAntiAimMoveYawCorrectionValid = false;
     silentAntiAimMoveYawCorrectionTick = 0;
+    silentAntiAimLastGroundMotionValid = false;
+    silentAntiAimWasGrounded = true;
     silentAntiAimEdgeScanFrame = 0;
     silentAntiAimEdgeFound = false;
     InterlockedIncrement(&silentAntiAimSnapshotSequence); // publication complete (even)
@@ -9346,6 +9351,40 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
             motion.x = oldX * cosine + oldZ * sine;
             motion.z = -oldX * sine + oldZ * cosine;
         }
+
+        const bool grounded = o_CC_get_isGrounded &&
+            o_CC_get_isGrounded(instance);
+        const float horizontalLength = sqrtf(
+            motion.x * motion.x + motion.z * motion.z);
+        if (grounded) {
+            if (isfinite(horizontalLength) && horizontalLength > 0.00001f) {
+                silentAntiAimLastGroundMotion = Vector3(
+                    motion.x, 0.0f, motion.z);
+                silentAntiAimLastGroundMotionValid = true;
+            }
+        }
+        else if (silentAntiAimWasGrounded &&
+            silentAntiAimLastGroundMotionValid) {
+            // Switching Ground -> Jump AA profiles can produce one zeroed Move
+            // sample on takeoff. Preserve the last real grounded momentum for
+            // that single transition only; normal airborne WASD remains native.
+            const float lastLength = sqrtf(
+                silentAntiAimLastGroundMotion.x *
+                    silentAntiAimLastGroundMotion.x +
+                silentAntiAimLastGroundMotion.z *
+                    silentAntiAimLastGroundMotion.z);
+            if (isfinite(lastLength) && lastLength > 0.00001f &&
+                (!isfinite(horizontalLength) ||
+                 horizontalLength < lastLength * 0.25f)) {
+                motion.x = silentAntiAimLastGroundMotion.x;
+                motion.z = silentAntiAimLastGroundMotion.z;
+            }
+        }
+        silentAntiAimWasGrounded = grounded;
+    }
+    else {
+        silentAntiAimLastGroundMotionValid = false;
+        silentAntiAimWasGrounded = true;
     }
 
     if (keyValidated && jbActive) {
