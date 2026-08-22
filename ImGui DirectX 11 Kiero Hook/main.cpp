@@ -9091,7 +9091,13 @@ void InitImGui()
 
     ImGui_ImplDX11_Init(pDevice, pContext);
 
-    io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 16.0f);
+    // The default ImGui glyph range is Latin-only. Load Cyrillic explicitly so
+    // UTF-8 player nicknames and nickname input render as letters instead of '?'.
+    ImFont* uiFont = io.Fonts->AddFontFromFileTTF(
+        "C:\\Windows\\Fonts\\segoeui.ttf", 16.0f, nullptr,
+        io.Fonts->GetGlyphRangesCyrillic());
+    if (uiFont) io.FontDefault = uiFont;
+    else io.Fonts->AddFontDefault();
     RefreshConfigFiles(); // Creates Documents\ze0nware immediately.
     RefreshHitSounds();    // Creates Documents\ze0nware\sound and scans .wav files.
 
