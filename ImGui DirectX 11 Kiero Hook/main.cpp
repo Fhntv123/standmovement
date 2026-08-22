@@ -2148,7 +2148,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(infinityAmmo); LOAD_BOOL(doubleTapEnabled); LOAD_FLOAT(doubleTapMoveNudgeDistance); LOAD_BOOL(noSpreadEnabled); LOAD_BOOL(removeScopeBorders);
     if (!isfinite(doubleTapMoveNudgeDistance) || doubleTapMoveNudgeDistance < 0.02f)
         doubleTapMoveNudgeDistance = 0.02f;
-    if (doubleTapMoveNudgeDistance > 1.0f) doubleTapMoveNudgeDistance = 1.0f;
+    if (doubleTapMoveNudgeDistance > 10.0f) doubleTapMoveNudgeDistance = 10.0f;
     LOAD_INT(removeScopeMode); LOAD_FLOAT(customScopeOpacity); LOAD_FLOAT(customScopeLength);
     LOAD_FLOAT(customScopeGap); LOAD_FLOAT(customScopeThickness); LOAD_BOOL(customScopeShadow);
     LOAD_BOOL(weaponChamsEnabled); LOAD_INT(weaponChamsMode); LOAD_BOOL(armChamsEnabled); LOAD_INT(armChamsMode);
@@ -8164,7 +8164,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
                 InterlockedExchange(&pendingDoubleTapMoveNudge, 0);
             }
             else if (isfinite(horizontalLength) && horizontalLength > 0.00001f) {
-                const float nudge = fminf(1.0f,
+                const float nudge = fminf(10.0f,
                     fmaxf(0.02f, doubleTapMoveNudgeDistance));
                 motion.x += (motion.x / horizontalLength) * nudge;
                 motion.z += (motion.z / horizontalLength) * nudge;
@@ -9662,7 +9662,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
         if (doubleTapEnabled) {
             ImGui::SliderFloat("Double Tap Move Nudge",
-                &doubleTapMoveNudgeDistance, 0.02f, 1.0f, "%.2f m");
+                &doubleTapMoveNudgeDistance, 0.02f, 10.0f, "%.2f m");
             ImGui::TextDisabled("After the extra shot, nudges you in your current movement direction.");
         }
         if (ImGui::Checkbox("Infinity Ammo", &infinityAmmo)) {
