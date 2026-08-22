@@ -758,7 +758,6 @@ float thirdPersonHorizontalOffset = 0.0f;
 float thirdPersonHeightAdjustment = 0.0f;
 float thirdPersonDistanceAdjustment = 0.0f;
 volatile LONG pendingThirdPersonCommand = 0;
-bool thirdPersonSuspendedForDeath = false;
 Il2CppClass* g_GameControllerClass = nullptr;
 Il2CppField* g_GameControllerInstanceField = nullptr;
 void(__fastcall* o_CheatRuntime_SetThirdPerson)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
@@ -1202,8 +1201,6 @@ Il2CppObject* g_PlayerControllerReflectionType = nullptr;
 Il2CppClass* g_PlayerModelClass = nullptr;
 const Il2CppMethod* g_PlayerModelGetInstanceMethod = nullptr;
 const Il2CppMethod* g_PlayerModelSetNameMethod = nullptr;
-const Il2CppMethod* g_LocalPlayerMatchNameSetter = nullptr;
-const Il2CppMethod* g_ActorMatchNameSetter = nullptr;
 uintptr_t g_LivePlayerModel = 0;
 std::vector<void*> g_LivePlayerRegistry;
 SRWLOCK g_LivePlayerRegistryLock = SRWLOCK_INIT;
@@ -3033,23 +3030,12 @@ static uintptr_t GetNativeCheatRuntime()
     return 0;
 }
 
-static int ReadAuthoritativeLocalHealthUnsafe()
-{
-    const uintptr_t player = liveHudLocalPlayer;
-    if (!player) return -1;
-    __try {
-        const uintptr_t healthState = *reinterpret_cast<uintptr_t*>(player + 0x148);
-        return healthState ? ReadHealthStateNow(healthState) : -1;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
-}
-
-static bool ApplyCustomizedThirdPersonOffsets(bool enableThirdPerson)
+static bool ApplyCustomizedThirdPersonOffsets()
 {
     const uintptr_t player = liveHudLocalPlayer;
     if (!player) {
-        if (enableThirdPerson) strcpy_s(thirdPersonStatus, "Waiting for local player camera offsets");
-        return !enableThirdPerson;
+        if (thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Waiting for local player camera offsets");
+        return !thirdPersonEnabled;
     }
     __try {
         const uintptr_t gameController = GetActiveGameController();
@@ -3069,7 +3055,7 @@ static bool ApplyCustomizedThirdPersonOffsets(bool enableThirdPerson)
             void* localPlayer = GetLocalPC();
             const int localHealth = GetPCHealth(localPlayer);
             if (!gameController || !localPlayer || localHealth <= 0) {
-                if (enableThirdPerson)
+                if (thirdPersonEnabled)
                     strcpy_s(thirdPersonStatus, "Waiting for live TPS camera baseline");
                 return false;
             }
@@ -3087,7 +3073,7 @@ static bool ApplyCustomizedThirdPersonOffsets(bool enableThirdPerson)
             originalTpsOffsetsGameController = gameController;
             originalTpsOffsetsCaptured = true;
         }
-        if (enableThirdPerson) {
+        if (thirdPersonEnabled) {
             Vector3 standing = originalDefaultTpsOffset;
             Vector3 crouching = originalCrouchingTpsOffset;
             // X is absolute so zero always means centered. Y/Z are adjustments
@@ -3109,8 +3095,8 @@ static bool ApplyCustomizedThirdPersonOffsets(bool enableThirdPerson)
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         originalTpsOffsetsCaptured = false;
-        if (enableThirdPerson) strcpy_s(thirdPersonStatus, "Waiting for local player camera offsets");
-        return !enableThirdPerson;
+        if (thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Waiting for local player camera offsets");
+        return !thirdPersonEnabled;
     }
 }
 
@@ -3138,13 +3124,13 @@ static uintptr_t GetDirectAdminRuntime()
     return runtime;
 }
 
-static bool ApplyNativeThirdPersonState(bool enableThirdPerson)
+static bool ApplyNativeThirdPersonState()
 {
     if (!liveHudLocalPlayer || !o_CheatRuntime_SetThirdPerson) {
         strcpy_s(thirdPersonStatus, "Waiting for local PlayerController");
         return false;
     }
-    if (!ApplyCustomizedThirdPersonOffsets(enableThirdPerson)) return false;
+    if (!ApplyCustomizedThirdPersonOffsets()) return false;
     const uintptr_t runtime = GetDirectAdminRuntime();
     if (!runtime) {
         strcpy_s(thirdPersonStatus, "Waiting for direct admin runtime");
@@ -3153,9 +3139,9 @@ static bool ApplyNativeThirdPersonState(bool enableThirdPerson)
     __try {
         // Use the actual admin implementation crk.baee(bool). Do not call mzy:
         // mzy is the handedness transition that only moves the weapon left/right.
-        o_CheatRuntime_SetThirdPerson(runtime, enableThirdPerson, nullptr);
-        if (!ApplyCustomizedThirdPersonOffsets(enableThirdPerson)) return false;
-        strcpy_s(thirdPersonStatus, enableThirdPerson ?
+        o_CheatRuntime_SetThirdPerson(runtime, thirdPersonEnabled, nullptr);
+        if (!ApplyCustomizedThirdPersonOffsets()) return false;
+        strcpy_s(thirdPersonStatus, thirdPersonEnabled ?
             "Active; native admin TPS logic" :
             "Disabled; original offsets restored");
         return true;
@@ -3834,18 +3820,6 @@ static void SetCorpseRendererVisibleUnsafe(uintptr_t renderer, bool visible)
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
-static bool IsLocalPlayerRagdollUnsafe(uintptr_t biped)
-{
-    const uintptr_t localPlayer = liveHudLocalPlayer;
-    if (!localPlayer || !biped) return false;
-    __try {
-        // dump1 PlayerController::_characterBiped is +0x30. The death camera
-        // follows this local ragdoll, so it must remain under native physics.
-        return *reinterpret_cast<uintptr_t*>(localPlayer + 0x30) == biped;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
-
 void __fastcall hk_RagdollActivate(uintptr_t ragdoll, uintptr_t biped, Vector3 velocity,
     bool c, void* skinName, uintptr_t shotData, bool f, bool g, const Il2CppMethod* method)
 {
@@ -3853,10 +3827,6 @@ void __fastcall hk_RagdollActivate(uintptr_t ragdoll, uintptr_t biped, Vector3 v
     o_RagdollActivate(ragdoll, biped, velocity, c, skinName, shotData, f, g, method);
     RecordCrashBreadcrumb(CrashRagdollActivateOriginalDone, ragdoll, shotData);
     if (!keyValidated || !freezeCorpsesEnabled || !ragdoll) return;
-    // Never freeze the local death ragdoll. PlayerDie/KillCamera follows its moving
-    // body; making those rigidbodies kinematic strands the world camera while the
-    // independent FPS arms hierarchy keeps animating.
-    if (IsLocalPlayerRagdollUnsafe(biped)) return;
     FrozenCorpseEntry corpse{};
     corpse.ragdoll = ragdoll;
     corpse.manager = 0;
@@ -5158,36 +5128,6 @@ static bool ApplyNicknameServerUnsafe(const char* nickname)
     }
 }
 
-static bool ApplyNicknameToCurrentMatchUnsafe(const char* nickname)
-{
-    if (!nickname || !nickname[0] || !liveHudLocalPlayer ||
-        !g_LocalPlayerMatchNameSetter || !g_il2cpp.runtime_invoke ||
-        !g_il2cpp.string_new)
-        return false;
-    __try {
-        Il2CppString* managedName = g_il2cpp.string_new(nickname);
-        if (!managedName) return false;
-        void* args[] = { managedName };
-        Il2CppObject* exception = nullptr;
-        g_il2cpp.runtime_invoke(g_LocalPlayerMatchNameSetter,
-            reinterpret_cast<void*>(liveHudLocalPlayer), args, &exception);
-        if (exception) return false;
-
-        // PlayerController.dhqj is computed by mzj(); +0x190 is cawz (xl), not
-        // the actor. Use the existing dump-backed native getter instead.
-        const uintptr_t actor = SafeGetPlayerActor(
-            reinterpret_cast<void*>(liveHudLocalPlayer));
-        if (actor && g_ActorMatchNameSetter) {
-            exception = nullptr;
-            g_il2cpp.runtime_invoke(g_ActorMatchNameSetter,
-                reinterpret_cast<void*>(actor), args, &exception);
-            if (exception) return false;
-        }
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
-
 static void ProcessNicknameChanger()
 {
     LONG command = InterlockedExchange(&pendingNicknameCommand, 0);
@@ -5211,11 +5151,8 @@ static void ProcessNicknameChanger()
         return;
     }
     const bool serverInvoked = ApplyNicknameServerUnsafe(requestedName);
-    const bool matchCacheUpdated = ApplyNicknameToCurrentMatchUnsafe(requestedName);
-    if (serverInvoked && matchCacheUpdated)
-        sprintf_s(nicknameStatus, "Profile + local match preview: %s", requestedName);
-    else if (serverInvoked)
-        sprintf_s(nicknameStatus, "Profile changed; active match kept its join name");
+    if (serverInvoked)
+        sprintf_s(nicknameStatus, "Profile changed; reconnect to update the match name");
     else if (!g_PlayerModelGetInstanceMethod)
         strcpy_s(nicknameStatus, "Player model getter not resolved");
     else if (!g_PlayerModelSetNameMethod)
@@ -5271,32 +5208,10 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     UpdatePenetrableSurfaceVisualization();
     UpdateVisibleAimbotCamera();
     InfinityAmmoLoop();
-    const int localHealth = ReadAuthoritativeLocalHealthUnsafe();
-    if (thirdPersonEnabled && localHealth == 0) {
-        // Give the native death/kill/spectator camera exclusive control. Reapplying
-        // TPS offsets here races its coroutine and can strand Camera.main at the corpse.
-        if (!thirdPersonSuspendedForDeath) {
-            if (ApplyNativeThirdPersonState(false)) {
-                thirdPersonSuspendedForDeath = true;
-                InterlockedExchange(&pendingThirdPersonCommand, 0);
-                strcpy_s(thirdPersonStatus, "Suspended during death camera");
-            }
-        }
-    }
-    else {
-        if (thirdPersonSuspendedForDeath && localHealth > 0) {
-            thirdPersonSuspendedForDeath = false;
-            originalTpsOffsetsCaptured = false;
-            customizedThirdPersonPlayer = 0;
-            InterlockedExchange(&pendingThirdPersonCommand, 1);
-        }
-        if (thirdPersonEnabled && !thirdPersonSuspendedForDeath &&
-            !InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0))
-            ApplyCustomizedThirdPersonOffsets(true);
-        if (InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0) &&
-            ApplyNativeThirdPersonState(thirdPersonEnabled))
-            InterlockedExchange(&pendingThirdPersonCommand, 0);
-    }
+    if (thirdPersonEnabled && !InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0))
+        ApplyCustomizedThirdPersonOffsets();
+    if (InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0) && ApplyNativeThirdPersonState())
+        InterlockedExchange(&pendingThirdPersonCommand, 0);
     ApplyScopeOverlayState();
 }
 
@@ -9048,7 +8963,6 @@ static void SetBoundFeatureState(BindAction action, bool enabled)
         penetrableSurfacesEnabled = enabled; penetrableSurfaceNextScan = 0; break;
     case BindAction::ThirdPerson:
         thirdPersonEnabled = enabled;
-        if (!enabled) thirdPersonSuspendedForDeath = false;
         InterlockedExchange(&pendingThirdPersonCommand, 1);
         break;
     case BindAction::CameraFov: cameraFovEnabled = enabled; break;
@@ -9783,7 +9697,6 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::TextDisabled("%s", penetrableSurfaceStatus);
         }
         if (ImGui::Checkbox("Third Person", &thirdPersonEnabled)) {
-            if (!thirdPersonEnabled) thirdPersonSuspendedForDeath = false;
             strcpy_s(thirdPersonStatus, thirdPersonEnabled ? "TPS transition queued" : "FPS transition queued");
             InterlockedExchange(&pendingThirdPersonCommand, 1);
         }
@@ -10171,7 +10084,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::TextColored(accent, "Nickname Changer");
         ImGui::Separator();
         ImGui::Spacing();
-        ImGui::TextDisabled("Updates the profile; active-match animation is local preview only.");
+        ImGui::TextDisabled("Updates the profile only; reconnect to publish it in a match.");
         AcquireSRWLockExclusive(&nicknameSettingsLock);
         ImGui::InputText("Nickname 1", nicknameFirst, sizeof(nicknameFirst));
         ImGui::InputText("Nickname 2", nicknameSecond, sizeof(nicknameSecond));
@@ -10188,7 +10101,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (nicknameAnimationEnabled) {
             ImGui::SliderFloat("Change interval", &nicknameAnimationInterval,
                 0.5f, 10.0f, "%.1f s");
-            ImGui::TextDisabled("Example: kottl -> ze0nware -> kottl every 2 seconds.");
+            ImGui::TextDisabled("Changes the profile value only; does not mutate live match actors.");
         }
         ImGui::Spacing();
         ImGui::TextWrapped("Status: %s", nicknameStatus);
@@ -10371,20 +10284,9 @@ DWORD WINAPI HackThread(LPVOID)
                 g_PlayerModelGetInstanceMethod = g_il2cpp.class_get_method_from_name(
                     playerModelParent, "bemy", 0);
         }
-        Il2CppClass* localPlayerClass = g_il2cpp.find_class(
-            "Chillow.StandChillow.Player", "PlayerController");
-        if (!localPlayerClass) localPlayerClass = g_il2cpp.find_class("", "PlayerController");
-        if (localPlayerClass && g_il2cpp.class_get_method_from_name)
-            g_LocalPlayerMatchNameSetter = g_il2cpp.class_get_method_from_name(
-                localPlayerClass, "mzq", 1);
-        Il2CppClass* actorClass = g_il2cpp.find_class("", "dwg");
-        if (actorClass && g_il2cpp.class_get_method_from_name)
-            g_ActorMatchNameSetter = g_il2cpp.class_get_method_from_name(
-                actorClass, "bggy", 1);
-        LINDY_LOG("[nickname] model=%p getter=%p setter=%p match-player=%p actor=%p",
+        LINDY_LOG("[nickname] model=%p getter=%p setter=%p",
             (void*)g_PlayerModelClass, (void*)g_PlayerModelGetInstanceMethod,
-            (void*)g_PlayerModelSetNameMethod,
-            (void*)g_LocalPlayerMatchNameSetter, (void*)g_ActorMatchNameSetter);
+            (void*)g_PlayerModelSetNameMethod);
         g_GlovesManagerClass = g_il2cpp.find_class("Chillow.StandChillow.Main.Inventory.Gloves", "GlovesManager");
         LINDY_LOG("[init] GlovesManagerClass=%p", (void*)g_GlovesManagerClass);
         if (g_GlovesManagerClass) {
