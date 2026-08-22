@@ -719,6 +719,7 @@ struct Matrix16 {
 #define OFFSET_MATERIAL_SET_SHADER                 0x34510A0
 #define OFFSET_ASSETBUNDLE_LOAD_FROM_MEMORY         0x343AC20
 #define OFFSET_ASSETBUNDLE_LOAD_ASSET               0x343A9D0
+#define OFFSET_ASSETBUNDLE_LOAD_ALL_ASSETS          0x343A820
 #define OFFSET_MATERIAL_SET_MAINTEXTURE            0x3450F90
 #define OFFSET_RENDERER_GET_MATERIAL                0x345A740
 #define OFFSET_RENDERER_SET_MATERIAL                0x345AAD0
@@ -1346,8 +1347,8 @@ std::vector<WeaponChamsRenderer> weaponChamsRenderers;
 uintptr_t weaponChamsController = 0;
 uintptr_t activeLocalWeaponController = 0;
 uintptr_t chamsObservedLocalPlayer = 0;
-uintptr_t weaponChamsMaterials[10] = {};
-uint32_t weaponChamsMaterialHandles[10] = {};
+uintptr_t weaponChamsMaterials[12] = {};
+uint32_t weaponChamsMaterialHandles[12] = {};
 char weaponChamsStatus[128] = "Select Flat or Glass";
 volatile LONG pendingWeaponChamsRefresh = 0;
 
@@ -1359,8 +1360,8 @@ float armChamsMetallic = 0.9f;
 float armChamsSmoothness = 0.8f;
 float armChamsAnimationSpeed = 1.0f;
 ULONGLONG armChamsLastAnimationTick = 0;
-uintptr_t armChamsMaterials[10] = {};
-uint32_t armChamsMaterialHandles[10] = {};
+uintptr_t armChamsMaterials[12] = {};
+uint32_t armChamsMaterialHandles[12] = {};
 struct ArmChamsRenderer {
     uintptr_t renderer;
     uintptr_t originalMaterial;
@@ -1380,8 +1381,8 @@ float gloveChamsMetallic = 0.9f;
 float gloveChamsSmoothness = 0.8f;
 float gloveChamsAnimationSpeed = 1.0f;
 ULONGLONG gloveChamsLastAnimationTick = 0;
-uintptr_t gloveChamsMaterials[10] = {};
-uint32_t gloveChamsMaterialHandles[10] = {};
+uintptr_t gloveChamsMaterials[12] = {};
+uint32_t gloveChamsMaterialHandles[12] = {};
 struct GloveChamsRenderer { uintptr_t renderer; uintptr_t originalMaterial; uintptr_t outlineObject; uintptr_t outlineRenderer; };
 std::vector<GloveChamsRenderer> gloveChamsRenderers;
 uintptr_t gloveChamsArmsLodGroup = 0;
@@ -1396,8 +1397,8 @@ float localPlayerChamsMetallic = 0.9f;
 float localPlayerChamsSmoothness = 0.8f;
 float localPlayerChamsAnimationSpeed = 1.0f;
 ULONGLONG localPlayerChamsLastAnimationTick = 0;
-uintptr_t localPlayerChamsMaterials[10] = {};
-uint32_t localPlayerChamsMaterialHandles[10] = {};
+uintptr_t localPlayerChamsMaterials[12] = {};
+uint32_t localPlayerChamsMaterialHandles[12] = {};
 struct LocalPlayerChamsRenderer { uintptr_t renderer; uintptr_t originalMaterial; uintptr_t outlineObject; uintptr_t outlineRenderer; };
 std::vector<LocalPlayerChamsRenderer> localPlayerChamsRenderers;
 uintptr_t localPlayerChamsLodGroup = 0;
@@ -1413,8 +1414,8 @@ float enemyChamsMetallic = 0.9f;
 float enemyChamsSmoothness = 0.8f;
 float enemyChamsAnimationSpeed = 1.0f;
 ULONGLONG enemyChamsLastAnimationTick = 0;
-uintptr_t enemyChamsMaterials[11] = {};
-uint32_t enemyChamsMaterialHandles[11] = {};
+uintptr_t enemyChamsMaterials[13] = {};
+uint32_t enemyChamsMaterialHandles[13] = {};
 struct EnemyChamsRenderer { uintptr_t renderer; uintptr_t originalMaterial; bool originalEnabled; uintptr_t outlineObject; uintptr_t outlineRenderer; };
 std::vector<EnemyChamsRenderer> enemyChamsRenderers;
 std::vector<uintptr_t> enemyChamsInitializedOcclusionControllers;
@@ -1429,6 +1430,12 @@ char wireframeBundleStatus[128] = "Not loaded";
 uintptr_t seascapeAssetBundle = 0, seascapeSourceMaterial = 0;
 uint32_t seascapeAssetBundleHandle = 0, seascapeSourceMaterialHandle = 0;
 char seascapeBundleStatus[128] = "Not loaded";
+uintptr_t baseWarpAssetBundle = 0, baseWarpSourceMaterial = 0;
+uint32_t baseWarpAssetBundleHandle = 0, baseWarpSourceMaterialHandle = 0;
+char baseWarpBundleStatus[128] = "Not loaded";
+uintptr_t bundleGlassAssetBundle = 0, bundleGlassSourceMaterial = 0;
+uint32_t bundleGlassAssetBundleHandle = 0, bundleGlassSourceMaterialHandle = 0;
+char bundleGlassStatus[128] = "Not loaded";
 
 struct BulletTracerEntry {
     Vector3 start;
@@ -2696,7 +2703,7 @@ static bool LoadConfig(const char* requestedName)
     // Config files are user-editable. Clamp every value used as an array index or
     // collection bound before any pending refresh can consume it.
     if (worldColorMode < 0 || worldColorMode > 6) worldColorMode = 0;
-    if (freezeCorpsesChamsMode < 0 || freezeCorpsesChamsMode > 9)
+    if (freezeCorpsesChamsMode < 0 || freezeCorpsesChamsMode > 11)
         freezeCorpsesChamsMode = 0;
     if (!isfinite(freezeCorpsesDuration) || freezeCorpsesDuration < 0.5f)
         freezeCorpsesDuration = 0.5f;
@@ -2716,12 +2723,12 @@ static bool LoadConfig(const char* requestedName)
     if (!isfinite(freezeCorpsesAnimationSpeed) || freezeCorpsesAnimationSpeed < 0.1f)
         freezeCorpsesAnimationSpeed = 0.1f;
     if (freezeCorpsesAnimationSpeed > 5.0f) freezeCorpsesAnimationSpeed = 5.0f;
-    if (weaponChamsMode < 0 || weaponChamsMode > 9) weaponChamsMode = 0;
-    if (armChamsMode < 0 || armChamsMode > 9) armChamsMode = 0;
-    if (gloveChamsMode < 0 || gloveChamsMode > 9) gloveChamsMode = 0;
-    if (localPlayerChamsMode < 0 || localPlayerChamsMode > 9)
+    if (weaponChamsMode < 0 || weaponChamsMode > 11) weaponChamsMode = 0;
+    if (armChamsMode < 0 || armChamsMode > 11) armChamsMode = 0;
+    if (gloveChamsMode < 0 || gloveChamsMode > 11) gloveChamsMode = 0;
+    if (localPlayerChamsMode < 0 || localPlayerChamsMode > 11)
         localPlayerChamsMode = 0;
-    if (enemyChamsMode < 0 || enemyChamsMode > 9) enemyChamsMode = 0;
+    if (enemyChamsMode < 0 || enemyChamsMode > 11) enemyChamsMode = 0;
     if (removeScopeMode < 0 || removeScopeMode > 1) removeScopeMode = 0;
     if (!isfinite(customScopeOpacity)) customScopeOpacity = 0.92f;
     if (customScopeOpacity < 0.05f) customScopeOpacity = 0.05f;
@@ -4103,6 +4110,8 @@ uintptr_t GetPlayerController() {
 static uintptr_t CreateWeaponChamsMaterial(const char* shaderName, bool glass);
 static uintptr_t CreateWireframeChamsMaterial();
 static uintptr_t CreateSeascapeChamsMaterial();
+static uintptr_t CreateBaseWarpChamsMaterial();
+static uintptr_t CreateBundleGlassChamsMaterial();
 static void ConfigureOutlineChamsMaterial(uintptr_t material);
 static bool CreateOutlineCloneUnsafe(uintptr_t renderer, uintptr_t material,
     uintptr_t* outlineObject, uintptr_t* outlineRenderer);
@@ -4186,6 +4195,8 @@ static uintptr_t CreateFrozenCorpseMaterial(uintptr_t originalMaterial, int mode
     };
     if (mode == 8) return CreateWireframeChamsMaterial();
     if (mode == 9) return CreateSeascapeChamsMaterial();
+    if (mode == 10) return CreateBaseWarpChamsMaterial();
+    if (mode == 11) return CreateBundleGlassChamsMaterial();
     if (mode < 1 || mode > 7) return 0;
     for (const char* shader : shaders[mode]) {
         if (!shader) break;
@@ -7417,6 +7428,102 @@ static uintptr_t CreateSeascapeChamsMaterial()
     return material;
 }
 
+static uintptr_t CreateBaseWarpChamsMaterial()
+{
+    if (!baseWarpSourceMaterial) {
+        Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
+        Il2CppClass* byteClass = g_il2cpp.find_class("System", "Byte");
+        if (!materialClass || !byteClass || !g_il2cpp.array_new || !g_il2cpp.string_new ||
+            !g_il2cpp.class_get_type || !g_il2cpp.type_get_object || !base) {
+            strcpy_s(baseWarpBundleStatus, "AssetBundle API unavailable"); return 0;
+        }
+        const std::wstring path = GetConfigDirectory() + L"\\basewarp\\basewarp.basewarp";
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file) { strcpy_s(baseWarpBundleStatus, "baseWarp.baseWarp not found"); return 0; }
+        const std::streamsize fileSize = file.tellg();
+        if (fileSize <= 0 || fileSize > 64 * 1024 * 1024) { strcpy_s(baseWarpBundleStatus, "Invalid bundle size"); return 0; }
+        std::vector<unsigned char> bytes(static_cast<size_t>(fileSize));
+        file.seekg(0, std::ios::beg);
+        if (!file.read(reinterpret_cast<char*>(bytes.data()), fileSize)) { strcpy_s(baseWarpBundleStatus, "Bundle read failed"); return 0; }
+        Il2CppArray* data = g_il2cpp.array_new(byteClass, bytes.size());
+        if (!data) { strcpy_s(baseWarpBundleStatus, "Bundle byte array failed"); return 0; }
+        memcpy(reinterpret_cast<unsigned char*>(data) + 0x20, bytes.data(), bytes.size());
+        using LoadMemoryFn = uintptr_t(__fastcall*)(Il2CppArray*, const Il2CppMethod*);
+        baseWarpAssetBundle = reinterpret_cast<LoadMemoryFn>(base + OFFSET_ASSETBUNDLE_LOAD_FROM_MEMORY)(data, nullptr);
+        if (!baseWarpAssetBundle) { strcpy_s(baseWarpBundleStatus, "Bundle incompatible with this Unity build"); return 0; }
+        if (g_il2cpp.gchandle_new) baseWarpAssetBundleHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(baseWarpAssetBundle), false);
+        const Il2CppType* materialType = g_il2cpp.class_get_type(materialClass);
+        Il2CppObject* typeObject = materialType ? g_il2cpp.type_get_object(materialType) : nullptr;
+        if (!typeObject) { strcpy_s(baseWarpBundleStatus, "Material type unavailable"); return 0; }
+        using LoadAssetFn = uintptr_t(__fastcall*)(uintptr_t, Il2CppString*, Il2CppObject*, const Il2CppMethod*);
+        const auto loadAsset = reinterpret_cast<LoadAssetFn>(base + OFFSET_ASSETBUNDLE_LOAD_ASSET);
+        const char* names[] = { "Assets/BaseWarpMat.mat", "assets/basewarpmat.mat", "BaseWarpMat" };
+        for (const char* name : names) {
+            baseWarpSourceMaterial = loadAsset(baseWarpAssetBundle, g_il2cpp.string_new(name), typeObject, nullptr);
+            if (baseWarpSourceMaterial) break;
+        }
+        if (!baseWarpSourceMaterial) { strcpy_s(baseWarpBundleStatus, "BaseWarpMat not found in bundle"); return 0; }
+        if (g_il2cpp.gchandle_new) baseWarpSourceMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(baseWarpSourceMaterial), false);
+        strcpy_s(baseWarpBundleStatus, "Loaded");
+    }
+    Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
+    if (!materialClass || !g_il2cpp.object_new || !o_Material_copy_ctor) return 0;
+    const uintptr_t material = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
+    if (material) o_Material_copy_ctor(material, baseWarpSourceMaterial, nullptr);
+    return material;
+}
+
+static uintptr_t CreateBundleGlassChamsMaterial()
+{
+    if (!bundleGlassSourceMaterial) {
+        Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
+        Il2CppClass* byteClass = g_il2cpp.find_class("System", "Byte");
+        if (!materialClass || !byteClass || !g_il2cpp.array_new || !g_il2cpp.string_new ||
+            !g_il2cpp.class_get_type || !g_il2cpp.type_get_object || !base) {
+            strcpy_s(bundleGlassStatus, "AssetBundle API unavailable"); return 0;
+        }
+        const std::wstring path = GetConfigDirectory() + L"\\glass\\glass";
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file) { strcpy_s(bundleGlassStatus, "glass bundle not found"); return 0; }
+        const std::streamsize fileSize = file.tellg();
+        if (fileSize <= 0 || fileSize > 64 * 1024 * 1024) { strcpy_s(bundleGlassStatus, "Invalid bundle size"); return 0; }
+        std::vector<unsigned char> bytes(static_cast<size_t>(fileSize));
+        file.seekg(0, std::ios::beg);
+        if (!file.read(reinterpret_cast<char*>(bytes.data()), fileSize)) { strcpy_s(bundleGlassStatus, "Bundle read failed"); return 0; }
+        Il2CppArray* data = g_il2cpp.array_new(byteClass, bytes.size());
+        if (!data) { strcpy_s(bundleGlassStatus, "Bundle byte array failed"); return 0; }
+        memcpy(reinterpret_cast<unsigned char*>(data) + 0x20, bytes.data(), bytes.size());
+        using LoadMemoryFn = uintptr_t(__fastcall*)(Il2CppArray*, const Il2CppMethod*);
+        bundleGlassAssetBundle = reinterpret_cast<LoadMemoryFn>(base + OFFSET_ASSETBUNDLE_LOAD_FROM_MEMORY)(data, nullptr);
+        if (!bundleGlassAssetBundle) { strcpy_s(bundleGlassStatus, "Bundle incompatible with this Unity build"); return 0; }
+        if (g_il2cpp.gchandle_new) bundleGlassAssetBundleHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(bundleGlassAssetBundle), false);
+        const Il2CppType* materialType = g_il2cpp.class_get_type(materialClass);
+        Il2CppObject* typeObject = materialType ? g_il2cpp.type_get_object(materialType) : nullptr;
+        if (!typeObject) { strcpy_s(bundleGlassStatus, "Material type unavailable"); return 0; }
+        using LoadAssetFn = uintptr_t(__fastcall*)(uintptr_t, Il2CppString*, Il2CppObject*, const Il2CppMethod*);
+        const auto loadAsset = reinterpret_cast<LoadAssetFn>(base + OFFSET_ASSETBUNDLE_LOAD_ASSET);
+        const char* names[] = { "Assets/GlassMat.mat", "assets/glassmat.mat", "GlassMat", "Assets/Glass.mat", "assets/glass.mat", "Glass" };
+        for (const char* name : names) {
+            bundleGlassSourceMaterial = loadAsset(bundleGlassAssetBundle, g_il2cpp.string_new(name), typeObject, nullptr);
+            if (bundleGlassSourceMaterial) break;
+        }
+        if (!bundleGlassSourceMaterial) {
+            using LoadAllAssetsFn = Il2CppArray*(__fastcall*)(uintptr_t, Il2CppObject*, const Il2CppMethod*);
+            Il2CppArray* materials = reinterpret_cast<LoadAllAssetsFn>(base + OFFSET_ASSETBUNDLE_LOAD_ALL_ASSETS)(bundleGlassAssetBundle, typeObject, nullptr);
+            if (materials && materials->max_length > 0)
+                bundleGlassSourceMaterial = *reinterpret_cast<uintptr_t*>(reinterpret_cast<unsigned char*>(materials) + 0x20);
+        }
+        if (!bundleGlassSourceMaterial) { strcpy_s(bundleGlassStatus, "Glass material not found in bundle"); return 0; }
+        if (g_il2cpp.gchandle_new) bundleGlassSourceMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(bundleGlassSourceMaterial), false);
+        strcpy_s(bundleGlassStatus, "Loaded");
+    }
+    Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
+    if (!materialClass || !g_il2cpp.object_new || !o_Material_copy_ctor) return 0;
+    const uintptr_t material = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
+    if (material) o_Material_copy_ctor(material, bundleGlassSourceMaterial, nullptr);
+    return material;
+}
+
 static uintptr_t CreateWeaponChamsMaterial(const char* shaderName, bool glass)
 {
     if (!shaderName || !o_Shader_Find || !o_Material_ctor || !g_il2cpp.object_new || !g_il2cpp.string_new) return 0;
@@ -7776,12 +7883,12 @@ static uintptr_t GetLiveCachedChamsMaterial(uintptr_t* materialSlot,
 
 static uintptr_t EnsureSelectedWeaponChamsMaterial()
 {
-    const int mode = (weaponChamsMode >= 0 && weaponChamsMode < 10) ? weaponChamsMode : 0;
+    const int mode = (weaponChamsMode >= 0 && weaponChamsMode < 12) ? weaponChamsMode : 0;
     if (const uintptr_t cached = GetLiveCachedChamsMaterial(
         &weaponChamsMaterials[mode], &weaponChamsMaterialHandles[mode]))
         return cached;
 
-    static const char* shaderCandidates[10][5] = {
+    static const char* shaderCandidates[12][5] = {
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
         { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", "UI/Default", nullptr },
         { "Legacy Shaders/Diffuse", "Standard", "Legacy Shaders/VertexLit", "Diffuse", nullptr },
@@ -7791,11 +7898,15 @@ static uintptr_t EnsureSelectedWeaponChamsMaterial()
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
         { "Hidden/Internal-Colored", "Unlit/Color", "Legacy Shaders/Unlit/Color", nullptr, nullptr },
         { nullptr, nullptr, nullptr, nullptr, nullptr },
+        { nullptr, nullptr, nullptr, nullptr, nullptr },
+        { nullptr, nullptr, nullptr, nullptr, nullptr },
         { nullptr, nullptr, nullptr, nullptr, nullptr }
     };
     const bool transparent = mode == 1 || mode == 4;
     if (mode == 8) weaponChamsMaterials[mode] = CreateWireframeChamsMaterial();
     if (mode == 9) weaponChamsMaterials[mode] = CreateSeascapeChamsMaterial();
+    if (mode == 10) weaponChamsMaterials[mode] = CreateBaseWarpChamsMaterial();
+    if (mode == 11) weaponChamsMaterials[mode] = CreateBundleGlassChamsMaterial();
     for (const char* shaderName : shaderCandidates[mode]) {
         if (!shaderName) break;
         weaponChamsMaterials[mode] = CreateWeaponChamsMaterial(shaderName, transparent);
@@ -7803,7 +7914,7 @@ static uintptr_t EnsureSelectedWeaponChamsMaterial()
     }
     const uintptr_t material = weaponChamsMaterials[mode];
     if (!material) {
-        static const char* names[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse", "Outline", "Wireframe", "Seascape" };
+        static const char* names[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse", "Outline", "Wireframe", "Seascape", "Base Warp", "Bundle Glass" };
         sprintf_s(weaponChamsStatus, "%s shader not found in this build", names[mode]);
         return 0;
     }
@@ -7837,7 +7948,7 @@ static Color GetWeaponChamsDisplayColor()
 
 static void AnimateWeaponChamsColor()
 {
-    if (weaponChamsMode < 0 || weaponChamsMode > 9) return;
+    if (weaponChamsMode < 0 || weaponChamsMode > 11) return;
     if (!weaponChamsEnabled || (weaponChamsMode != 5 && weaponChamsMode != 6) || !o_Material_set_color) return;
     const ULONGLONG now = GetTickCount64();
     if (now - weaponChamsLastAnimationTick < 33) return;
@@ -7850,11 +7961,11 @@ static void AnimateWeaponChamsColor()
 
 static uintptr_t EnsureSelectedArmChamsMaterial()
 {
-    const int mode = (armChamsMode >= 0 && armChamsMode < 10) ? armChamsMode : 0;
+    const int mode = (armChamsMode >= 0 && armChamsMode < 12) ? armChamsMode : 0;
     if (const uintptr_t cached = GetLiveCachedChamsMaterial(
         &armChamsMaterials[mode], &armChamsMaterialHandles[mode]))
         return cached;
-    static const char* shaderCandidates[10][5] = {
+    static const char* shaderCandidates[12][5] = {
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
         { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", "UI/Default", nullptr },
         { "Legacy Shaders/Diffuse", "Standard", "Legacy Shaders/VertexLit", "Diffuse", nullptr },
@@ -7864,11 +7975,15 @@ static uintptr_t EnsureSelectedArmChamsMaterial()
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
         { "Hidden/Internal-Colored", "Unlit/Color", "Legacy Shaders/Unlit/Color", nullptr, nullptr },
         { nullptr, nullptr, nullptr, nullptr, nullptr },
+        { nullptr, nullptr, nullptr, nullptr, nullptr },
+        { nullptr, nullptr, nullptr, nullptr, nullptr },
         { nullptr, nullptr, nullptr, nullptr, nullptr }
     };
     const bool transparent = mode == 1 || mode == 4;
     if (mode == 8) armChamsMaterials[mode] = CreateWireframeChamsMaterial();
     if (mode == 9) armChamsMaterials[mode] = CreateSeascapeChamsMaterial();
+    if (mode == 10) armChamsMaterials[mode] = CreateBaseWarpChamsMaterial();
+    if (mode == 11) armChamsMaterials[mode] = CreateBundleGlassChamsMaterial();
     for (const char* shaderName : shaderCandidates[mode]) {
         if (!shaderName) break;
         armChamsMaterials[mode] = CreateWeaponChamsMaterial(shaderName, transparent);
@@ -7898,7 +8013,7 @@ static Color GetArmChamsDisplayColor()
 
 static void AnimateArmChamsColor()
 {
-    if (armChamsMode < 0 || armChamsMode > 9) return;
+    if (armChamsMode < 0 || armChamsMode > 11) return;
     if (!armChamsEnabled || (armChamsMode != 5 && armChamsMode != 6) || !o_Material_set_color) return;
     const ULONGLONG now = GetTickCount64();
     if (now - armChamsLastAnimationTick < 33) return;
@@ -8011,11 +8126,11 @@ static void UpdateArmChams(uintptr_t knownArmsLodGroup)
 
 static uintptr_t EnsureSelectedGloveChamsMaterial()
 {
-    const int mode = (gloveChamsMode >= 0 && gloveChamsMode < 10) ? gloveChamsMode : 0;
+    const int mode = (gloveChamsMode >= 0 && gloveChamsMode < 12) ? gloveChamsMode : 0;
     if (const uintptr_t cached = GetLiveCachedChamsMaterial(
         &gloveChamsMaterials[mode], &gloveChamsMaterialHandles[mode]))
         return cached;
-    static const char* shaderCandidates[10][5] = {
+    static const char* shaderCandidates[12][5] = {
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
         { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", "UI/Default", nullptr },
         { "Legacy Shaders/Diffuse", "Standard", "Legacy Shaders/VertexLit", "Diffuse", nullptr },
@@ -8025,11 +8140,15 @@ static uintptr_t EnsureSelectedGloveChamsMaterial()
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
         { "Hidden/Internal-Colored", "Unlit/Color", "Legacy Shaders/Unlit/Color", nullptr, nullptr },
         { nullptr, nullptr, nullptr, nullptr, nullptr },
+        { nullptr, nullptr, nullptr, nullptr, nullptr },
+        { nullptr, nullptr, nullptr, nullptr, nullptr },
         { nullptr, nullptr, nullptr, nullptr, nullptr }
     };
     const bool transparent = mode == 1 || mode == 4;
     if (mode == 8) gloveChamsMaterials[mode] = CreateWireframeChamsMaterial();
     if (mode == 9) gloveChamsMaterials[mode] = CreateSeascapeChamsMaterial();
+    if (mode == 10) gloveChamsMaterials[mode] = CreateBaseWarpChamsMaterial();
+    if (mode == 11) gloveChamsMaterials[mode] = CreateBundleGlassChamsMaterial();
     for (const char* shaderName : shaderCandidates[mode]) {
         if (!shaderName) break;
         gloveChamsMaterials[mode] = CreateWeaponChamsMaterial(shaderName, transparent);
@@ -8059,7 +8178,7 @@ static Color GetGloveChamsDisplayColor()
 
 static void AnimateGloveChamsColor()
 {
-    if (gloveChamsMode < 0 || gloveChamsMode > 9) return;
+    if (gloveChamsMode < 0 || gloveChamsMode > 11) return;
     if (!gloveChamsEnabled || (gloveChamsMode != 5 && gloveChamsMode != 6) || !o_Material_set_color) return;
     const ULONGLONG now = GetTickCount64();
     if (now - gloveChamsLastAnimationTick < 33) return;
@@ -8177,11 +8296,11 @@ static uintptr_t GetCurrentLocalCharacterLodGroup()
 
 static uintptr_t EnsureSelectedLocalPlayerChamsMaterial()
 {
-    const int mode = (localPlayerChamsMode >= 0 && localPlayerChamsMode < 10) ? localPlayerChamsMode : 0;
+    const int mode = (localPlayerChamsMode >= 0 && localPlayerChamsMode < 12) ? localPlayerChamsMode : 0;
     if (const uintptr_t cached = GetLiveCachedChamsMaterial(
         &localPlayerChamsMaterials[mode], &localPlayerChamsMaterialHandles[mode]))
         return cached;
-    static const char* shaderCandidates[10][5] = {
+    static const char* shaderCandidates[12][5] = {
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
         { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", "UI/Default", nullptr },
         { "Legacy Shaders/Diffuse", "Standard", "Legacy Shaders/VertexLit", "Diffuse", nullptr },
@@ -8191,11 +8310,15 @@ static uintptr_t EnsureSelectedLocalPlayerChamsMaterial()
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
         { "Hidden/Internal-Colored", "Unlit/Color", "Legacy Shaders/Unlit/Color", nullptr, nullptr },
         { nullptr, nullptr, nullptr, nullptr, nullptr },
+        { nullptr, nullptr, nullptr, nullptr, nullptr },
+        { nullptr, nullptr, nullptr, nullptr, nullptr },
         { nullptr, nullptr, nullptr, nullptr, nullptr }
     };
     const bool transparent = mode == 1 || mode == 4;
     if (mode == 8) localPlayerChamsMaterials[mode] = CreateWireframeChamsMaterial();
     if (mode == 9) localPlayerChamsMaterials[mode] = CreateSeascapeChamsMaterial();
+    if (mode == 10) localPlayerChamsMaterials[mode] = CreateBaseWarpChamsMaterial();
+    if (mode == 11) localPlayerChamsMaterials[mode] = CreateBundleGlassChamsMaterial();
     for (const char* shaderName : shaderCandidates[mode]) {
         if (!shaderName) break;
         localPlayerChamsMaterials[mode] = CreateWeaponChamsMaterial(shaderName, transparent);
@@ -8321,7 +8444,7 @@ static void UpdateLocalPlayerChams(uintptr_t knownCharacterLodGroup)
 
 static void AnimateLocalPlayerChamsColor()
 {
-    if (localPlayerChamsMode < 0 || localPlayerChamsMode > 9) return;
+    if (localPlayerChamsMode < 0 || localPlayerChamsMode > 11) return;
     if (!localPlayerChamsEnabled || (localPlayerChamsMode != 5 && localPlayerChamsMode != 6) || !o_Material_set_color) return;
     const ULONGLONG now = GetTickCount64();
     if (now - localPlayerChamsLastAnimationTick < 33) return;
@@ -8334,11 +8457,11 @@ static void AnimateLocalPlayerChamsColor()
 
 static uintptr_t EnsureEnemyChamsMaterial(int requestedMode)
 {
-    const int mode = (requestedMode >= 0 && requestedMode < 11) ? requestedMode : 0;
+    const int mode = (requestedMode >= 0 && requestedMode < 13) ? requestedMode : 0;
     if (const uintptr_t cached = GetLiveCachedChamsMaterial(
         &enemyChamsMaterials[mode], &enemyChamsMaterialHandles[mode]))
         return cached;
-    static const char* shaderCandidates[11][5] = {
+    static const char* shaderCandidates[13][5] = {
         { "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", "UI/Default", nullptr },
         { "Unlit/Transparent", "Legacy Shaders/Transparent/Diffuse", "Sprites/Default", "UI/Default", nullptr },
         { "Legacy Shaders/Diffuse", "Standard", "Legacy Shaders/VertexLit", "Diffuse", nullptr },
@@ -8349,17 +8472,21 @@ static uintptr_t EnsureEnemyChamsMaterial(int requestedMode)
         { "Hidden/Internal-Colored", "Unlit/Color", "Legacy Shaders/Unlit/Color", nullptr, nullptr },
         { nullptr, nullptr, nullptr, nullptr, nullptr },
         { nullptr, nullptr, nullptr, nullptr, nullptr },
+        { nullptr, nullptr, nullptr, nullptr, nullptr },
+        { nullptr, nullptr, nullptr, nullptr, nullptr },
         { "Hidden/Internal-Colored", "Unlit/Color", "Legacy Shaders/Unlit/Color", "Sprites/Default", nullptr }
     };
     const bool transparent = mode == 1 || mode == 4;
     if (mode == 8) enemyChamsMaterials[mode] = CreateWireframeChamsMaterial();
     if (mode == 9) enemyChamsMaterials[mode] = CreateSeascapeChamsMaterial();
+    if (mode == 10) enemyChamsMaterials[mode] = CreateBaseWarpChamsMaterial();
+    if (mode == 11) enemyChamsMaterials[mode] = CreateBundleGlassChamsMaterial();
     for (const char* shaderName : shaderCandidates[mode]) {
         if (!shaderName) break;
         enemyChamsMaterials[mode] = CreateWeaponChamsMaterial(shaderName, transparent);
         if (enemyChamsMaterials[mode]) break;
     }
-    if (mode == 10 && enemyChamsMaterials[mode] && o_Material_SetFloat && g_il2cpp.string_new) {
+    if (mode == 12 && enemyChamsMaterials[mode] && o_Material_SetFloat && g_il2cpp.string_new) {
         // Draw the opaque x-ray silhouette after world geometry. The selected visual
         // material is queued immediately after it and overwrites this pass only on pixels
         // where its normal depth test succeeds.
@@ -8536,7 +8663,7 @@ static void UpdateEnemyChams()
 
     const uintptr_t replacement = EnsureSelectedEnemyChamsMaterial();
     if (!replacement) return;
-    const uintptr_t wallOverlay = enemyChamsThroughWalls ? EnsureEnemyChamsMaterial(10) : 0;
+    const uintptr_t wallOverlay = enemyChamsThroughWalls ? EnsureEnemyChamsMaterial(12) : 0;
     if (enemyChamsThroughWalls && !wallOverlay) return;
     if (enemyChamsMode == 3 && o_Material_SetFloat && g_il2cpp.string_new) {
         o_Material_SetFloat(replacement, g_il2cpp.string_new("_Metallic"), enemyChamsMetallic);
@@ -8567,7 +8694,7 @@ static void UpdateEnemyChams()
 
 static void AnimateEnemyChamsColor()
 {
-    if (enemyChamsMode < 0 || enemyChamsMode > 9) return;
+    if (enemyChamsMode < 0 || enemyChamsMode > 11) return;
     if (!enemyChamsEnabled || (enemyChamsMode != 5 && enemyChamsMode != 6) || !o_Material_set_color) return;
     const ULONGLONG now = GetTickCount64();
     if (now - enemyChamsLastAnimationTick < 33) return;
@@ -10473,7 +10600,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (freezeCorpsesFadeEnabled)
                 ImGui::SliderFloat("Corpse Fade Duration", &freezeCorpsesFadeDuration,
                     0.1f, 4.0f, "%.1f s");
-            const char* corpseChamsModes[] = { "None", "Flat", "Glass", "Lit", "Metallic", "Rainbow", "Pulse", "Outline", "Wireframe", "Seascape" };
+            const char* corpseChamsModes[] = { "None", "Flat", "Glass", "Lit", "Metallic", "Rainbow", "Pulse", "Outline", "Wireframe", "Seascape", "Base Warp", "Bundle Glass" };
             ImGui::Combo("Corpse Chams", &freezeCorpsesChamsMode,
                 corpseChamsModes, IM_ARRAYSIZE(corpseChamsModes));
             if (freezeCorpsesChamsMode != 0)
@@ -10669,7 +10796,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&pendingWeaponChamsRefresh, 1);
         }
         if (weaponChamsEnabled) {
-            const char* chamsModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse", "Outline", "Wireframe", "Seascape" };
+            const char* chamsModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse", "Outline", "Wireframe", "Seascape", "Base Warp", "Bundle Glass" };
             if (ImGui::Combo("Chams Material", &weaponChamsMode, chamsModes, IM_ARRAYSIZE(chamsModes))) {
                 weaponChamsController = 0;
                 InterlockedExchange(&pendingWeaponChamsRefresh, 1);
@@ -10691,7 +10818,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&pendingArmChamsRefresh, 1);
         }
         if (armChamsEnabled) {
-            const char* handModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse", "Outline", "Wireframe", "Seascape" };
+            const char* handModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse", "Outline", "Wireframe", "Seascape", "Base Warp", "Bundle Glass" };
             if (ImGui::Combo("Arm Material", &armChamsMode, handModes, IM_ARRAYSIZE(handModes))) {
                 // Keep the captured ArmsLodGroup and original materials. The game-thread
                 // refresh below swaps only the replacement material on the same renderers.
@@ -10713,7 +10840,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&pendingGloveChamsRefresh, 1);
         }
         if (gloveChamsEnabled) {
-            const char* gloveModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse", "Outline", "Wireframe", "Seascape" };
+            const char* gloveModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse", "Outline", "Wireframe", "Seascape", "Base Warp", "Bundle Glass" };
             if (ImGui::Combo("Glove Material", &gloveChamsMode, gloveModes, IM_ARRAYSIZE(gloveModes))) {
                 strcpy_s(gloveChamsStatus, "Switching glove material");
                 InterlockedExchange(&pendingGloveChamsRefresh, 1);
@@ -10732,7 +10859,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&pendingLocalPlayerChamsRefresh, 1);
         }
         if (localPlayerChamsEnabled) {
-            const char* localModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse", "Outline", "Wireframe", "Seascape" };
+            const char* localModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse", "Outline", "Wireframe", "Seascape", "Base Warp", "Bundle Glass" };
             if (ImGui::Combo("Local Player Material", &localPlayerChamsMode, localModes, IM_ARRAYSIZE(localModes)))
                 InterlockedExchange(&pendingLocalPlayerChamsRefresh, 1);
             if (ImGui::ColorEdit3("Local Player Color", localPlayerChamsColor))
@@ -10753,7 +10880,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&pendingEnemyChamsRefresh, 1);
         }
         if (enemyChamsEnabled) {
-            const char* enemyModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse", "Outline", "Wireframe", "Seascape" };
+            const char* enemyModes[] = { "Flat", "Glass", "Lit", "Metallic", "Transparent Lit", "Rainbow", "Pulse", "Outline", "Wireframe", "Seascape", "Base Warp", "Bundle Glass" };
             if (ImGui::Combo("Enemy Material", &enemyChamsMode, enemyModes, IM_ARRAYSIZE(enemyModes)))
                 InterlockedExchange(&pendingEnemyChamsRefresh, 1);
             if (ImGui::Checkbox("Through Walls", &enemyChamsThroughWalls))
@@ -10776,6 +10903,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::TextDisabled("Wireframe: %s", wireframeBundleStatus);
         if (weaponChamsMode == 9 || armChamsMode == 9 || gloveChamsMode == 9 || localPlayerChamsMode == 9 || enemyChamsMode == 9 || freezeCorpsesChamsMode == 9)
             ImGui::TextDisabled("Seascape: %s", seascapeBundleStatus);
+        if (weaponChamsMode == 10 || armChamsMode == 10 || gloveChamsMode == 10 || localPlayerChamsMode == 10 || enemyChamsMode == 10 || freezeCorpsesChamsMode == 10)
+            ImGui::TextDisabled("Base Warp: %s", baseWarpBundleStatus);
+        if (weaponChamsMode == 11 || armChamsMode == 11 || gloveChamsMode == 11 || localPlayerChamsMode == 11 || enemyChamsMode == 11 || freezeCorpsesChamsMode == 11)
+            ImGui::TextDisabled("Bundle Glass: %s", bundleGlassStatus);
         ImGui::Checkbox("Hitsound", &hitSoundEnabled);
         if (hitSoundEnabled) {
             std::vector<std::string> soundNames;
