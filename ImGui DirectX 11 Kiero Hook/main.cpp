@@ -1030,6 +1030,8 @@ float silentAntiAimJitterRange = 45.0f;
 float silentAntiAimSpinSpeed = 180.0f; // degrees per second
 float silentAntiAimEdgeDistance = 3.0f;
 float silentAntiAimEdgeOffset = 0.0f;
+float silentAntiAimFlickRate = 300.0f;
+bool silentAntiAimDefensive = false;
 int silentAntiAimJumpMode = 0;
 int silentAntiAimJumpPitch = 0;
 float silentAntiAimJumpYaw = 180.0f;
@@ -1037,6 +1039,7 @@ float silentAntiAimJumpJitterRange = 45.0f;
 float silentAntiAimJumpSpinSpeed = 180.0f;
 float silentAntiAimJumpEdgeDistance = 3.0f;
 float silentAntiAimJumpEdgeOffset = 0.0f;
+float silentAntiAimJumpFlickRate = 300.0f;
 bool silentAntiAimActiveJumpProfile = false;
 int silentAntiAimEditorProfile = 0;
 ULONGLONG silentAntiAimEdgeScanFrame = 0;
@@ -1070,6 +1073,12 @@ ULONGLONG silentAntiAimJumpSpinEpoch = 0;
 float silentAntiAimJumpSpinYaw = 0.0f;
 bool silentAntiAimJumpJitterFlip = false;
 ULONGLONG silentAntiAimJumpLastJitterTick = 0;
+ULONGLONG silentAntiAimFlickNextTick = 0;
+ULONGLONG silentAntiAimJumpFlickNextTick = 0;
+uint32_t silentAntiAimRandomState = 0x6D2B79F5u;
+uintptr_t silentAntiAimRestoreCameraTransform = 0;
+Vector3 silentAntiAimRestoreCameraAngles = {};
+bool silentAntiAimRestoreCameraPending = false;
 char silentAntiAimStatus[96] = "Disabled";
 volatile LONG silentAntiAimLateAimCalls = 0;
 volatile LONG silentAntiAimBonePasses = 0;
@@ -2511,7 +2520,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(airJump); SAVE_BOOL(edgeBugEnabled); SAVE_FLOAT(edgeBugPullForce);
     SAVE_BOOL(velocityLimiterEnabled); SAVE_FLOAT(velocityLimit);
     SAVE_BOOL(aimbotEnabled); SAVE_BOOL(visibleAimbotEnabled); SAVE_BOOL(aimbotVisibleCheck); SAVE_BOOL(aimbotAutoWall); SAVE_FLOAT(aimbotAutoWallMinDamage); SAVE_BOOL(aimbotAutoFire); SAVE_BOOL(aimbotAutoStop);
-    SAVE_BOOL(silentAntiAimEnabled); SAVE_INT(silentAntiAimMode); SAVE_INT(silentAntiAimPitch); SAVE_FLOAT(silentAntiAimYaw); SAVE_FLOAT(silentAntiAimJitterRange); SAVE_FLOAT(silentAntiAimSpinSpeed); SAVE_FLOAT(silentAntiAimEdgeDistance); SAVE_FLOAT(silentAntiAimEdgeOffset); SAVE_INT(silentAntiAimJumpMode); SAVE_INT(silentAntiAimJumpPitch); SAVE_FLOAT(silentAntiAimJumpYaw); SAVE_FLOAT(silentAntiAimJumpJitterRange); SAVE_FLOAT(silentAntiAimJumpSpinSpeed); SAVE_FLOAT(silentAntiAimJumpEdgeDistance); SAVE_FLOAT(silentAntiAimJumpEdgeOffset); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(freezeCorpsesFadeEnabled); SAVE_FLOAT(freezeCorpsesFadeDuration); SAVE_INT(freezeCorpsesChamsMode); SAVE_FLOAT(freezeCorpsesChamsAlpha); SAVE_FLOAT(freezeCorpsesMetallic); SAVE_FLOAT(freezeCorpsesSmoothness); SAVE_FLOAT(freezeCorpsesAnimationSpeed); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
+    SAVE_BOOL(silentAntiAimEnabled); SAVE_INT(silentAntiAimMode); SAVE_INT(silentAntiAimPitch); SAVE_FLOAT(silentAntiAimYaw); SAVE_FLOAT(silentAntiAimJitterRange); SAVE_FLOAT(silentAntiAimSpinSpeed); SAVE_FLOAT(silentAntiAimEdgeDistance); SAVE_FLOAT(silentAntiAimEdgeOffset); SAVE_FLOAT(silentAntiAimFlickRate); SAVE_BOOL(silentAntiAimDefensive); SAVE_INT(silentAntiAimJumpMode); SAVE_INT(silentAntiAimJumpPitch); SAVE_FLOAT(silentAntiAimJumpYaw); SAVE_FLOAT(silentAntiAimJumpJitterRange); SAVE_FLOAT(silentAntiAimJumpSpinSpeed); SAVE_FLOAT(silentAntiAimJumpEdgeDistance); SAVE_FLOAT(silentAntiAimJumpEdgeOffset); SAVE_FLOAT(silentAntiAimJumpFlickRate); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(freezeCorpsesFadeEnabled); SAVE_FLOAT(freezeCorpsesFadeDuration); SAVE_INT(freezeCorpsesChamsMode); SAVE_FLOAT(freezeCorpsesChamsAlpha); SAVE_FLOAT(freezeCorpsesMetallic); SAVE_FLOAT(freezeCorpsesSmoothness); SAVE_FLOAT(freezeCorpsesAnimationSpeed); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
     SAVE_BOOL(espShowName); SAVE_BOOL(espShowHealth); SAVE_BOOL(espShowWeapon); SAVE_BOOL(espGradient);
     SAVE_BOOL(espBoxGlow); SAVE_BOOL(espHealthGlow); SAVE_FLOAT(espGlowRadius); SAVE_FLOAT(espGlowIntensity);
     SAVE_BOOL(espLiquidGlass); SAVE_FLOAT(espLiquidGlassStrength); SAVE_FLOAT(espLiquidGlassBlur); SAVE_FLOAT(espLiquidGlassRefraction);
@@ -2615,7 +2624,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(airJump); LOAD_BOOL(edgeBugEnabled); LOAD_FLOAT(edgeBugPullForce);
     LOAD_BOOL(velocityLimiterEnabled); LOAD_FLOAT(velocityLimit);
     LOAD_BOOL(aimbotEnabled); LOAD_BOOL(visibleAimbotEnabled); LOAD_BOOL(aimbotVisibleCheck); LOAD_BOOL(aimbotAutoWall); LOAD_FLOAT(aimbotAutoWallMinDamage); LOAD_BOOL(aimbotAutoFire); LOAD_BOOL(aimbotAutoStop);
-    LOAD_BOOL(silentAntiAimEnabled); LOAD_INT(silentAntiAimMode); LOAD_INT(silentAntiAimPitch); LOAD_FLOAT(silentAntiAimYaw); LOAD_FLOAT(silentAntiAimJitterRange); LOAD_FLOAT(silentAntiAimSpinSpeed); LOAD_FLOAT(silentAntiAimEdgeDistance); LOAD_FLOAT(silentAntiAimEdgeOffset); LOAD_INT(silentAntiAimJumpMode); LOAD_INT(silentAntiAimJumpPitch); LOAD_FLOAT(silentAntiAimJumpYaw); LOAD_FLOAT(silentAntiAimJumpJitterRange); LOAD_FLOAT(silentAntiAimJumpSpinSpeed); LOAD_FLOAT(silentAntiAimJumpEdgeDistance); LOAD_FLOAT(silentAntiAimJumpEdgeOffset); if (!isfinite(silentAntiAimYaw)) silentAntiAimYaw = 180.0f; if (!isfinite(silentAntiAimJitterRange)) silentAntiAimJitterRange = 45.0f; if (!isfinite(silentAntiAimSpinSpeed)) silentAntiAimSpinSpeed = 180.0f; if (!isfinite(silentAntiAimEdgeDistance)) silentAntiAimEdgeDistance = 3.0f; if (!isfinite(silentAntiAimEdgeOffset)) silentAntiAimEdgeOffset = 0.0f; if (silentAntiAimMode < 0 || silentAntiAimMode > 3) silentAntiAimMode = 0; if (silentAntiAimPitch < 0 || silentAntiAimPitch > 2) silentAntiAimPitch = 0; if (silentAntiAimYaw < -180.0f) silentAntiAimYaw = -180.0f; if (silentAntiAimYaw > 180.0f) silentAntiAimYaw = 180.0f; if (silentAntiAimJitterRange < 0.0f) silentAntiAimJitterRange = 0.0f; if (silentAntiAimJitterRange > 180.0f) silentAntiAimJitterRange = 180.0f; if (silentAntiAimSpinSpeed < 1.0f) silentAntiAimSpinSpeed = 1.0f; if (silentAntiAimSpinSpeed > 3600.0f) silentAntiAimSpinSpeed = 3600.0f; if (silentAntiAimEdgeDistance < 0.5f) silentAntiAimEdgeDistance = 0.5f; if (silentAntiAimEdgeDistance > 6.0f) silentAntiAimEdgeDistance = 6.0f; if (silentAntiAimEdgeOffset < -180.0f) silentAntiAimEdgeOffset = -180.0f; if (silentAntiAimEdgeOffset > 180.0f) silentAntiAimEdgeOffset = 180.0f; if (!isfinite(silentAntiAimJumpYaw)) silentAntiAimJumpYaw = 180.0f; if (!isfinite(silentAntiAimJumpJitterRange)) silentAntiAimJumpJitterRange = 45.0f; if (!isfinite(silentAntiAimJumpSpinSpeed)) silentAntiAimJumpSpinSpeed = 180.0f; if (!isfinite(silentAntiAimJumpEdgeDistance)) silentAntiAimJumpEdgeDistance = 3.0f; if (!isfinite(silentAntiAimJumpEdgeOffset)) silentAntiAimJumpEdgeOffset = 0.0f; if (silentAntiAimJumpMode < 0 || silentAntiAimJumpMode > 3) silentAntiAimJumpMode = 0; if (silentAntiAimJumpPitch < 0 || silentAntiAimJumpPitch > 2) silentAntiAimJumpPitch = 0; if (silentAntiAimJumpYaw < -180.0f) silentAntiAimJumpYaw = -180.0f; if (silentAntiAimJumpYaw > 180.0f) silentAntiAimJumpYaw = 180.0f; if (silentAntiAimJumpJitterRange < 0.0f) silentAntiAimJumpJitterRange = 0.0f; if (silentAntiAimJumpJitterRange > 180.0f) silentAntiAimJumpJitterRange = 180.0f; if (silentAntiAimJumpSpinSpeed < 1.0f) silentAntiAimJumpSpinSpeed = 1.0f; if (silentAntiAimJumpSpinSpeed > 3600.0f) silentAntiAimJumpSpinSpeed = 3600.0f; if (silentAntiAimJumpEdgeDistance < 0.5f) silentAntiAimJumpEdgeDistance = 0.5f; if (silentAntiAimJumpEdgeDistance > 6.0f) silentAntiAimJumpEdgeDistance = 6.0f; if (silentAntiAimJumpEdgeOffset < -180.0f) silentAntiAimJumpEdgeOffset = -180.0f; if (silentAntiAimJumpEdgeOffset > 180.0f) silentAntiAimJumpEdgeOffset = 180.0f; LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(freezeCorpsesFadeEnabled); LOAD_FLOAT(freezeCorpsesFadeDuration); LOAD_INT(freezeCorpsesChamsMode); LOAD_FLOAT(freezeCorpsesChamsAlpha); LOAD_FLOAT(freezeCorpsesMetallic); LOAD_FLOAT(freezeCorpsesSmoothness); LOAD_FLOAT(freezeCorpsesAnimationSpeed); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
+    LOAD_BOOL(silentAntiAimEnabled); LOAD_INT(silentAntiAimMode); LOAD_INT(silentAntiAimPitch); LOAD_FLOAT(silentAntiAimYaw); LOAD_FLOAT(silentAntiAimJitterRange); LOAD_FLOAT(silentAntiAimSpinSpeed); LOAD_FLOAT(silentAntiAimEdgeDistance); LOAD_FLOAT(silentAntiAimEdgeOffset); LOAD_FLOAT(silentAntiAimFlickRate); LOAD_BOOL(silentAntiAimDefensive); LOAD_INT(silentAntiAimJumpMode); LOAD_INT(silentAntiAimJumpPitch); LOAD_FLOAT(silentAntiAimJumpYaw); LOAD_FLOAT(silentAntiAimJumpJitterRange); LOAD_FLOAT(silentAntiAimJumpSpinSpeed); LOAD_FLOAT(silentAntiAimJumpEdgeDistance); LOAD_FLOAT(silentAntiAimJumpEdgeOffset); LOAD_FLOAT(silentAntiAimJumpFlickRate); if (!isfinite(silentAntiAimYaw)) silentAntiAimYaw = 180.0f; if (!isfinite(silentAntiAimJitterRange)) silentAntiAimJitterRange = 45.0f; if (!isfinite(silentAntiAimSpinSpeed)) silentAntiAimSpinSpeed = 180.0f; if (!isfinite(silentAntiAimEdgeDistance)) silentAntiAimEdgeDistance = 3.0f; if (!isfinite(silentAntiAimEdgeOffset)) silentAntiAimEdgeOffset = 0.0f; if (silentAntiAimMode < 0 || silentAntiAimMode > 3) silentAntiAimMode = 0; if (silentAntiAimPitch < 0 || silentAntiAimPitch > 2) silentAntiAimPitch = 0; if (silentAntiAimYaw < -180.0f) silentAntiAimYaw = -180.0f; if (silentAntiAimYaw > 180.0f) silentAntiAimYaw = 180.0f; if (silentAntiAimJitterRange < 0.0f) silentAntiAimJitterRange = 0.0f; if (silentAntiAimJitterRange > 180.0f) silentAntiAimJitterRange = 180.0f; if (silentAntiAimSpinSpeed < 1.0f) silentAntiAimSpinSpeed = 1.0f; if (silentAntiAimSpinSpeed > 3600.0f) silentAntiAimSpinSpeed = 3600.0f; if (silentAntiAimEdgeDistance < 0.5f) silentAntiAimEdgeDistance = 0.5f; if (silentAntiAimEdgeDistance > 6.0f) silentAntiAimEdgeDistance = 6.0f; if (silentAntiAimEdgeOffset < -180.0f) silentAntiAimEdgeOffset = -180.0f; if (silentAntiAimEdgeOffset > 180.0f) silentAntiAimEdgeOffset = 180.0f; if (!isfinite(silentAntiAimJumpYaw)) silentAntiAimJumpYaw = 180.0f; if (!isfinite(silentAntiAimJumpJitterRange)) silentAntiAimJumpJitterRange = 45.0f; if (!isfinite(silentAntiAimJumpSpinSpeed)) silentAntiAimJumpSpinSpeed = 180.0f; if (!isfinite(silentAntiAimJumpEdgeDistance)) silentAntiAimJumpEdgeDistance = 3.0f; if (!isfinite(silentAntiAimJumpEdgeOffset)) silentAntiAimJumpEdgeOffset = 0.0f; if (silentAntiAimJumpMode < 0 || silentAntiAimJumpMode > 3) silentAntiAimJumpMode = 0; if (silentAntiAimJumpPitch < 0 || silentAntiAimJumpPitch > 2) silentAntiAimJumpPitch = 0; if (silentAntiAimJumpYaw < -180.0f) silentAntiAimJumpYaw = -180.0f; if (silentAntiAimJumpYaw > 180.0f) silentAntiAimJumpYaw = 180.0f; if (silentAntiAimJumpJitterRange < 0.0f) silentAntiAimJumpJitterRange = 0.0f; if (silentAntiAimJumpJitterRange > 180.0f) silentAntiAimJumpJitterRange = 180.0f; if (silentAntiAimJumpSpinSpeed < 1.0f) silentAntiAimJumpSpinSpeed = 1.0f; if (silentAntiAimJumpSpinSpeed > 3600.0f) silentAntiAimJumpSpinSpeed = 3600.0f; if (silentAntiAimJumpEdgeDistance < 0.5f) silentAntiAimJumpEdgeDistance = 0.5f; if (silentAntiAimJumpEdgeDistance > 6.0f) silentAntiAimJumpEdgeDistance = 6.0f; if (silentAntiAimJumpEdgeOffset < -180.0f) silentAntiAimJumpEdgeOffset = -180.0f; if (silentAntiAimJumpEdgeOffset > 180.0f) silentAntiAimJumpEdgeOffset = 180.0f; if (!isfinite(silentAntiAimFlickRate) || silentAntiAimFlickRate < 1.0f) silentAntiAimFlickRate = 300.0f; if (silentAntiAimFlickRate > 2000.0f) silentAntiAimFlickRate = 2000.0f; if (!isfinite(silentAntiAimJumpFlickRate) || silentAntiAimJumpFlickRate < 1.0f) silentAntiAimJumpFlickRate = 300.0f; if (silentAntiAimJumpFlickRate > 2000.0f) silentAntiAimJumpFlickRate = 2000.0f; LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(freezeCorpsesFadeEnabled); LOAD_FLOAT(freezeCorpsesFadeDuration); LOAD_INT(freezeCorpsesChamsMode); LOAD_FLOAT(freezeCorpsesChamsAlpha); LOAD_FLOAT(freezeCorpsesMetallic); LOAD_FLOAT(freezeCorpsesSmoothness); LOAD_FLOAT(freezeCorpsesAnimationSpeed); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
     LOAD_BOOL(espShowName); LOAD_BOOL(espShowHealth); LOAD_BOOL(espShowWeapon); LOAD_BOOL(espGradient);
     LOAD_BOOL(espBoxGlow); LOAD_BOOL(espHealthGlow); LOAD_FLOAT(espGlowRadius); LOAD_FLOAT(espGlowIntensity);
     LOAD_BOOL(espLiquidGlass); LOAD_FLOAT(espLiquidGlassStrength); LOAD_FLOAT(espLiquidGlassBlur); LOAD_FLOAT(espLiquidGlassRefraction);
@@ -4521,42 +4530,49 @@ static float GetRotationAntiAimPitch(int pitchMode)
     return 0.0f;
 }
 
-static float GetRotationAntiAimYawOffset(int mode, float yaw,
-    float jitterRange, float spinSpeed, bool jumpProfile)
+static float NextAntiAimRandomAngle(float minimum, float maximum)
+{
+    silentAntiAimRandomState ^= silentAntiAimRandomState << 13;
+    silentAntiAimRandomState ^= silentAntiAimRandomState >> 17;
+    silentAntiAimRandomState ^= silentAntiAimRandomState << 5;
+    const float unit = static_cast<float>(silentAntiAimRandomState & 0x00FFFFFFu) /
+        static_cast<float>(0x01000000u);
+    return minimum + (maximum - minimum) * unit;
+}
+
+static Vector3 GetSourceStyleAntiAimAngles(int mode, float pitch, float yaw,
+    float jitterRange, float spinSpeed, float flickRate, bool jumpProfile)
 {
     mode = mode >= 0 && mode <= 3 ? mode : 0;
+    pitch = isfinite(pitch) ? fmaxf(-70.0f, fminf(70.0f, pitch)) : 0.0f;
     yaw = isfinite(yaw) ? yaw : 180.0f;
-    jitterRange = isfinite(jitterRange) ? jitterRange : 45.0f;
-    spinSpeed = isfinite(spinSpeed) ? spinSpeed : 180.0f;
-    ULONGLONG& spinEpoch = jumpProfile ?
-        silentAntiAimJumpSpinEpoch : silentAntiAimSpinEpoch;
-    float& spinYaw = jumpProfile ?
-        silentAntiAimJumpSpinYaw : silentAntiAimSpinYaw;
-    bool& jitterFlip = jumpProfile ?
-        silentAntiAimJumpJitterFlip : silentAntiAimJitterFlip;
-    ULONGLONG& lastJitterTick = jumpProfile ?
-        silentAntiAimJumpLastJitterTick : silentAntiAimLastJitterTick;
-    if (mode == 0 || mode == 3) {
-        spinEpoch = 0;
-        return yaw;
-    }
+    jitterRange = isfinite(jitterRange) ? fmaxf(0.0f, fminf(180.0f, jitterRange)) : 45.0f;
+    spinSpeed = isfinite(spinSpeed) ? fmaxf(1.0f, fminf(3600.0f, spinSpeed)) : 180.0f;
+    flickRate = isfinite(flickRate) ? fmaxf(1.0f, fminf(2000.0f, flickRate)) : 300.0f;
+    bool& flip = jumpProfile ? silentAntiAimJumpJitterFlip : silentAntiAimJitterFlip;
+    float& spin = jumpProfile ? silentAntiAimJumpSpinYaw : silentAntiAimSpinYaw;
+    ULONGLONG& nextFlick = jumpProfile ? silentAntiAimJumpFlickNextTick : silentAntiAimFlickNextTick;
+    Vector3 result(pitch, yaw, 0.0f);
     if (mode == 1) {
-        spinEpoch = 0;
-        const ULONGLONG now = GetTickCount64();
-        if (!lastJitterTick || now < lastJitterTick ||
-            now - lastJitterTick >= 120ULL) {
-            lastJitterTick = now;
-            jitterFlip = !jitterFlip;
-        }
-        return yaw + (jitterFlip ? jitterRange : -jitterRange);
+        result.y += flip ? jitterRange : -jitterRange;
+        flip = !flip;
     }
-    const ULONGLONG now = GetTickCount64();
-    if (!spinEpoch || now < spinEpoch) spinEpoch = now;
-    const double elapsedSeconds =
-        static_cast<double>(now - spinEpoch) / 1000.0;
-    spinYaw = NormalizeAngle360(static_cast<float>(
-        fmod(elapsedSeconds * static_cast<double>(spinSpeed), 360.0)));
-    return spinYaw;
+    else if (mode == 2) {
+        result.y = spin;
+        spin += spinSpeed;
+        if (spin > 360.0f) spin = 0.0f;
+    }
+    else if (mode == 3) {
+        const ULONGLONG now = GetTickCount64();
+        if (!nextFlick || now >= nextFlick) {
+            result.y = NextAntiAimRandomAngle(-180.0f, 180.0f);
+            result.x = NextAntiAimRandomAngle(-70.0f, 70.0f);
+            nextFlick = now + static_cast<ULONGLONG>(flickRate);
+        }
+    }
+    result.x = fmaxf(-70.0f, fminf(70.0f, result.x));
+    result.y = NormalizeAngle360(result.y);
+    return result;
 }
 
 static bool IsRotationAntiAimTransformAliveUnsafe(uintptr_t transform);
@@ -4665,6 +4681,27 @@ static bool ResolveRotationAntiAimEdgeYawUnsafe(uintptr_t player,
     return true;
 }
 
+static bool ReadSourceStyleCameraAnglesUnsafe(Vector3* outAngles);
+
+static void RestoreSourceStyleAntiAimViewUnsafe()
+{
+    if (!silentAntiAimLatestAimingData) {
+        silentAntiAimRestoreCameraPending = false;
+        return;
+    }
+    Vector3 realAngles = {};
+    if (!ReadSourceStyleCameraAnglesUnsafe(&realAngles)) {
+        silentAntiAimRestoreCameraPending = false;
+        return;
+    }
+    __try {
+        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x18) = realAngles;
+        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x24) = realAngles;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    silentAntiAimRestoreCameraPending = false;
+}
+
 static void ClearRotationAntiAimTargetUnsafe()
 {
     InterlockedIncrement(&silentAntiAimSnapshotSequence); // writer active (odd)
@@ -4676,6 +4713,22 @@ static void ClearRotationAntiAimTargetUnsafe()
     silentAntiAimEdgeScanFrame = 0;
     silentAntiAimEdgeFound = false;
     InterlockedIncrement(&silentAntiAimSnapshotSequence); // publication complete (even)
+}
+
+static bool ReadSourceStyleCameraAnglesUnsafe(Vector3* outAngles)
+{
+    if (!outAngles || !o_Component_get_transform || !o_Transform_get_eulerAngles) return false;
+    __try {
+        const uintptr_t camera = GetCamera();
+        const uintptr_t transform = camera ? o_Component_get_transform(camera) : 0;
+        if (!transform) return false;
+        *outAngles = o_Transform_get_eulerAngles(transform);
+        outAngles->x = NormalizeAngle180(outAngles->x);
+        outAngles->y = NormalizeAngle360(outAngles->y);
+        outAngles->z = 0.0f;
+        return isfinite(outAngles->x) && isfinite(outAngles->y);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
 static void UpdateRotationAntiAimTarget(uintptr_t player, bool jumpProfile)
@@ -4705,14 +4758,14 @@ static void UpdateRotationAntiAimTarget(uintptr_t player, bool jumpProfile)
             return;
         }
 
-        Vector3 realAngles = *reinterpret_cast<Vector3*>(aimingData + 0x18);
-        if (!isfinite(realAngles.x) || !isfinite(realAngles.y)) {
+        Vector3 realAngles = {};
+        if (!ReadSourceStyleCameraAnglesUnsafe(&realAngles)) {
+            // Camera is authoritative like m_cameraAngles in the supplied source.
+            // AimingData may already contain last command's fake angles and must not
+            // become the base for the next tick, otherwise yaw compounds every frame.
             ClearRotationAntiAimTargetUnsafe();
             return;
         }
-        realAngles.x = NormalizeAngle180(realAngles.x);
-        realAngles.y = NormalizeAngle360(realAngles.y);
-        realAngles.z = 0.0f;
 
         if (jumpProfile != silentAntiAimActiveJumpProfile) {
             silentAntiAimActiveJumpProfile = jumpProfile;
@@ -4726,25 +4779,20 @@ static void UpdateRotationAntiAimTarget(uintptr_t player, bool jumpProfile)
             silentAntiAimJumpJitterRange : silentAntiAimJitterRange;
         const float spinSpeed = jumpProfile ?
             silentAntiAimJumpSpinSpeed : silentAntiAimSpinSpeed;
-        const float edgeDistance = jumpProfile ?
-            silentAntiAimJumpEdgeDistance : silentAntiAimEdgeDistance;
-        const float edgeOffset = jumpProfile ?
-            silentAntiAimJumpEdgeOffset : silentAntiAimEdgeOffset;
 
-        float fakeYaw = NormalizeAngle360(realAngles.y -
-            GetRotationAntiAimYawOffset(mode, yaw, jitterRange,
-                spinSpeed, jumpProfile));
-        if (mode == 3) {
-            float edgeYaw = 0.0f;
-            if (ResolveRotationAntiAimEdgeYawUnsafe(
-                player, edgeDistance, edgeOffset, &edgeYaw))
-                fakeYaw = edgeYaw;
-            else
-                fakeYaw = NormalizeAngle360(realAngles.y -
-                    (isfinite(yaw) ? yaw : 180.0f));
+        const float configuredPitch = GetRotationAntiAimPitch(pitchMode);
+        const float flickRate = jumpProfile ?
+            silentAntiAimJumpFlickRate : silentAntiAimFlickRate;
+        Vector3 anglesToSet = GetSourceStyleAntiAimAngles(mode,
+            configuredPitch, yaw, jitterRange, spinSpeed, flickRate, jumpProfile);
+        if (silentAntiAimDefensive && (aimbotEnabled || visibleAimbotEnabled) &&
+            aimbotAutoStopHasTarget) {
+            anglesToSet.x = NextAntiAimRandomAngle(-70.0f, 70.0f);
+            anglesToSet.y = NextAntiAimRandomAngle(-180.0f, 180.0f);
         }
-        const Vector3 fakeAngles(
-            GetRotationAntiAimPitch(pitchMode), fakeYaw, 0.0f);
+        // Source logic: setViewAngles({ fakePitch, cameraYaw - configuredYaw, 0 }).
+        const Vector3 fakeAngles(anglesToSet.x,
+            NormalizeAngle360(realAngles.y - anglesToSet.y), 0.0f);
         const ULONGLONG commandTick = GetTickCount64();
 
         InterlockedIncrement(&silentAntiAimSnapshotSequence); // writer active
@@ -5055,21 +5103,49 @@ static bool InitializeInputFilterHook(uintptr_t playerControls)
     return enableStatus == MH_OK || enableStatus == MH_ERROR_ALREADY_CREATED;
 }
 
-static bool PatchAntiAimCommandUnsafe(uintptr_t command, const Vector3& fake)
+static bool ApplySourceStyleAntiAimCommandUnsafe(uintptr_t player,
+    uintptr_t command, const Vector3& realAngles, const Vector3& fakeAngles)
 {
-    if (!command || !isfinite(fake.x) || !isfinite(fake.y)) return false;
+    if (!player || !command || !isfinite(realAngles.y) ||
+        !isfinite(fakeAngles.x) || !isfinite(fakeAngles.y)) return false;
     __try {
-        // dump1 xl::caxp is the only Vector3 carried by the native input command.
-        // Patch the detached command itself instead of mutating live transforms,
-        // AimingData, or guessing which serializer the current netcode build uses.
-        Vector3 commandAim = *reinterpret_cast<Vector3*>(command + 0x2C);
-        commandAim.x = fake.x;
-        commandAim.y = fake.y;
-        commandAim.z = 0.0f;
-        *reinterpret_cast<Vector3*>(command + 0x2C) = commandAim;
+        const uintptr_t aimController = *reinterpret_cast<uintptr_t*>(player + 0xC8);
+        const uintptr_t aimingData = aimController ?
+            *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
+        if (!aimingData) return false;
+
+        const float oldSide = *reinterpret_cast<float*>(command + 0x10);
+        const float oldForward = *reinterpret_cast<float*>(command + 0x14);
+        const float delta = NormalizeAngle180(realAngles.y - fakeAngles.y) *
+            0.01745329251994329577f;
+        const float cosine = cosf(delta);
+        const float sine = sinf(delta);
+        *reinterpret_cast<float*>(command + 0x14) =
+            fmaxf(-1.0f, fminf(1.0f, cosine * oldForward - sine * oldSide));
+        *reinterpret_cast<float*>(command + 0x10) =
+            fmaxf(-1.0f, fminf(1.0f, sine * oldForward + cosine * oldSide));
+
+        // Source setViewAngles: keep fake angles in live AimingData so native mwq()
+        // clones them into AimSnapshot. Camera is restored in LateAim below.
+        silentAntiAimOriginalAngles = *reinterpret_cast<Vector3*>(aimingData + 0x18);
+        silentAntiAimOriginalEulerAngles = *reinterpret_cast<Vector3*>(aimingData + 0x24);
+        *reinterpret_cast<Vector3*>(aimingData + 0x18) = fakeAngles;
+        *reinterpret_cast<Vector3*>(aimingData + 0x24) = fakeAngles;
+
+        const uintptr_t camera = GetCamera();
+        const uintptr_t cameraTransform = camera && o_Component_get_transform ?
+            o_Component_get_transform(camera) : 0;
+        if (cameraTransform && o_Transform_get_eulerAngles) {
+            silentAntiAimRestoreCameraTransform = cameraTransform;
+            silentAntiAimRestoreCameraAngles = o_Transform_get_eulerAngles(cameraTransform);
+            silentAntiAimRestoreCameraPending = true;
+        }
         return true;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        silentAntiAimRestoreCameraPending = false;
+        return false;
+    }
 }
 
 uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
@@ -5191,7 +5267,8 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
         silentAntiAimLatestFiring = false;
         UpdateRotationAntiAimTarget(player, jumpProfile);
         if (silentAntiAimLatestInputValid &&
-            PatchAntiAimCommandUnsafe(command, silentAntiAimLatestFakeAngles)) {
+            ApplySourceStyleAntiAimCommandUnsafe(player, command,
+                silentAntiAimLatestRealAimAngle, silentAntiAimLatestFakeAngles)) {
             InterlockedIncrement(&silentAntiAimCommandCalls);
             InterlockedIncrement(&silentAntiAimAppliedCalls);
         }
@@ -5430,6 +5507,16 @@ void __fastcall hk_AimController_LateAim(
     // bone pass only made the effect visible to this client and was not replication.
     o_AimController_LateAim(aimController, method);
     InterlockedIncrement(&silentAntiAimLateAimCalls);
+    if (silentAntiAimEnabled && silentAntiAimRestoreCameraPending &&
+        silentAntiAimRestoreCameraTransform && o_Transform_set_eulerAngles) {
+        __try {
+            o_Transform_set_eulerAngles(silentAntiAimRestoreCameraTransform,
+                silentAntiAimRestoreCameraAngles);
+            InterlockedIncrement(&silentAntiAimCameraRestoreCalls);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        silentAntiAimRestoreCameraPending = false;
+    }
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -9986,6 +10073,7 @@ static void SetBoundFeatureState(BindAction action, bool enabled)
         }
         break;
     case BindAction::AntiAim:
+        if (!enabled) RestoreSourceStyleAntiAimViewUnsafe();
         silentAntiAimEnabled = enabled;
         if (!enabled) ClearRotationAntiAimTargetUnsafe();
         break;
@@ -10577,6 +10665,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Separator();
         ImGui::Spacing();
         if (ImGui::Checkbox("Rotation Anti-Aim", &silentAntiAimEnabled)) {
+            if (!silentAntiAimEnabled) RestoreSourceStyleAntiAimViewUnsafe();
             InterlockedExchange(&silentAntiAimInputBuildCalls, 0);
             InterlockedExchange(&silentAntiAimCommandCalls, 0);
             InterlockedExchange(&silentAntiAimAppliedCalls, 0);
@@ -10591,6 +10680,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             silentAntiAimJumpSpinEpoch = 0;
             silentAntiAimJumpSpinYaw = 0.0f;
             silentAntiAimJumpLastJitterTick = 0;
+            silentAntiAimFlickNextTick = 0;
+            silentAntiAimJumpFlickNextTick = 0;
+            silentAntiAimRestoreCameraPending = false;
             silentAntiAimEdgeScanFrame = 0;
             silentAntiAimEdgeFound = false;
             InterlockedExchange(&silentAntiAimLateAimCalls, 0);
@@ -10612,14 +10704,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             silentAntiAimJumpJitterRange : silentAntiAimJitterRange;
         float& profileSpin = editingJump ?
             silentAntiAimJumpSpinSpeed : silentAntiAimSpinSpeed;
-        float& profileEdgeDistance = editingJump ?
-            silentAntiAimJumpEdgeDistance : silentAntiAimEdgeDistance;
-        float& profileEdgeOffset = editingJump ?
-            silentAntiAimJumpEdgeOffset : silentAntiAimEdgeOffset;
         ImGui::TextDisabled(editingJump ?
             "Used while airborne" : "Used while standing or walking");
 
-        const char* antiAimModes[] = { "Static", "Jitter", "Spin", "Edge Yaw" };
+        const char* antiAimModes[] = { "Static", "Jitter", "Spin", "Random Flick" };
         ImGui::SetNextItemWidth(190.0f);
         ImGui::Combo("Mode", &profileMode, antiAimModes, 4);
         const char* pitchModes[] = { "Neutral", "Down", "Up" };
@@ -10641,23 +10729,19 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 1.0f, 3600.0f, "%.0f deg/s");
         }
         if (profileMode == 3) {
+            float& profileFlickRate = editingJump ?
+                silentAntiAimJumpFlickRate : silentAntiAimFlickRate;
             ImGui::SetNextItemWidth(190.0f);
-            ImGui::SliderFloat("Edge Distance", &profileEdgeDistance,
-                0.5f, 6.0f, "%.1f m");
-            ImGui::SetNextItemWidth(190.0f);
-            ImGui::SliderFloat("Edge Offset", &profileEdgeOffset,
-                -180.0f, 180.0f, "%.0f deg");
+            ImGui::SliderFloat("Flick Rate", &profileFlickRate,
+                1.0f, 2000.0f, "%.0f ms");
         }
+        ImGui::Checkbox("Defensive Random", &silentAntiAimDefensive);
         ImGui::TextDisabled("Active now: %s",
             silentAntiAimActiveJumpProfile ? "Jump" : "Default");
         const char* antiAimRuntimeStatus = !silentAntiAimEnabled ? "Disabled" :
             (!silentAntiAimHookReady ? "Rotation anti-aim hook failed" :
             (InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0) > 0 ?
-                ((silentAntiAimActiveJumpProfile ?
-                    silentAntiAimJumpMode : silentAntiAimMode) == 3 ?
-                    (silentAntiAimEdgeFound ? "Working: Edge Yaw locked" :
-                                              "Edge Yaw: no nearby wall") :
-                 "Working: rotation applied") :
+                "Working: source-style angles applied" :
                 "Waiting for local input command"));
         ImGui::TextWrapped("Status: %s", antiAimRuntimeStatus);
         ImGui::TextDisabled("cmd:%ld input:%ld fake:(%.0f, %.0f)",
