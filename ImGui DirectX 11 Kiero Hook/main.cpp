@@ -1549,10 +1549,20 @@ static void GetPCName(void* pc, char* output, int outputSize) {
     strcpy_s(output, outputSize, "Enemy");
     if (!pc) return;
     __try {
-        void* primary = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pc) + 0x158);
-        if (Il2CppStringToUtf8(primary, output, outputSize)) return;
-        void* fallback = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(pc) + 0x160);
-        if (!Il2CppStringToUtf8(fallback, output, outputSize))
+        // PlayerController caws/cawt (+0x158/+0x160) can contain the team labels
+        // "CT"/"T". The real replicated player nickname is dwg::cnoy (+0x18).
+        const uintptr_t actor = SafeGetPlayerActor(pc);
+        const uintptr_t realName = actor ?
+            *reinterpret_cast<uintptr_t*>(actor + 0x18) : 0;
+        if (Il2CppStringToUtf8(reinterpret_cast<void*>(realName),
+                output, outputSize))
+            return;
+        // cnoz is the actor's secondary display string and is safer than falling
+        // back to PlayerController team-label fields.
+        const uintptr_t secondaryName = actor ?
+            *reinterpret_cast<uintptr_t*>(actor + 0x20) : 0;
+        if (!Il2CppStringToUtf8(reinterpret_cast<void*>(secondaryName),
+                output, outputSize))
             strcpy_s(output, outputSize, "Enemy");
     } __except (EXCEPTION_EXECUTE_HANDLER) { strcpy_s(output, outputSize, "Enemy"); }
 }
