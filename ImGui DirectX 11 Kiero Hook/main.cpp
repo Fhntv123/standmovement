@@ -2096,12 +2096,12 @@ int maxTrailPoints = 600;
 float trailMinDistance = 0.05f; // Unity units are meters; sample every 5 cm
 
 bool skyParticlesEnabled = false;
-int skyParticleCount = 64;
-float skyParticleRadius = 14.0f;
-float skyParticleHeight = 14.0f;
-float skyParticleFallSpeed = 4.0f;
-float skyParticleSize = 2.2f;
-float skyParticleColor[3] = { 0.72f, 0.88f, 1.0f };
+int skyParticleCount = 260;
+float skyParticleRadius = 22.0f;
+float skyParticleHeight = 18.0f;
+float skyParticleFallSpeed = 2.4f;
+float skyParticleSize = 2.4f;
+float skyParticleColor[3] = { 0.92f, 0.97f, 1.0f };
 struct SkyParticleEntry {
     Vector3 position;
     float floorY;
@@ -2112,6 +2112,7 @@ struct SkyParticleEntry {
 std::vector<SkyParticleEntry> skyParticles;
 SRWLOCK skyParticleLock = SRWLOCK_INIT;
 uint32_t skyParticleSequence = 1;
+size_t skyParticleVisibilityCursor = 0;
 
 
 
@@ -2758,7 +2759,7 @@ static bool LoadConfig(const char* requestedName)
     if (!isfinite(trailMinDistance) || trailMinDistance < 0.01f)
         trailMinDistance = 0.01f;
     if (trailMinDistance > 10.0f) trailMinDistance = 10.0f;
-    if (skyParticleCount < 8) skyParticleCount = 8; if (skyParticleCount > 160) skyParticleCount = 160;
+    if (skyParticleCount < 120) skyParticleCount = 120; if (skyParticleCount > 600) skyParticleCount = 600;
     if (!isfinite(skyParticleRadius) || skyParticleRadius < 4.0f) skyParticleRadius = 4.0f; if (skyParticleRadius > 40.0f) skyParticleRadius = 40.0f;
     if (!isfinite(skyParticleHeight) || skyParticleHeight < 6.0f) skyParticleHeight = 6.0f; if (skyParticleHeight > 40.0f) skyParticleHeight = 40.0f;
     if (!isfinite(skyParticleFallSpeed) || skyParticleFallSpeed < 0.5f) skyParticleFallSpeed = 0.5f; if (skyParticleFallSpeed > 20.0f) skyParticleFallSpeed = 20.0f;
@@ -8835,10 +8836,15 @@ static bool SpawnSkyParticle(const Vector3& center, SkyParticleEntry* particle)
     // The first collider below the spawn point is authoritative. A roof therefore
     // catches the particle before the room floor; it can never fall through geometry.
     if (!RaycastSkyParticleUnsafe(origin, Vector3(0.0f, -1.0f, 0.0f),
-        skyParticleHeight * 2.5f + 12.0f, &hit))
+        skyParticleHeight * 4.0f + 48.0f, &hit))
         return false;
-    particle->position = origin;
     particle->floorY = hit.point.y + 0.025f;
+    const float verticalSpan = origin.y - particle->floorY;
+    particle->position = origin;
+    // Seed the complete air column, so enabling snow creates an immediate dense
+    // snowfall instead of a thin row that takes seconds to reach the scene.
+    particle->position.y = particle->floorY + verticalSpan *
+        (0.08f + SkyParticleHash01(seed * 7u + 6u) * 0.92f);
     particle->phase = SkyParticleHash01(seed * 5u + 4u) * 6.2831853071795864769f;
     particle->alpha = 0.45f + SkyParticleHash01(seed * 5u + 5u) * 0.55f;
     particle->visible = false;
@@ -8894,6 +8900,15 @@ static void UpdateSkyParticlesGameThread()
         }
         else particle.position.y = nextY;
         particle.phase += delta * 1.8f;
+    }
+    // Wall checks are spread across frames. Hundreds of synchronous Physics.Raycast
+    // calls every HUD update would stall the game; round-robin keeps dense snow cheap.
+    const size_t visibilityChecks = skyParticles.size() < 40u ?
+        skyParticles.size() : 40u;
+    for (size_t check = 0; check < visibilityChecks && !skyParticles.empty(); ++check) {
+        if (skyParticleVisibilityCursor >= skyParticles.size())
+            skyParticleVisibilityCursor = 0;
+        SkyParticleEntry& particle = skyParticles[skyParticleVisibilityCursor++];
         particle.visible = IsSkyParticleVisibleUnsafe(
             cameraPosition, particle.position);
     }
@@ -8914,18 +8929,27 @@ static void DrawSkyParticles()
         if (!particle.visible) continue;
         Vector2 screen;
         if (!UnityWorldToScreen(particle.position, screen)) continue;
-        const float pulse = 0.82f + 0.18f * sinf(time * 1.6f + particle.phase);
+        const float pulse = 0.86f + 0.14f * sinf(time * 1.4f + particle.phase);
         const float size = skyParticleSize * pulse;
+        const float drift = sinf(time * 0.9f + particle.phase) * size * 1.4f;
+        const ImVec2 center(screen.x + drift, screen.y);
         const ImU32 glow = ImGui::ColorConvertFloat4ToU32(ImVec4(
             skyParticleColor[0], skyParticleColor[1], skyParticleColor[2],
-            particle.alpha * 0.16f));
+            particle.alpha * 0.20f));
         const ImU32 core = ImGui::ColorConvertFloat4ToU32(ImVec4(
             skyParticleColor[0], skyParticleColor[1], skyParticleColor[2],
             particle.alpha));
-        draw->AddCircleFilled(ImVec2(screen.x, screen.y), size * 2.4f, glow, 12);
-        draw->AddCircleFilled(ImVec2(screen.x, screen.y), size, core, 12);
-        draw->AddLine(ImVec2(screen.x, screen.y - size * 2.8f),
-            ImVec2(screen.x, screen.y + size * 1.2f), glow, size * 0.65f);
+        draw->AddCircleFilled(center, size * 1.9f, glow, 10);
+        // Three crossing axes form a six-arm flake instead of the old glowing dot.
+        for (int arm = 0; arm < 3; ++arm) {
+            const float angle = particle.phase + arm * 1.0471975512f;
+            const float dx = cosf(angle) * size;
+            const float dy = sinf(angle) * size;
+            draw->AddLine(ImVec2(center.x - dx, center.y - dy),
+                ImVec2(center.x + dx, center.y + dy), core,
+                fmaxf(1.0f, size * 0.42f));
+        }
+        draw->AddCircleFilled(center, fmaxf(0.7f, size * 0.26f), core, 8);
     }
 }
 
@@ -10309,15 +10333,15 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
         ImGui::Checkbox("Show Velocity", &showVelocity);
         ImGui::Checkbox("Show Trail", &showTrail);
-        ImGui::Checkbox("Sky Particles", &skyParticlesEnabled);
+        ImGui::Checkbox("Snow", &skyParticlesEnabled);
         if (skyParticlesEnabled) {
-            ImGui::SliderInt("Particle Count", &skyParticleCount, 8, 160);
+            ImGui::SliderInt("Snowflake Count", &skyParticleCount, 120, 600);
             ImGui::SliderFloat("Particle Radius", &skyParticleRadius, 4.0f, 40.0f, "%.0f m");
             ImGui::SliderFloat("Particle Spawn Height", &skyParticleHeight, 6.0f, 40.0f, "%.0f m");
             ImGui::SliderFloat("Particle Fall Speed", &skyParticleFallSpeed, 0.5f, 20.0f, "%.1f m/s");
             ImGui::SliderFloat("Particle Size", &skyParticleSize, 0.5f, 8.0f, "%.1f px");
             ImGui::ColorEdit3("Particle Color", skyParticleColor);
-            ImGui::TextDisabled("Physics floor collision + camera wall occlusion");
+            ImGui::TextDisabled("Dense snowfall + floor collision + wall occlusion");
         }
         if (ImGui::Checkbox("Freeze Corpses", &freezeCorpsesEnabled) && !freezeCorpsesEnabled)
             UpdateFrozenCorpses();
