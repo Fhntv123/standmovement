@@ -274,6 +274,11 @@ static bool CreateEspGlowTexture()
     return SUCCEEDED(result) && espGlowTexture != nullptr;
 }
 
+bool espLiquidGlass = false;
+float espLiquidGlassStrength = 0.55f;
+float espLiquidGlassBlur = 2.5f;
+float espLiquidGlassRefraction = 4.0f;
+
 struct EspLiquidGlassCommand {
     ImVec2 min;
     ImVec2 max;
@@ -1481,10 +1486,6 @@ bool espGradient = true;
 bool espHealthGradient = true;
 bool espBoxGlow = false;
 bool espHealthGlow = false;
-bool espLiquidGlass = false;
-float espLiquidGlassStrength = 0.55f;
-float espLiquidGlassBlur = 2.5f;
-float espLiquidGlassRefraction = 4.0f;
 float espGlowRadius = 10.0f;
 float espGlowIntensity = 0.55f;
 float espTopColor[3] = { 1.0f, 0.20f, 0.35f };
