@@ -809,6 +809,7 @@ struct Matrix16 {
 #define OFFSET_PLAYERCONTROLS_INPUTFILTER_DELEGATE   0x88  // Action<xl> <ckqt>k__BackingField
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_UPDATE       0xB5C790
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_FIXEDUPDATE 0xB5C700
+#define OFFSET_PLAYERFPSCAMERA_UPDATE                0xB759B0  // PlayerFPSCamera.Update()
 #define OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT         0xC19440  // AimController.mwp(AimSnapshot)
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0xC194C0
 #define OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE      0xC19D80  // AimController.och(Vector3)
@@ -3195,6 +3196,7 @@ typedef void(__fastcall* t_InputFilter)(uintptr_t, uintptr_t, const Il2CppMethod
 t_InputFilter o_InputFilter = nullptr;
 void(__fastcall* o_CameraMovementController_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CameraMovementController_FixedUpdate)(uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_PlayerFPSCamera_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_NetworkController_WriteSnapshot)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 Vector3(__fastcall* o_AimController_GetHeadDirective)(uintptr_t, const Il2CppMethod*) = nullptr;
@@ -5573,26 +5575,36 @@ void __fastcall hk_AimController_LateAim(
     }
     o_AimController_LateAim(aimController, method);
 
-    // In native TPS the observer camera follows the fake local aim during the
-    // late pass. Keep the body/network pose fake, but detach only Camera.main
-    // back to the real view afterwards. FPS must not use this post-pass restore:
-    // doing so previously cancelled vertical mouse input.
-    if (thirdPersonEnabled && silentAntiAimEnabled &&
-        silentAntiAimRealCameraValid &&
-        aimController == silentAntiAimLatestController &&
-        o_Camera_get_main && o_Component_get_transform &&
-        o_Transform_set_eulerAngles) {
-        __try {
-            const uintptr_t camera = o_Camera_get_main();
-            const uintptr_t cameraTransform = camera ?
-                o_Component_get_transform(camera) : 0;
-            if (cameraTransform)
-                o_Transform_set_eulerAngles(cameraTransform,
-                    silentAntiAimRealCameraAngles);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
     InterlockedIncrement(&silentAntiAimLateAimCalls);
+}
+
+static void RestoreThirdPersonRealCameraUnsafe()
+{
+    if (!thirdPersonEnabled || !silentAntiAimEnabled ||
+        !silentAntiAimRealCameraValid || !o_Camera_get_main ||
+        !o_Component_get_transform || !o_Transform_set_eulerAngles) return;
+    __try {
+        const uintptr_t camera = o_Camera_get_main();
+        const uintptr_t cameraTransform = camera ?
+            o_Component_get_transform(camera) : 0;
+        if (cameraTransform) {
+            o_Transform_set_eulerAngles(cameraTransform,
+                silentAntiAimRealCameraAngles);
+            InterlockedIncrement(&silentAntiAimCameraRestoreCalls);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+void __fastcall hk_PlayerFPSCamera_Update(
+    uintptr_t cameraController, const Il2CppMethod* method)
+{
+    if (!o_PlayerFPSCamera_Update) return;
+    o_PlayerFPSCamera_Update(cameraController, method);
+    // dump1 PlayerFPSCamera.Update is the final owner of the native FPS/TPS
+    // observer camera. Restore after it, not during AimController.nhi where a
+    // later camera update overwrites us and creates the unstable upward snap.
+    RestoreThirdPersonRealCameraUnsafe();
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -11720,6 +11732,14 @@ DWORD WINAPI HackThread(LPVOID)
         MH_EnableHook((LPVOID)(base + OFFSET_HITMARKERVIEW_LOCAL_HIT)) : hitLogCreateStatus;
     if (hitLogCreateStatus != MH_OK || hitLogEnableStatus != MH_OK)
         hitLogEnabled = false;
+    const MH_STATUS antiAimFpsCameraCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_PLAYERFPSCAMERA_UPDATE),
+        hk_PlayerFPSCamera_Update,
+        (LPVOID*)&o_PlayerFPSCamera_Update);
+    const MH_STATUS antiAimFpsCameraEnableStatus =
+        antiAimFpsCameraCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_PLAYERFPSCAMERA_UPDATE)) :
+        antiAimFpsCameraCreateStatus;
     const MH_STATUS antiAimLateAimCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM),
         hk_AimController_LateAim,
@@ -11777,7 +11797,9 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimMovementGetSnapshotCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_MOVEMENTCONTROLLER_GET_SNAPSHOT)) :
         antiAimMovementGetSnapshotCreateStatus;
-    silentAntiAimHookReady = antiAimLateAimCreateStatus == MH_OK &&
+    silentAntiAimHookReady = antiAimFpsCameraCreateStatus == MH_OK &&
+        antiAimFpsCameraEnableStatus == MH_OK &&
+        antiAimLateAimCreateStatus == MH_OK &&
         antiAimLateAimEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
         antiAimInputEnableStatus == MH_OK &&
@@ -11795,9 +11817,10 @@ DWORD WINAPI HackThread(LPVOID)
         o_Transform_set_rotation_Injected && o_Transform_get_forward &&
         o_Object_IsAlive;
 
-    LINDY_LOG("[anti-aim] input=%d/%d; outbound-mxc=%d/%d; nhi=%d/%d; aim-nev=%d/%d; move-nev=%d/%d; player-nev=%d/%d; move-mwq=%d/%d; quaternion=%p/%p; ready=%d",
+    LINDY_LOG("[anti-aim] input=%d/%d; outbound-mxc=%d/%d; fpscam=%d/%d; nhi=%d/%d; aim-nev=%d/%d; move-nev=%d/%d; player-nev=%d/%d; move-mwq=%d/%d; quaternion=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
         (int)antiAimNetworkCreateStatus, (int)antiAimNetworkEnableStatus,
+        (int)antiAimFpsCameraCreateStatus, (int)antiAimFpsCameraEnableStatus,
         (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
         (int)antiAimSnapshotNevCreateStatus,
         (int)antiAimSnapshotNevEnableStatus,
