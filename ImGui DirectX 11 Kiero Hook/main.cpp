@@ -1684,6 +1684,7 @@ int currentTab = 0;
 // mutation is consumed from HUDView.Update on the game thread.
 volatile LONG pendingGiveWeaponId = 0;
 int giveWeaponSelection = 0;
+int giveKnifeSelection = 0;
 char giveWeaponStatus[128] = "Select a weapon";
 
 
@@ -9812,6 +9813,31 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&pendingGiveWeaponId, static_cast<LONG>(requestedId));
             sprintf_s(giveWeaponStatus, "Queued %s", gunNames[giveWeaponSelection]);
         }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextColored(accent, "Knives");
+        static const char* knifeNames[] = {
+            "Knife", "Bayonet", "Karambit", "jKommando", "Butterfly", "Flip Knife",
+            "Kunai", "Scorpion", "Tanto", "Dagger", "Kukri", "Stiletto",
+            "Mantis", "Fang", "Sting"
+        };
+        static const uint8_t knifeIds[] = {
+            70, 71, 72, 73, 75, 77, 78, 79, 80, 81, 82, 83, 85, 86, 88
+        };
+        static_assert(IM_ARRAYSIZE(knifeNames) == IM_ARRAYSIZE(knifeIds),
+            "Knife menu names and ids must stay aligned");
+        ImGui::SetNextItemWidth(240.0f);
+        ImGui::Combo("Knife", &giveKnifeSelection, knifeNames, IM_ARRAYSIZE(knifeNames));
+        if (giveKnifeSelection < 0 || giveKnifeSelection >= IM_ARRAYSIZE(knifeIds))
+            giveKnifeSelection = 0;
+        if (ImGui::Button("Give knife", ImVec2(160.0f, 32.0f))) {
+            const uint8_t requestedId = knifeIds[giveKnifeSelection];
+            InterlockedExchange(&pendingGiveWeaponId, static_cast<LONG>(requestedId));
+            sprintf_s(giveWeaponStatus, "Queued %s", knifeNames[giveKnifeSelection]);
+        }
+
         ImGui::Spacing();
         ImGui::TextWrapped("Status: %s", giveWeaponStatus);
         ImGui::TextDisabled("Uses native WeaponryController SetAndTake on the game thread.");
