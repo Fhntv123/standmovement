@@ -695,6 +695,7 @@ struct Matrix16 {
 #define OFFSET_TIME_GET_DELTATIME                   0x3489450
 
 #define OFFSET_TRANSFORM_GET_POSITION              0x348B9F0
+#define OFFSET_TRANSFORM_SET_POSITION              0x348C190
 #define OFFSET_TRANSFORM_GET_LOCALPOSITION         0x348B6C0
 #define OFFSET_TRANSFORM_SET_LOCALPOSITION         0x348BEF0
 #define OFFSET_TRANSFORM_GET_FORWARD               0x348B490
@@ -2955,6 +2956,7 @@ Vector3(__fastcall* o_CC_get_velocity)(uintptr_t) = nullptr;
 float(__fastcall* o_Time_get_deltaTime)() = nullptr;
 
 Vector3(__fastcall* o_Transform_get_position)(uintptr_t) = nullptr;
+void(__fastcall* o_Transform_set_position)(uintptr_t, Vector3) = nullptr;
 Vector3(__fastcall* o_Transform_get_localPosition)(uintptr_t) = nullptr;
 void(__fastcall* o_Transform_set_localPosition)(uintptr_t, Vector3) = nullptr;
 Vector3(__fastcall* o_Transform_get_forward)(uintptr_t) = nullptr;
@@ -5603,7 +5605,7 @@ void __fastcall hk_CameraController_OnPreCull(
         controlledCamera = 0;
         isFpsCamera = true;
     }
-    TpsCameraWorkaround_AfterNativeOnPreCull(
+    TpsThirdPerson_LateUpdate(
         controlledCamera, isFpsCamera);
 }
 
@@ -5946,7 +5948,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     InfinityAmmoLoop();
     if (thirdPersonEnabled && !InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0))
         ApplyCustomizedThirdPersonOffsets();
-    if (InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0) && ApplyNativeThirdPersonState())
+    if (InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0) && TpsThirdPerson_SetViewState())
         InterlockedExchange(&pendingThirdPersonCommand, 0);
     ApplyScopeOverlayState();
 }
@@ -10939,9 +10941,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&pendingThirdPersonCommand, 1);
         }
         ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f),
-            "TPS camera fix: %s (all=%ld, tps=%ld, applied=%ld)",
-            g_TpsCameraWorkaroundStatus, g_TpsCameraHookFires,
-            g_TpsCameraTargetFires, g_TpsCameraRestoreApplied);
+            "TPS camera: %s (late=%ld)",
+            g_TpsCameraStatus, g_TpsCameraLateUpdates);
         if (thirdPersonEnabled) {
             ImGui::SliderFloat("TPS Horizontal", &thirdPersonHorizontalOffset, -3.0f, 3.0f, "%.2f");
             ImGui::SliderFloat("TPS Height", &thirdPersonHeightAdjustment, -3.0f, 3.0f, "%.2f");
@@ -11599,6 +11600,7 @@ DWORD WINAPI HackThread(LPVOID)
     if (hitConfirmedBCreate == MH_OK || hitConfirmedBCreate == MH_ERROR_ALREADY_CREATED) MH_EnableHook((LPVOID)(base + OFFSET_PLAYER_HIT_CONFIRMED_B));
 
     o_Transform_get_position = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_POSITION);
+    o_Transform_set_position = (void(__fastcall*)(uintptr_t, Vector3))(base + OFFSET_TRANSFORM_SET_POSITION);
     o_Transform_get_localPosition = (Vector3(__fastcall*)(uintptr_t))(base + OFFSET_TRANSFORM_GET_LOCALPOSITION);
     MH_CreateHook((LPVOID)(base + OFFSET_TRANSFORM_SET_LOCALPOSITION),
         hk_Transform_set_localPosition, (LPVOID*)&o_Transform_set_localPosition);
