@@ -9341,8 +9341,11 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
                 &yawCorrection, &commandTick) &&
             now >= commandTick && now - commandTick <= 80ULL) {
             const Vector3 previousVelocity = o_CC_get_velocity(instance);
+            const float nativeHorizontalLength = sqrtf(
+                motion.x * motion.x + motion.z * motion.z);
             if (isfinite(previousVelocity.x) &&
                 isfinite(previousVelocity.z) &&
+                isfinite(nativeHorizontalLength) &&
                 isfinite(movementDeltaTime) && movementDeltaTime > 0.0f) {
                 const float momentumX =
                     previousVelocity.x * movementDeltaTime;
@@ -9356,6 +9359,19 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
                 const float sine = sinf(radians);
                 motion.x = momentumX + inputX * cosine + inputZ * sine;
                 motion.z = momentumZ - inputX * sine + inputZ * cosine;
+                // Recombining momentum and rotated input can increase their
+                // resultant length. Preserve the exact native Move magnitude so
+                // anti-aim correction can never accelerate bunnyhop.
+                const float correctedHorizontalLength = sqrtf(
+                    motion.x * motion.x + motion.z * motion.z);
+                if (nativeHorizontalLength > 0.00001f &&
+                    isfinite(correctedHorizontalLength) &&
+                    correctedHorizontalLength > 0.00001f) {
+                    const float nativeScale =
+                        nativeHorizontalLength / correctedHorizontalLength;
+                    motion.x *= nativeScale;
+                    motion.z *= nativeScale;
+                }
             }
         }
     }
