@@ -5525,7 +5525,11 @@ void __fastcall hk_AimController_LateAim(
     // bone pass only made the effect visible to this client and was not replication.
     o_AimController_LateAim(aimController, method);
     InterlockedIncrement(&silentAntiAimLateAimCalls);
+    // LateAim runs for every player. Only the local AimController may consume
+    // the pending camera restore; a remote controller restoring first left the
+    // later local pass at fake pitch/yaw (locked vertical view and backward view).
     if (silentAntiAimEnabled && silentAntiAimRestoreCameraPending &&
+        aimController == silentAntiAimLatestController &&
         silentAntiAimRestoreCameraTransform && o_Transform_set_eulerAngles) {
         __try {
             o_Transform_set_eulerAngles(silentAntiAimRestoreCameraTransform,
