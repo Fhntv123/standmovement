@@ -4817,118 +4817,83 @@ static bool ApplyAimbotCounterStrafeUnsafe(uintptr_t player, uintptr_t command)
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-struct AntiAimSnapshotPatchState {
-    uintptr_t aimingData;
-    Vector3 savedAimAngle;
-    Vector3 savedAimEuler;
-    float* scalarPointers[260];
-    float scalarValues[260];
-    int scalarCount;
-    bool aimingDataPatched;
-};
-
-static bool PatchOutgoingAimSnapshotUnsafe(uintptr_t snapshot,
-    const Vector3& fake, AntiAimSnapshotPatchState* state)
-{
-    if (!snapshot || !state || !isfinite(fake.x) || !isfinite(fake.y)) return false;
-    state->aimingData = 0;
-    state->scalarCount = 0;
-    state->aimingDataPatched = false;
-    __try {
-        state->aimingData = *reinterpret_cast<uintptr_t*>(snapshot + 0x18);
-        if (state->aimingData) {
-            state->savedAimAngle = *reinterpret_cast<Vector3*>(state->aimingData + 0x18);
-            state->savedAimEuler = *reinterpret_cast<Vector3*>(state->aimingData + 0x24);
-            state->aimingDataPatched = true;
-            *reinterpret_cast<Vector3*>(state->aimingData + 0x18) = fake;
-            *reinterpret_cast<Vector3*>(state->aimingData + 0x24) = fake;
-        }
-
-        // Always patch the scalar fallback used by non-buffered snapshots.
-        float* aimX = reinterpret_cast<float*>(snapshot + 0x54);
-        float* aimY = reinterpret_cast<float*>(snapshot + 0x58);
-        state->scalarPointers[state->scalarCount] = aimX;
-        state->scalarValues[state->scalarCount++] = *aimX;
-        state->scalarPointers[state->scalarCount] = aimY;
-        state->scalarValues[state->scalarCount++] = *aimY;
-        *aimX = fake.x;
-        *aimY = fake.y;
-
-        // Buffered snapshots serialize AimXBuffer/AimYBuffer directly. Patch every
-        // bounded sample so interpolation cannot expose the original rotation.
-        const uintptr_t xBuffer = *reinterpret_cast<uintptr_t*>(snapshot + 0x40);
-        const uintptr_t yBuffer = *reinterpret_cast<uintptr_t*>(snapshot + 0x48);
-        const int xCount = xBuffer ? *reinterpret_cast<int*>(xBuffer + 0x18) : 0;
-        const int yCount = yBuffer ? *reinterpret_cast<int*>(yBuffer + 0x18) : 0;
-        const int bufferedCount = (xCount > 0 && yCount > 0) ?
-            ((xCount < yCount ? xCount : yCount) < 128 ?
-                (xCount < yCount ? xCount : yCount) : 128) : 0;
-        for (int i = 0; i < bufferedCount && state->scalarCount + 2 <= 260; ++i) {
-            float* x = reinterpret_cast<float*>(xBuffer + 0x20 + sizeof(float) * i);
-            float* y = reinterpret_cast<float*>(yBuffer + 0x20 + sizeof(float) * i);
-            state->scalarPointers[state->scalarCount] = x;
-            state->scalarValues[state->scalarCount++] = *x;
-            state->scalarPointers[state->scalarCount] = y;
-            state->scalarValues[state->scalarCount++] = *y;
-            *x = fake.x;
-            *y = fake.y;
-        }
-
-        // Non-buffered mode reads the last sample from AimBuffer.float[][].
-        const uintptr_t aimBuffer = *reinterpret_cast<uintptr_t*>(snapshot + 0x30);
-        const int lastSample = aimBuffer ? *reinterpret_cast<int*>(aimBuffer + 0x20) : -1;
-        const uintptr_t rows = aimBuffer ? *reinterpret_cast<uintptr_t*>(aimBuffer + 0x10) : 0;
-        if (lastSample >= 0 && rows && *reinterpret_cast<int*>(rows + 0x18) >= 2 &&
-            state->scalarCount + 2 <= 260) {
-            const uintptr_t pitchRow = *reinterpret_cast<uintptr_t*>(rows + 0x20);
-            const uintptr_t yawRow = *reinterpret_cast<uintptr_t*>(rows + 0x28);
-            const int pitchCount = pitchRow ? *reinterpret_cast<int*>(pitchRow + 0x18) : 0;
-            const int yawCount = yawRow ? *reinterpret_cast<int*>(yawRow + 0x18) : 0;
-            if (pitchRow && yawRow && lastSample < pitchCount && lastSample < yawCount) {
-                float* pitch = reinterpret_cast<float*>(pitchRow + 0x20 + sizeof(float) * lastSample);
-                float* yaw = reinterpret_cast<float*>(yawRow + 0x20 + sizeof(float) * lastSample);
-                state->scalarPointers[state->scalarCount] = pitch;
-                state->scalarValues[state->scalarCount++] = *pitch;
-                state->scalarPointers[state->scalarCount] = yaw;
-                state->scalarValues[state->scalarCount++] = *yaw;
-                *pitch = fake.x;
-                *yaw = fake.y;
-            }
-        }
-        return state->aimingDataPatched || state->scalarCount > 0;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
-
-static void RestoreOutgoingAimSnapshotUnsafe(AntiAimSnapshotPatchState* state)
-{
-    if (!state) return;
-    __try {
-        for (int i = state->scalarCount - 1; i >= 0; --i) {
-            if (state->scalarPointers[i])
-                *state->scalarPointers[i] = state->scalarValues[i];
-        }
-        if (state->aimingDataPatched && state->aimingData) {
-            *reinterpret_cast<Vector3*>(state->aimingData + 0x18) = state->savedAimAngle;
-            *reinterpret_cast<Vector3*>(state->aimingData + 0x24) = state->savedAimEuler;
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-}
-
 void __fastcall hk_AimSnapshot_nev(uintptr_t snapshot, uintptr_t writer, const Il2CppMethod* method)
 {
     if (!o_AimSnapshot_nev) return;
-    AntiAimSnapshotPatchState patch = {};
+    // Live IDA shows remote aim is emitted here from AimSnapshot.AimBuffer, not
+    // solely from its AimingData clone. In the current non-buffered mode nev()
+    // takes the last sample from AimBuffer and serializes it as two quantized
+    // shorts, also storing those values in AimX (+0x54) / AimY (+0x58).
+    // Patch only this detached outgoing snapshot and its detached buffer. Live
+    // AimController.aimingData and all camera/input objects remain untouched.
     const bool outgoing = silentAntiAimEnabled && snapshot && writer &&
         silentAntiAimLatestInputValid && !silentAntiAimLatestFiring;
-    const bool patched = outgoing && PatchOutgoingAimSnapshotUnsafe(
-        snapshot, silentAntiAimLatestFakeAngles, &patch);
+    if (!outgoing) {
+        o_AimSnapshot_nev(snapshot, writer, method);
+        return;
+    }
+
+    uintptr_t aimBuffer = 0;
+    uintptr_t axisRows = 0;
+    uintptr_t pitchRow = 0;
+    uintptr_t yawRow = 0;
+    int lastSample = -1;
+    float savedPitch = 0.0f;
+    float savedYaw = 0.0f;
+    float savedAimX = 0.0f;
+    float savedAimY = 0.0f;
+    bool patched = false;
+    __try {
+        aimBuffer = *reinterpret_cast<uintptr_t*>(snapshot + 0x30);
+        if (aimBuffer) {
+            lastSample = *reinterpret_cast<int*>(aimBuffer + 0x20);
+            axisRows = *reinterpret_cast<uintptr_t*>(aimBuffer + 0x10);
+            // Managed float[][]: array data begins at +0x20. Axis 0 is AimX
+            // (pitch), axis 1 is AimY (yaw), as confirmed by mwq/ocj and
+            // AimBuffer.get(index, axis) in the live decompilation.
+            if (lastSample >= 0 && axisRows &&
+                *reinterpret_cast<int*>(axisRows + 0x18) >= 2) {
+                pitchRow = *reinterpret_cast<uintptr_t*>(axisRows + 0x20);
+                yawRow = *reinterpret_cast<uintptr_t*>(axisRows + 0x28);
+                if (pitchRow && yawRow &&
+                    lastSample < *reinterpret_cast<int*>(pitchRow + 0x18) &&
+                    lastSample < *reinterpret_cast<int*>(yawRow + 0x18)) {
+                    float* pitch = reinterpret_cast<float*>(
+                        pitchRow + 0x20 + sizeof(float) * lastSample);
+                    float* yaw = reinterpret_cast<float*>(
+                        yawRow + 0x20 + sizeof(float) * lastSample);
+                    savedPitch = *pitch;
+                    savedYaw = *yaw;
+                    savedAimX = *reinterpret_cast<float*>(snapshot + 0x54);
+                    savedAimY = *reinterpret_cast<float*>(snapshot + 0x58);
+                    const Vector3 fake = silentAntiAimLatestFakeAngles;
+                    *pitch = fake.x;
+                    *yaw = fake.y;
+                    *reinterpret_cast<float*>(snapshot + 0x54) = fake.x;
+                    *reinterpret_cast<float*>(snapshot + 0x58) = fake.y;
+                    patched = true;
+                }
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { patched = false; }
+
     o_AimSnapshot_nev(snapshot, writer, method);
-    // Restore even after a guarded partial patch failure. The POD state records each
-    // successful write before the next unsafe access, so no local snapshot data leaks.
-    if (outgoing) RestoreOutgoingAimSnapshotUnsafe(&patch);
-    if (patched) InterlockedIncrement(&silentAntiAimAppliedCalls);
+
+    if (patched) {
+        __try {
+            float* pitch = reinterpret_cast<float*>(
+                pitchRow + 0x20 + sizeof(float) * lastSample);
+            float* yaw = reinterpret_cast<float*>(
+                yawRow + 0x20 + sizeof(float) * lastSample);
+            *pitch = savedPitch;
+            *yaw = savedYaw;
+            *reinterpret_cast<float*>(snapshot + 0x54) = savedAimX;
+            *reinterpret_cast<float*>(snapshot + 0x58) = savedAimY;
+            InterlockedIncrement(&silentAntiAimAppliedCalls);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
 }
 
 // hk_AimingData_nev removed: replaced with InputFilter delegate hook
