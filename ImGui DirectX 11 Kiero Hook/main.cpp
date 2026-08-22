@@ -3834,6 +3834,18 @@ static void SetCorpseRendererVisibleUnsafe(uintptr_t renderer, bool visible)
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
+static bool IsLocalPlayerRagdollUnsafe(uintptr_t biped)
+{
+    const uintptr_t localPlayer = liveHudLocalPlayer;
+    if (!localPlayer || !biped) return false;
+    __try {
+        // dump1 PlayerController::_characterBiped is +0x30. The death camera
+        // follows this local ragdoll, so it must remain under native physics.
+        return *reinterpret_cast<uintptr_t*>(localPlayer + 0x30) == biped;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
 void __fastcall hk_RagdollActivate(uintptr_t ragdoll, uintptr_t biped, Vector3 velocity,
     bool c, void* skinName, uintptr_t shotData, bool f, bool g, const Il2CppMethod* method)
 {
@@ -3841,6 +3853,10 @@ void __fastcall hk_RagdollActivate(uintptr_t ragdoll, uintptr_t biped, Vector3 v
     o_RagdollActivate(ragdoll, biped, velocity, c, skinName, shotData, f, g, method);
     RecordCrashBreadcrumb(CrashRagdollActivateOriginalDone, ragdoll, shotData);
     if (!keyValidated || !freezeCorpsesEnabled || !ragdoll) return;
+    // Never freeze the local death ragdoll. PlayerDie/KillCamera follows its moving
+    // body; making those rigidbodies kinematic strands the world camera while the
+    // independent FPS arms hierarchy keeps animating.
+    if (IsLocalPlayerRagdollUnsafe(biped)) return;
     FrozenCorpseEntry corpse{};
     corpse.ragdoll = ragdoll;
     corpse.manager = 0;
