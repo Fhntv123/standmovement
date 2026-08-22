@@ -5126,25 +5126,26 @@ static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
             *reinterpret_cast<bool*>(inputs + 0x21) ||
             *reinterpret_cast<bool*>(inputs + 0x23) ||
             *reinterpret_cast<bool*>(inputs + 0x26);
-        // Static yaw is stable enough for the original source-style command
-        // correction. Jitter/Spin/Random Flick can jump by 90-360 degrees between
-        // callbacks, so keep live local AimingData in the real camera frame and
-        // publish their fake yaw separately to the model/network snapshots.
-        const bool dynamicYaw = mode == 1 || mode == 2 || mode == 3;
-        const Vector3 output = (returnAngles || dynamicYaw) ? realAngles : fake;
-        const Vector3 publishedFake = returnAngles ? realAngles : fake;
+        const Vector3 output = returnAngles ? realAngles : fake;
 
         const float oldSide = *reinterpret_cast<float*>(inputs + 0x10);
         const float oldForward = *reinterpret_cast<float*>(inputs + 0x14);
+        // The game consumes the real local movement frame during Spin even while
+        // the model/snapshot yaw is fake. Do not rotate WASD by a yaw that changes
+        // every callback; keep Spin visible/networked and movement camera-relative.
+        const Vector3 movementAngles = mode == 2 ? realAngles : output;
         const float radians = NormalizeAngle180(
-            realAngles.y - output.y) *
+            realAngles.y - movementAngles.y) *
             0.01745329251994329577f;
         const float cosine = cosf(radians);
         const float sine = sinf(radians);
+        // Rotate input from real-camera space into the fake-yaw command space.
+        // The inverse signs made 90-100 degree Jitter/Spin/Flick steer sideways;
+        // Static 180 masked the bug because sin(180) is zero.
         *reinterpret_cast<float*>(inputs + 0x14) = fmaxf(-1.0f,
-            fminf(1.0f, cosine * oldForward - sine * oldSide));
+            fminf(1.0f, cosine * oldForward + sine * oldSide));
         *reinterpret_cast<float*>(inputs + 0x10) = fmaxf(-1.0f,
-            fminf(1.0f, sine * oldForward + cosine * oldSide));
+            fminf(1.0f, cosine * oldSide - sine * oldForward));
 
         // Match the original source: only the actual aim components are changed.
         reinterpret_cast<Vector3*>(aimingData + 0x18)->x = output.x;
@@ -5156,7 +5157,7 @@ static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
         silentAntiAimLatestController = aimController;
         silentAntiAimLatestAimingData = aimingData;
         silentAntiAimLatestRealAimAngle = realAngles;
-        silentAntiAimLatestFakeAngles = publishedFake;
+        silentAntiAimLatestFakeAngles = output;
         silentAntiAimLatestCommandTick = GetTickCount64();
         silentAntiAimLatestInputValid = true;
         InterlockedIncrement(&silentAntiAimSnapshotSequence);
@@ -5239,9 +5240,9 @@ static bool ApplySourceStyleMovementFixUnsafe(uintptr_t command,
         const float cosine = cosf(delta);
         const float sine = sinf(delta);
         *reinterpret_cast<float*>(command + 0x14) =
-            fmaxf(-1.0f, fminf(1.0f, cosine * oldForward - sine * oldSide));
+            fmaxf(-1.0f, fminf(1.0f, cosine * oldForward + sine * oldSide));
         *reinterpret_cast<float*>(command + 0x10) =
-            fmaxf(-1.0f, fminf(1.0f, sine * oldForward + cosine * oldSide));
+            fmaxf(-1.0f, fminf(1.0f, cosine * oldSide - sine * oldForward));
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
@@ -5585,17 +5586,6 @@ void __fastcall hk_AimController_LateAim(
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
     o_AimController_LateAim(aimController, method);
-
-    // Live AimingData remains real for movement/camera in dynamic yaw modes.
-    // Apply the coherent fake only to the third-person character rig after the
-    // native aim pass; outgoing serializers already use the same published fake.
-    float fakeYaw = 0.0f;
-    float fakePitch = 0.0f;
-    if (ReadLocalRotationAntiAimSnapshotUnsafe(
-            aimController, &fakeYaw, &fakePitch)) {
-        ApplyRotationAntiAimAfterAimPassUnsafe(
-            aimController, fakeYaw, fakePitch);
-    }
     InterlockedIncrement(&silentAntiAimLateAimCalls);
 }
 
