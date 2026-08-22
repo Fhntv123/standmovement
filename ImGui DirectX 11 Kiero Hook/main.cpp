@@ -5572,6 +5572,26 @@ void __fastcall hk_AimController_LateAim(
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
     o_AimController_LateAim(aimController, method);
+
+    // In native TPS the observer camera follows the fake local aim during the
+    // late pass. Keep the body/network pose fake, but detach only Camera.main
+    // back to the real view afterwards. FPS must not use this post-pass restore:
+    // doing so previously cancelled vertical mouse input.
+    if (thirdPersonEnabled && silentAntiAimEnabled &&
+        silentAntiAimRealCameraValid &&
+        aimController == silentAntiAimLatestController &&
+        o_Camera_get_main && o_Component_get_transform &&
+        o_Transform_set_eulerAngles) {
+        __try {
+            const uintptr_t camera = o_Camera_get_main();
+            const uintptr_t cameraTransform = camera ?
+                o_Component_get_transform(camera) : 0;
+            if (cameraTransform)
+                o_Transform_set_eulerAngles(cameraTransform,
+                    silentAntiAimRealCameraAngles);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
     InterlockedIncrement(&silentAntiAimLateAimCalls);
 }
 
@@ -10788,11 +10808,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             (!silentAntiAimHookReady ? "Rotation anti-aim hook failed" :
             (InterlockedCompareExchange(&silentAntiAimFilterCalls, 0, 0) <= 0 ?
                 "Waiting for source InputFilter" :
-            (InterlockedCompareExchange(&silentAntiAimNetworkCalls, 0, 0) <= 0 ?
-                "Source InputFilter active; waiting for network" :
-                "Working: source InputFilter + network")));
+                "Working: source InputFilter active"));
         ImGui::TextWrapped("Status: %s", antiAimRuntimeStatus);
-        ImGui::TextDisabled("filter:%ld net:%ld fake:(%.0f, %.0f)",
+        ImGui::TextDisabled("filter:%ld mxc:%ld fake:(%.0f, %.0f)",
             InterlockedCompareExchange(&silentAntiAimFilterCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimNetworkCalls, 0, 0),
             silentAntiAimLatestFakeAngles.x,
