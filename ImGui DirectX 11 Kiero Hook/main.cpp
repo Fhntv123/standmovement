@@ -1202,6 +1202,7 @@ Il2CppClass* g_PlayerModelClass = nullptr;
 const Il2CppMethod* g_PlayerModelGetInstanceMethod = nullptr;
 const Il2CppMethod* g_PlayerModelSetNameMethod = nullptr;
 const Il2CppMethod* g_LocalPlayerMatchNameSetter = nullptr;
+const Il2CppMethod* g_LocalActorMatchNameSetter = nullptr;
 uintptr_t g_LivePlayerModel = 0;
 std::vector<void*> g_LivePlayerRegistry;
 SRWLOCK g_LivePlayerRegistryLock = SRWLOCK_INIT;
@@ -5129,22 +5130,28 @@ static bool ApplyNicknameServerUnsafe(const char* nickname)
     }
 }
 
-static bool ApplyNicknameToLocalPlayerUnsafe(const char* nickname)
+static bool ApplyNicknameToCurrentMatchUnsafe(const char* nickname)
 {
     if (!nickname || !nickname[0] || !liveHudLocalPlayer ||
-        !g_LocalPlayerMatchNameSetter || !g_il2cpp.runtime_invoke ||
-        !g_il2cpp.string_new)
+        !g_LocalPlayerMatchNameSetter || !g_LocalActorMatchNameSetter ||
+        !g_il2cpp.runtime_invoke || !g_il2cpp.string_new)
         return false;
     __try {
+        const uintptr_t actor = SafeGetPlayerActor(
+            reinterpret_cast<void*>(liveHudLocalPlayer));
+        if (!actor) return false;
         Il2CppString* managedName = g_il2cpp.string_new(nickname);
         if (!managedName) return false;
         void* args[] = { managedName };
         Il2CppObject* exception = nullptr;
-        // dump1 PlayerController::mzq is the compiler-generated caws string setter.
-        // Update only this local presentation field. Never mutate the dwg actor: that
-        // object participates in hit/death state and caused the camera regression.
+        // PlayerController::mzq updates its cached caws name. dwg::bggy updates
+        // cnoy, which is the name actually consumed by already spawned player views.
         g_il2cpp.runtime_invoke(g_LocalPlayerMatchNameSetter,
             reinterpret_cast<void*>(liveHudLocalPlayer), args, &exception);
+        if (exception) return false;
+        exception = nullptr;
+        g_il2cpp.runtime_invoke(g_LocalActorMatchNameSetter,
+            reinterpret_cast<void*>(actor), args, &exception);
         return exception == nullptr;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
@@ -5153,6 +5160,7 @@ static bool ApplyNicknameToLocalPlayerUnsafe(const char* nickname)
 static void ProcessNicknameChanger()
 {
     LONG command = InterlockedExchange(&pendingNicknameCommand, 0);
+    const bool manualRequest = command != 0;
     const LONG64 now = static_cast<LONG64>(GetTickCount64());
     if (!command && nicknameAnimationEnabled) {
         const LONG64 next = InterlockedCompareExchange64(
@@ -5172,14 +5180,20 @@ static void ProcessNicknameChanger()
         strcpy_s(nicknameStatus, "Enter a non-empty nickname");
         return;
     }
-    const bool serverInvoked = ApplyNicknameServerUnsafe(requestedName);
-    const bool localMatchUpdated = ApplyNicknameToLocalPlayerUnsafe(requestedName);
-    if (serverInvoked && localMatchUpdated)
+    // Animation must stay local. Repeated djg::beqx server Tasks from HUDView.Update
+    // were the nickname-specific path active during hit/death transitions. Buttons
+    // still update the profile once; animation only changes the two live name caches.
+    const bool serverInvoked = !manualRequest ||
+        ApplyNicknameServerUnsafe(requestedName);
+    const bool localMatchUpdated = ApplyNicknameToCurrentMatchUnsafe(requestedName);
+    if (manualRequest && serverInvoked && localMatchUpdated)
         sprintf_s(nicknameStatus, "Profile + current match name: %s", requestedName);
-    else if (serverInvoked)
-        sprintf_s(nicknameStatus, "Profile changed; local match player unavailable");
-    else if (localMatchUpdated)
-        sprintf_s(nicknameStatus, "Current match name changed locally: %s", requestedName);
+    else if (!manualRequest && localMatchUpdated)
+        sprintf_s(nicknameStatus, "Current match animation: %s", requestedName);
+    else if (manualRequest && serverInvoked)
+        sprintf_s(nicknameStatus, "Profile changed; match actor unavailable");
+    else if (!localMatchUpdated)
+        strcpy_s(nicknameStatus, "Current match actor unavailable");
     else if (!g_PlayerModelGetInstanceMethod)
         strcpy_s(nicknameStatus, "Player model getter not resolved");
     else if (!g_PlayerModelSetNameMethod)
@@ -10128,7 +10142,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (nicknameAnimationEnabled) {
             ImGui::SliderFloat("Change interval", &nicknameAnimationInterval,
                 0.5f, 10.0f, "%.1f s");
-            ImGui::TextDisabled("Animates the local PlayerController name without touching the match actor.");
+            ImGui::TextDisabled("Animates the current match name locally; server profile is not spammed.");
         }
         ImGui::Spacing();
         ImGui::TextWrapped("Status: %s", nicknameStatus);
@@ -10318,10 +10332,15 @@ DWORD WINAPI HackThread(LPVOID)
         if (localPlayerClass && g_il2cpp.class_get_method_from_name)
             g_LocalPlayerMatchNameSetter = g_il2cpp.class_get_method_from_name(
                 localPlayerClass, "mzq", 1);
-        LINDY_LOG("[nickname] model=%p getter=%p setter=%p match-player=%p",
+        Il2CppClass* actorClass = g_il2cpp.find_class("", "dwg");
+        if (actorClass && g_il2cpp.class_get_method_from_name)
+            g_LocalActorMatchNameSetter = g_il2cpp.class_get_method_from_name(
+                actorClass, "bggy", 1);
+        LINDY_LOG("[nickname] model=%p getter=%p setter=%p match-player=%p actor=%p",
             (void*)g_PlayerModelClass, (void*)g_PlayerModelGetInstanceMethod,
             (void*)g_PlayerModelSetNameMethod,
-            (void*)g_LocalPlayerMatchNameSetter);
+            (void*)g_LocalPlayerMatchNameSetter,
+            (void*)g_LocalActorMatchNameSetter);
         g_GlovesManagerClass = g_il2cpp.find_class("Chillow.StandChillow.Main.Inventory.Gloves", "GlovesManager");
         LINDY_LOG("[init] GlovesManagerClass=%p", (void*)g_GlovesManagerClass);
         if (g_GlovesManagerClass) {
