@@ -5555,10 +5555,7 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(
 void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
-    // Match sourse/hooks.cpp literally: restore Camera.main's actual Transform
-    // before the native late-aim pass. AimController::FPSCamera (+0x68) is a
-    // director/parent transform; forcing its world euler after native aim cancels
-    // the native vertical camera motion.
+    // Keep the already-confirmed camera path unchanged.
     if (silentAntiAimEnabled && silentAntiAimRealCameraValid &&
         aimController == silentAntiAimLatestController &&
         o_Camera_get_main && o_Component_get_transform &&
@@ -5576,6 +5573,19 @@ void __fastcall hk_AimController_LateAim(
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
     o_AimController_LateAim(aimController, method);
+
+    // Our TPS pose implementation existed but was never called. Apply only the
+    // confirmed fake yaw to the local character rig after native aim animation.
+    // Pitch stays real: touching Spine/Head is what caused the upward TPS pose and
+    // vertical camera regressions in the previous builds.
+    if (thirdPersonEnabled && silentAntiAimEnabled) {
+        float fakeYaw = 0.0f;
+        float ignoredPitch = 0.0f;
+        if (ReadLocalRotationAntiAimSnapshotUnsafe(
+                aimController, &fakeYaw, &ignoredPitch))
+            ApplyRotationAntiAimAfterAimPassUnsafe(
+                aimController, fakeYaw, 0.0f);
+    }
     InterlockedIncrement(&silentAntiAimLateAimCalls);
 }
 
