@@ -612,8 +612,10 @@ BindConfig bulletTracerBind = { 0, true };
 // these are actions, not toggleable feature states.
 constexpr int kGiveItemBindLimit = 15;
 BindConfig giveItemBinds[kGiveItemBindLimit] = {};
-int giveItemBindCount = 3;
 int giveItemBindSelections[kGiveItemBindLimit] = {};
+int giveItemBindAmounts[kGiveItemBindLimit] = {
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
+};
 static const char* giveItemNames[] = {
     "G22", "USP", "P350", "Deagle", "Tec-9", "Five-Seven", "Berettas",
     "UMP45", "Akimbo Uzi", "MP7", "P90", "MP5", "MAC10", "VAL",
@@ -1704,6 +1706,7 @@ int currentTab = 0;
 // GUN tab: the render thread only queues a weapon id. The native WeaponryController
 // mutation is consumed from HUDView.Update on the game thread.
 volatile LONG pendingGiveWeaponId = 0;
+volatile LONG pendingGiveWeaponCount = 0;
 int giveWeaponSelection = 0;
 int giveKnifeSelection = 0;
 char giveWeaponStatus[128] = "Select a weapon";
@@ -2088,13 +2091,14 @@ static bool SaveConfig(const char* requestedName)
     SAVE_INT(enemyThroughWallsBind.key); SAVE_BOOL(enemyThroughWallsBind.toggleMode); SAVE_INT(hitLogBind.key); SAVE_BOOL(hitLogBind.toggleMode);
     SAVE_INT(hitMarkerBind.key); SAVE_BOOL(hitMarkerBind.toggleMode); SAVE_INT(bulletImpactsBind.key); SAVE_BOOL(bulletImpactsBind.toggleMode);
     SAVE_INT(bulletTracerBind.key); SAVE_BOOL(bulletTracerBind.toggleMode);
-    SAVE_INT(giveItemBindCount);
     for (int i = 0; i < kGiveItemBindLimit; ++i) {
         char keyName[64];
         sprintf_s(keyName, "giveItemBindKey_%d", i);
         WriteConfigValue(path, keyName, giveItemBinds[i].key);
         sprintf_s(keyName, "giveItemBindSelection_%d", i);
         WriteConfigValue(path, keyName, giveItemBindSelections[i]);
+        sprintf_s(keyName, "giveItemBindAmount_%d", i);
+        WriteConfigValue(path, keyName, giveItemBindAmounts[i]);
     }
     WriteConfigColor(path, "menuColor", menuColor); WriteConfigColor(path, "accentColor", accentColor);
     WriteConfigColor(path, "worldColor", worldColor); WriteConfigColor(path, "fogColor", fogColor);
@@ -2189,9 +2193,6 @@ static bool LoadConfig(const char* requestedName)
     LOAD_INT(enemyThroughWallsBind.key); LOAD_BOOL(enemyThroughWallsBind.toggleMode); LOAD_INT(hitLogBind.key); LOAD_BOOL(hitLogBind.toggleMode);
     LOAD_INT(hitMarkerBind.key); LOAD_BOOL(hitMarkerBind.toggleMode); LOAD_INT(bulletImpactsBind.key); LOAD_BOOL(bulletImpactsBind.toggleMode);
     LOAD_INT(bulletTracerBind.key); LOAD_BOOL(bulletTracerBind.toggleMode);
-    LOAD_INT(giveItemBindCount);
-    if (giveItemBindCount < 1) giveItemBindCount = 1;
-    if (giveItemBindCount > kGiveItemBindLimit) giveItemBindCount = kGiveItemBindLimit;
     for (int i = 0; i < kGiveItemBindLimit; ++i) {
         char keyName[64];
         sprintf_s(keyName, "giveItemBindKey_%d", i);
@@ -2201,6 +2202,10 @@ static bool LoadConfig(const char* requestedName)
         if (giveItemBindSelections[i] < 0 ||
             giveItemBindSelections[i] >= IM_ARRAYSIZE(giveItemIds))
             giveItemBindSelections[i] = 0;
+        sprintf_s(keyName, "giveItemBindAmount_%d", i);
+        giveItemBindAmounts[i] = ReadConfigInt(path, keyName, giveItemBindAmounts[i]);
+        if (giveItemBindAmounts[i] < 1) giveItemBindAmounts[i] = 1;
+        if (giveItemBindAmounts[i] > 50) giveItemBindAmounts[i] = 50;
         giveItemBinds[i].toggleMode = false;
     }
     // Config files are user-editable. Clamp every value used as an array index or
@@ -5005,15 +5010,34 @@ static bool GiveLocalWeaponUnsafe(uint8_t weaponId)
     }
 }
 
+static void QueueGiveWeapon(uint8_t weaponId, int amount)
+{
+    if (!weaponId) return;
+    if (amount < 1) amount = 1;
+    if (amount > 50) amount = 50;
+    InterlockedExchange(&pendingGiveWeaponId, static_cast<LONG>(weaponId));
+    InterlockedExchange(&pendingGiveWeaponCount, static_cast<LONG>(amount));
+}
+
 static void ProcessPendingGiveWeapon()
 {
-    const LONG requested = InterlockedExchange(&pendingGiveWeaponId, 0);
-    if (requested <= 0 || requested > 255) return;
+    LONG remaining = InterlockedCompareExchange(&pendingGiveWeaponCount, 0, 0);
+    if (remaining <= 0) return;
+    const LONG requested = InterlockedCompareExchange(&pendingGiveWeaponId, 0, 0);
+    if (requested <= 0 || requested > 255) {
+        InterlockedExchange(&pendingGiveWeaponCount, 0);
+        return;
+    }
     const uint8_t weaponId = static_cast<uint8_t>(requested);
-    if (GiveLocalWeaponUnsafe(weaponId))
-        sprintf_s(giveWeaponStatus, "Equipped %s", WeaponNameFromId(weaponId));
-    else
+    if (!GiveLocalWeaponUnsafe(weaponId)) {
+        InterlockedExchange(&pendingGiveWeaponCount, 0);
         strcpy_s(giveWeaponStatus, "Failed: local WeaponryController unavailable");
+        return;
+    }
+    remaining = InterlockedDecrement(&pendingGiveWeaponCount);
+    sprintf_s(giveWeaponStatus, "Giving %s: %ld remaining",
+        WeaponNameFromId(weaponId), remaining > 0 ? remaining : 0);
+    if (remaining <= 0) InterlockedExchange(&pendingGiveWeaponId, 0);
 }
 
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
@@ -8841,11 +8865,8 @@ DWORD WINAPI KeyListenerThread(LPVOID)
                 }
                 wasDown[i] = down ? 1 : 0;
             }
-            int activeGiveBinds = giveItemBindCount;
-            if (activeGiveBinds < 1) activeGiveBinds = 1;
-            if (activeGiveBinds > kGiveItemBindLimit) activeGiveBinds = kGiveItemBindLimit;
             for (int i = 0; i < kGiveItemBindLimit; ++i) {
-                if (i >= activeGiveBinds || giveItemBinds[i].key <= 0) {
+                if (giveItemBinds[i].key <= 0) {
                     giveWasDown[i] = 0;
                     continue;
                 }
@@ -8855,8 +8876,8 @@ DWORD WINAPI KeyListenerThread(LPVOID)
                     int selection = giveItemBindSelections[i];
                     if (selection < 0 || selection >= IM_ARRAYSIZE(giveItemIds))
                         selection = 0;
-                    InterlockedExchange(&pendingGiveWeaponId,
-                        static_cast<LONG>(giveItemIds[selection]));
+                    QueueGiveWeapon(giveItemIds[selection],
+                        giveItemBindAmounts[i]);
                 }
                 giveWasDown[i] = down ? 1 : 0;
             }
@@ -9873,7 +9894,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             giveWeaponSelection = 0;
         if (ImGui::Button("Give weapon", ImVec2(160.0f, 32.0f))) {
             const uint8_t requestedId = gunIds[giveWeaponSelection];
-            InterlockedExchange(&pendingGiveWeaponId, static_cast<LONG>(requestedId));
+            QueueGiveWeapon(requestedId, 1);
             sprintf_s(giveWeaponStatus, "Queued %s", gunNames[giveWeaponSelection]);
         }
 
@@ -9897,7 +9918,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             giveKnifeSelection = 0;
         if (ImGui::Button("Give knife", ImVec2(160.0f, 32.0f))) {
             const uint8_t requestedId = knifeIds[giveKnifeSelection];
-            InterlockedExchange(&pendingGiveWeaponId, static_cast<LONG>(requestedId));
+            QueueGiveWeapon(requestedId, 1);
             sprintf_s(giveWeaponStatus, "Queued %s", knifeNames[giveKnifeSelection]);
         }
 
@@ -9928,14 +9949,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Spacing();
         ImGui::TextColored(accent, "Weapon Give Binds");
         ImGui::Separator();
-        ImGui::TextDisabled("One key press gives the selected gun or knife once.");
-        ImGui::SetNextItemWidth(160.0f);
-        ImGui::SliderInt("Give bind slots", &giveItemBindCount,
-            1, kGiveItemBindLimit);
-        if (giveItemBindCount < 1) giveItemBindCount = 1;
-        if (giveItemBindCount > kGiveItemBindLimit)
-            giveItemBindCount = kGiveItemBindLimit;
-        for (int i = 0; i < giveItemBindCount; ++i) {
+        ImGui::TextDisabled("Choose an item, amount (1-50), and key. One press queues that many gives.");
+        for (int i = 0; i < kGiveItemBindLimit; ++i) {
             ImGui::PushID(1000 + i);
             ImGui::Text("%d", i + 1);
             ImGui::SameLine(35.0f);
@@ -9945,6 +9960,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             if (giveItemBindSelections[i] < 0 ||
                 giveItemBindSelections[i] >= IM_ARRAYSIZE(giveItemIds))
                 giveItemBindSelections[i] = 0;
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(55.0f);
+            ImGui::InputInt("##amount", &giveItemBindAmounts[i], 1, 5);
+            if (giveItemBindAmounts[i] < 1) giveItemBindAmounts[i] = 1;
+            if (giveItemBindAmounts[i] > 50) giveItemBindAmounts[i] = 50;
             ImGui::SameLine();
             const std::string keyName =
                 waitingForBind == &giveItemBinds[i].key ?
