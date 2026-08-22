@@ -801,7 +801,8 @@ struct Matrix16 {
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xB4A790
 // OFFSET_AIMINGDATA_NEV removed: replaced with InputFilter delegate hook
 #define OFFSET_AIMSNAPSHOT_NEV                      0xC1C940  // AimSnapshot.nev(gfk)
-#define OFFSET_MOVEMENTSNAPSHOT_NEV                 0xC0A3F0  // MovementSnapshot.nev(gfk), remote character rotation
+#define OFFSET_MOVEMENTSNAPSHOT_NEV                 0xC0A3F0  // MovementSnapshot.nev(gfk)
+#define OFFSET_PLAYERSNAPSHOT_NEV                   0xBED6D0  // PlayerSnapshot.nev(gfk), authoritative packet serializer
 #define OFFSET_PLAYERCONTROLS_UPDATE                 0xB4CFB0
 #define OFFSET_PLAYERCONTROLS_INPUTFILTER_DELEGATE   0x88  // Action<xl> <ckqt>k__BackingField
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_UPDATE       0xB5C790
@@ -3173,6 +3174,7 @@ void(__fastcall* o_PlayerController_Command)(uintptr_t, uintptr_t, float, const 
 uintptr_t(__fastcall* o_KeyboardControl_BuildCommand)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimSnapshot_nev)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_MovementSnapshot_nev)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_PlayerSnapshot_nev)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_PlayerControls_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 // InputFilter delegate hook: void(xl*)
 typedef void(__fastcall* t_InputFilter)(uintptr_t, const Il2CppMethod*);
@@ -4950,6 +4952,35 @@ void __fastcall hk_MovementSnapshot_nev(uintptr_t snapshot, uintptr_t writer,
             snapshot, savedCharacterRotation, savedEuler);
         InterlockedIncrement(&silentAntiAimAppliedCalls);
     }
+}
+
+void __fastcall hk_PlayerSnapshot_nev(uintptr_t snapshot, uintptr_t writer,
+    const Il2CppMethod* method)
+{
+    if (!o_PlayerSnapshot_nev) return;
+    uintptr_t movementSnapshot = 0;
+    Vector3 savedCharacterRotation = {};
+    Vector3 savedEuler = {};
+    bool patched = false;
+    const bool outgoing = silentAntiAimEnabled && snapshot && writer &&
+        silentAntiAimLatestInputValid && !silentAntiAimLatestFiring;
+    if (outgoing) {
+        __try { movementSnapshot = *reinterpret_cast<uintptr_t*>(snapshot + 0x18); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { movementSnapshot = 0; }
+        patched = PatchMovementSnapshotRotationUnsafe(
+            movementSnapshot, silentAntiAimLatestFakeAngles,
+            &savedCharacterRotation, &savedEuler);
+    }
+    // PlayerSnapshot.nev is the top-level serializer that owns MovementSnapshot,
+    // MecanimSnapshot, AimSnapshot and WeaponrySnapshot. Patching here guarantees
+    // the child rotation is fake before any direct/non-virtual child serializer call.
+    o_PlayerSnapshot_nev(snapshot, writer, method);
+    if (patched) {
+        RestoreMovementSnapshotRotationUnsafe(
+            movementSnapshot, savedCharacterRotation, savedEuler);
+        InterlockedIncrement(&silentAntiAimAppliedCalls);
+    }
+    if (outgoing) InterlockedIncrement(&silentAntiAimCommandCalls);
 }
 
 // hk_AimingData_nev removed: replaced with InputFilter delegate hook
@@ -11589,6 +11620,14 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimMovementNevCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_MOVEMENTSNAPSHOT_NEV)) :
         antiAimMovementNevCreateStatus;
+    const MH_STATUS antiAimPlayerSnapshotNevCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_PLAYERSNAPSHOT_NEV),
+        hk_PlayerSnapshot_nev,
+        (LPVOID*)&o_PlayerSnapshot_nev);
+    const MH_STATUS antiAimPlayerSnapshotNevEnableStatus =
+        antiAimPlayerSnapshotNevCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_PLAYERSNAPSHOT_NEV)) :
+        antiAimPlayerSnapshotNevCreateStatus;
     silentAntiAimHookReady = antiAimLateAimCreateStatus == MH_OK &&
         antiAimLateAimEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
@@ -11599,11 +11638,13 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimSnapshotNevEnableStatus == MH_OK &&
         antiAimMovementNevCreateStatus == MH_OK &&
         antiAimMovementNevEnableStatus == MH_OK &&
+        antiAimPlayerSnapshotNevCreateStatus == MH_OK &&
+        antiAimPlayerSnapshotNevEnableStatus == MH_OK &&
         o_Transform_get_rotation_Injected &&
         o_Transform_set_rotation_Injected && o_Transform_get_forward &&
         o_Object_IsAlive;
 
-    LINDY_LOG("[anti-aim] input=%d/%d; outbound-mxc=%d/%d; nhi=%d/%d; aim-nev=%d/%d; move-nev=%d/%d; quaternion=%p/%p; ready=%d",
+    LINDY_LOG("[anti-aim] input=%d/%d; outbound-mxc=%d/%d; nhi=%d/%d; aim-nev=%d/%d; move-nev=%d/%d; player-nev=%d/%d; quaternion=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
         (int)antiAimNetworkCreateStatus, (int)antiAimNetworkEnableStatus,
         (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
@@ -11611,6 +11652,8 @@ DWORD WINAPI HackThread(LPVOID)
         (int)antiAimSnapshotNevEnableStatus,
         (int)antiAimMovementNevCreateStatus,
         (int)antiAimMovementNevEnableStatus,
+        (int)antiAimPlayerSnapshotNevCreateStatus,
+        (int)antiAimPlayerSnapshotNevEnableStatus,
         (void*)o_Transform_get_rotation_Injected,
         (void*)o_Transform_set_rotation_Injected,
         silentAntiAimHookReady ? 1 : 0);
