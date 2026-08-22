@@ -444,6 +444,7 @@ struct Matrix16 {
 #define OFFSET_ARMSLOD_SET_ARMS_MATERIALS          0xBCD260
 #define OFFSET_ARMSLOD_SET_GLOVE_MATERIALS         0xBCD2B0
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0xBFA0C0
+#define OFFSET_WEAPONRY_GIVE_WEAPON                 0xBFC8A0  // WeaponryController.nhw(dvu,cdy)
 #define OFFSET_GUNCONTROLLER_FIRE                  0xA21040
 #define OFFSET_GUNCONTROLLER_COMMAND               0xA1E030
 #define OFFSET_HITCASTER_CAST                      0xEEE090  // HitCaster.vxe<ceq>
@@ -1678,6 +1679,12 @@ float trailMinDistance = 0.05f; // Unity units are meters; sample every 5 cm
 // Tabs
 
 int currentTab = 0;
+
+// GUN tab: the render thread only queues a weapon id. The native WeaponryController
+// mutation is consumed from HUDView.Update on the game thread.
+volatile LONG pendingGiveWeaponId = 0;
+int giveWeaponSelection = 0;
+char giveWeaponStatus[128] = "Select a weapon";
 
 
 
@@ -4936,6 +4943,35 @@ static bool SendPendingPixelSurfChatMessageUnsafe()
 
 void InfinityAmmoLoop();
 
+static bool GiveLocalWeaponUnsafe(uint8_t weaponId)
+{
+    if (!weaponId || !base || !liveHudLocalPlayer) return false;
+    __try {
+        const uintptr_t weaponry = *reinterpret_cast<uintptr_t*>(
+            liveHudLocalPlayer + OFFSET_WEAPONRYCONTROLLER);
+        if (!weaponry) return false;
+        using GiveWeaponFn = void(__fastcall*)(uintptr_t, uint8_t, int,
+            const Il2CppMethod*);
+        reinterpret_cast<GiveWeaponFn>(base + OFFSET_WEAPONRY_GIVE_WEAPON)(
+            weaponry, weaponId, 0, nullptr); // cdy::SetAndTake
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+static void ProcessPendingGiveWeapon()
+{
+    const LONG requested = InterlockedExchange(&pendingGiveWeaponId, 0);
+    if (requested <= 0 || requested > 255) return;
+    const uint8_t weaponId = static_cast<uint8_t>(requested);
+    if (GiveLocalWeaponUnsafe(weaponId))
+        sprintf_s(giveWeaponStatus, "Equipped %s", WeaponNameFromId(weaponId));
+    else
+        strcpy_s(giveWeaponStatus, "Failed: local WeaponryController unavailable");
+}
+
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
     __try {
@@ -4967,6 +5003,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
+    ProcessPendingGiveWeapon();
     ApplyViewModelPosition();
     MaintainChamsForCurrentScene();
     if (InterlockedExchange(&pendingPixelSurfChatMessage, 0))
@@ -9142,8 +9179,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     ImGui::TextColored(accent, "ze0nware");
     ImGui::SetCursorPosY(93.0f);
 
-    const char* navLabels[] = { "AIMBOT", "ANTI-AIM", "VISUALS", "WEAPONS", "BINDS", "CONFIGS" };
-    for (int tab = 0; tab < 6; ++tab) {
+    const char* navLabels[] = { "AIMBOT", "ANTI-AIM", "VISUALS", "WEAPONS", "GUN", "BINDS", "CONFIGS" };
+    for (int tab = 0; tab < IM_ARRAYSIZE(navLabels); ++tab) {
         const bool selected = currentTab == tab;
         ImGui::SetCursorPosX(3.0f);
         ImGui::PushID(tab);
@@ -9745,7 +9782,42 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         
         ImGui::EndChild();
     }
-    else if (currentTab == 4) { // BINDS
+    else if (currentTab == 4) { // GUN
+        ImGui::BeginChild("GunInventory", ImVec2(0, 0), true);
+        ImGui::TextColored(accent, "Gun");
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        static const char* gunNames[] = {
+            "G22", "USP", "P350", "Deagle", "Tec-9", "Five-Seven", "Berettas",
+            "UMP45", "Akimbo Uzi", "MP7", "P90", "MP5", "MAC10", "VAL",
+            "M4A1", "AKR", "AKR12", "M4", "M16", "FAMAS", "FN FAL",
+            "AWM", "M40", "M110", "Mallard", "SM1014", "FabM", "M60", "SPAS"
+        };
+        static const uint8_t gunIds[] = {
+            11, 12, 13, 15, 16, 17, 18, 32, 33, 34, 35, 36, 37, 42, 43,
+            44, 45, 46, 47, 48, 49, 51, 52, 53, 54, 62, 63, 64, 65
+        };
+        static_assert(IM_ARRAYSIZE(gunNames) == IM_ARRAYSIZE(gunIds),
+            "Gun menu names and ids must stay aligned");
+
+        ImGui::TextWrapped("Select a firearm and equip it into the local player's hands.");
+        ImGui::Spacing();
+        ImGui::SetNextItemWidth(240.0f);
+        ImGui::Combo("Weapon", &giveWeaponSelection, gunNames, IM_ARRAYSIZE(gunNames));
+        if (giveWeaponSelection < 0 || giveWeaponSelection >= IM_ARRAYSIZE(gunIds))
+            giveWeaponSelection = 0;
+        if (ImGui::Button("Give weapon", ImVec2(160.0f, 32.0f))) {
+            const uint8_t requestedId = gunIds[giveWeaponSelection];
+            InterlockedExchange(&pendingGiveWeaponId, static_cast<LONG>(requestedId));
+            sprintf_s(giveWeaponStatus, "Queued %s", gunNames[giveWeaponSelection]);
+        }
+        ImGui::Spacing();
+        ImGui::TextWrapped("Status: %s", giveWeaponStatus);
+        ImGui::TextDisabled("Uses native WeaponryController SetAndTake on the game thread.");
+        ImGui::EndChild();
+    }
+    else if (currentTab == 5) { // BINDS
         ImGui::BeginChild("Binds", ImVec2(0, 0), true);
         ImGui::TextColored(accent, "Feature Binds");
         ImGui::Separator();
@@ -9765,7 +9837,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
         ImGui::EndChild();
     }
-    else if (currentTab == 5) { // CONFIGS
+    else if (currentTab == 6) { // CONFIGS
         ImGui::BeginChild("Configs", ImVec2(0, 0), true);
         ImGui::TextColored(accent, "Configs");
         ImGui::Separator();
