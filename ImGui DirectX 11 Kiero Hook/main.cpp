@@ -2,7 +2,6 @@
 #include "il2cpp.h"
 #include "velocity_limiter.h"
 #include "cat_skybox_bytes.h"
-#include "tps_anti_aim_camera.h"
 
 #include <vector>
 #include <algorithm>
@@ -2975,6 +2974,8 @@ uintptr_t lastCharacterController = 0;
 uintptr_t(__fastcall* o_GetPlayerController)() = nullptr;
 
 uintptr_t(__fastcall* o_Camera_get_main)() = nullptr;
+
+#include "tps_anti_aim_camera.h"
 
 void(__fastcall* o_Camera_set_fieldOfView)(uintptr_t, float) = nullptr;
 

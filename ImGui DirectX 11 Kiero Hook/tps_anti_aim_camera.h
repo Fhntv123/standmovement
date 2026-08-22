@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // ============================================================================
 // tps_anti_aim_camera.h
 //
@@ -59,15 +59,15 @@ extern uintptr_t(__fastcall* o_Component_get_transform)(uintptr_t);
 extern void(__fastcall* o_Transform_set_eulerAngles)(uintptr_t, Vector3);
 extern volatile LONG silentAntiAimCameraRestoreCalls;
 
-inline volatile LONG g_TpsCameraHookFires = 0;
-inline volatile LONG g_TpsCameraRestoreApplied = 0;
-inline char g_TpsCameraWorkaroundStatus[160] = "Idle";
+volatile LONG g_TpsCameraHookFires = 0;
+volatile LONG g_TpsCameraRestoreApplied = 0;
+char g_TpsCameraWorkaroundStatus[160] = "Idle";
 
 // Called once per frame from the CameraController.OnPreCull hook in
 // main.cpp, strictly after the native OnPreCull has already run for this
 // specific camera instance. controlledCamera is that camera's own Camera
 // component (dump1 CameraController::clgs, +0x28), read by the caller.
-inline void TpsCameraWorkaround_AfterNativeOnPreCull(uintptr_t controlledCamera)
+void TpsCameraWorkaround_AfterNativeOnPreCull(uintptr_t controlledCamera)
 {
     InterlockedIncrement(&g_TpsCameraHookFires);
 
