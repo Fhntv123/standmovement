@@ -465,7 +465,6 @@ struct Matrix16 {
 #define OFFSET_PLAYERCONTROLLER_COMMAND             0xBD6B50
 #define OFFSET_NETWORKCONTROLLER_WRITE_SNAPSHOT    0xBD3C50  // NetworkController.mxc(gfk), verified outgoing writer
 #define OFFSET_PLAYERCONTROLLER_GET_ACTOR           0xBD4730  // PlayerController.mzj() -> dwg
-#define OFFSET_MATCH_ACTOR_GET_NAME                 0x5A0C80  // dwg.bggx() -> cnoy (shared getter body)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_A          0xBEB260  // PlayerManager.ndb(PlayerController)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_B          0xBEB430  // PlayerManager.ndc(PlayerController)
 #define OFFSET_PLAYERMANAGER_PLAYER_EVENT_C          0xBEB460  // PlayerManager.ndd(PlayerController)
@@ -1202,12 +1201,7 @@ Il2CppObject* g_PlayerControllerReflectionType = nullptr;
 Il2CppClass* g_PlayerModelClass = nullptr;
 const Il2CppMethod* g_PlayerModelGetInstanceMethod = nullptr;
 const Il2CppMethod* g_PlayerModelSetNameMethod = nullptr;
-using t_MatchActorGetName = Il2CppString*(__fastcall*)(uintptr_t, const Il2CppMethod*);
-t_MatchActorGetName o_MatchActorGetName = nullptr;
-volatile LONG64 g_NicknameOverrideActor = 0;
-volatile LONG64 g_NicknameOverrideString = 0;
-uint32_t g_NicknameOverrideHandle = 0;
-uint32_t g_NicknamePreviousHandle = 0;
+const Il2CppMethod* g_LocalActorMatchNameSetter = nullptr;
 uintptr_t g_LivePlayerModel = 0;
 std::vector<void*> g_LivePlayerRegistry;
 SRWLOCK g_LivePlayerRegistryLock = SRWLOCK_INIT;
@@ -5135,24 +5129,11 @@ static bool ApplyNicknameServerUnsafe(const char* nickname)
     }
 }
 
-static Il2CppString* __fastcall hk_MatchActorGetName(
-    uintptr_t actor, const Il2CppMethod* method)
-{
-    const uintptr_t overrideActor = static_cast<uintptr_t>(
-        InterlockedCompareExchange64(&g_NicknameOverrideActor, 0, 0));
-    if (actor && actor == overrideActor) {
-        const uintptr_t overrideString = static_cast<uintptr_t>(
-            InterlockedCompareExchange64(&g_NicknameOverrideString, 0, 0));
-        if (overrideString) return reinterpret_cast<Il2CppString*>(overrideString);
-    }
-    return o_MatchActorGetName(actor, method);
-}
-
-static bool PublishNicknameForCurrentMatchUnsafe(const char* nickname)
+static bool ApplyNicknameToCurrentMatchActorUnsafe(const char* nickname)
 {
     if (!nickname || !nickname[0] || !liveHudLocalPlayer ||
-        !o_MatchActorGetName || !g_il2cpp.string_new ||
-        !g_il2cpp.gchandle_new)
+        !g_LocalActorMatchNameSetter || !g_il2cpp.runtime_invoke ||
+        !g_il2cpp.string_new)
         return false;
     __try {
         const uintptr_t actor = SafeGetPlayerActor(
@@ -5160,24 +5141,14 @@ static bool PublishNicknameForCurrentMatchUnsafe(const char* nickname)
         if (!actor) return false;
         Il2CppString* managedName = g_il2cpp.string_new(nickname);
         if (!managedName) return false;
-        const uint32_t newHandle = g_il2cpp.gchandle_new(
-            reinterpret_cast<Il2CppObject*>(managedName), false);
-        if (!newHandle) return false;
-
-        // Do not write PlayerController::caws or dwg::cnoy. Those live match objects
-        // also participate in hit/death transitions. Publish a read-only override
-        // only for this actor's cnoy getter, keeping two GC roots for return races.
-        InterlockedExchange64(&g_NicknameOverrideActor, 0);
-        const uint32_t expiredHandle = g_NicknamePreviousHandle;
-        g_NicknamePreviousHandle = g_NicknameOverrideHandle;
-        g_NicknameOverrideHandle = newHandle;
-        InterlockedExchange64(&g_NicknameOverrideString,
-            static_cast<LONG64>(reinterpret_cast<uintptr_t>(managedName)));
-        InterlockedExchange64(&g_NicknameOverrideActor,
-            static_cast<LONG64>(actor));
-        if (expiredHandle && g_il2cpp.gchandle_free)
-            g_il2cpp.gchandle_free(expiredHandle);
-        return true;
+        void* args[] = { managedName };
+        Il2CppObject* exception = nullptr;
+        // dwg::bggy is the compiler-generated setter for cnoy, the name consumed
+        // by spawned player views. Do not call PlayerController::mzq: that was the
+        // extra live-player mutation present in the camera-broken build.
+        g_il2cpp.runtime_invoke(g_LocalActorMatchNameSetter,
+            reinterpret_cast<void*>(actor), args, &exception);
+        return exception == nullptr;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
@@ -5207,10 +5178,10 @@ static void ProcessNicknameChanger()
     }
     // Animation must stay local. Repeated djg::beqx server Tasks from HUDView.Update
     // were the nickname-specific path active during hit/death transitions. Buttons
-    // still update the profile once; animation only changes the two live name caches.
+    // still update the profile once; animation only changes the actor name field.
     const bool serverInvoked = !manualRequest ||
         ApplyNicknameServerUnsafe(requestedName);
-    const bool localMatchUpdated = PublishNicknameForCurrentMatchUnsafe(requestedName);
+    const bool localMatchUpdated = ApplyNicknameToCurrentMatchActorUnsafe(requestedName);
     if (manualRequest && serverInvoked && localMatchUpdated)
         sprintf_s(nicknameStatus, "Profile + current match name: %s", requestedName);
     else if (!manualRequest && localMatchUpdated)
@@ -10167,7 +10138,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (nicknameAnimationEnabled) {
             ImGui::SliderFloat("Change interval", &nicknameAnimationInterval,
                 0.5f, 10.0f, "%.1f s");
-            ImGui::TextDisabled("Animates a read-only match-name override; live player state is untouched.");
+            ImGui::TextDisabled("Animates the spawned actor name; PlayerController state is untouched.");
         }
         ImGui::Spacing();
         ImGui::TextWrapped("Status: %s", nicknameStatus);
@@ -10350,9 +10321,14 @@ DWORD WINAPI HackThread(LPVOID)
                 g_PlayerModelGetInstanceMethod = g_il2cpp.class_get_method_from_name(
                     playerModelParent, "bemy", 0);
         }
-        LINDY_LOG("[nickname] model=%p getter=%p setter=%p",
+        Il2CppClass* actorClass = g_il2cpp.find_class("", "dwg");
+        if (actorClass && g_il2cpp.class_get_method_from_name)
+            g_LocalActorMatchNameSetter = g_il2cpp.class_get_method_from_name(
+                actorClass, "bggy", 1);
+        LINDY_LOG("[nickname] model=%p getter=%p setter=%p actor=%p",
             (void*)g_PlayerModelClass, (void*)g_PlayerModelGetInstanceMethod,
-            (void*)g_PlayerModelSetNameMethod);
+            (void*)g_PlayerModelSetNameMethod,
+            (void*)g_LocalActorMatchNameSetter);
         g_GlovesManagerClass = g_il2cpp.find_class("Chillow.StandChillow.Main.Inventory.Gloves", "GlovesManager");
         LINDY_LOG("[init] GlovesManagerClass=%p", (void*)g_GlovesManagerClass);
         if (g_GlovesManagerClass) {
@@ -10374,15 +10350,6 @@ DWORD WINAPI HackThread(LPVOID)
     g_MatrixValid = true;
 
 
-
-    const MH_STATUS nicknameGetterCreate = MH_CreateHook(
-        (LPVOID)(base + OFFSET_MATCH_ACTOR_GET_NAME), hk_MatchActorGetName,
-        (LPVOID*)&o_MatchActorGetName);
-    const MH_STATUS nicknameGetterEnable = nicknameGetterCreate == MH_OK ?
-        MH_EnableHook((LPVOID)(base + OFFSET_MATCH_ACTOR_GET_NAME)) :
-        nicknameGetterCreate;
-    LINDY_LOG("[nickname] read-only getter hook=%d/%d",
-        (int)nicknameGetterCreate, (int)nicknameGetterEnable);
 
     o_CheatRuntime_SetThirdPerson = (void(__fastcall*)(uintptr_t, bool, const Il2CppMethod*))(base + OFFSET_CHEAT_RUNTIME_SET_THIRDPERSON);
     o_CheatRuntime_SetBhop = (void(__fastcall*)(uintptr_t, uintptr_t, bool))(base + OFFSET_CHEAT_RUNTIME_SET_BHOP);
