@@ -1201,6 +1201,7 @@ Il2CppObject* g_PlayerControllerReflectionType = nullptr;
 Il2CppClass* g_PlayerModelClass = nullptr;
 const Il2CppMethod* g_PlayerModelGetInstanceMethod = nullptr;
 const Il2CppMethod* g_PlayerModelSetNameMethod = nullptr;
+const Il2CppMethod* g_LocalPlayerMatchNameSetter = nullptr;
 uintptr_t g_LivePlayerModel = 0;
 std::vector<void*> g_LivePlayerRegistry;
 SRWLOCK g_LivePlayerRegistryLock = SRWLOCK_INIT;
@@ -5128,6 +5129,27 @@ static bool ApplyNicknameServerUnsafe(const char* nickname)
     }
 }
 
+static bool ApplyNicknameToLocalPlayerUnsafe(const char* nickname)
+{
+    if (!nickname || !nickname[0] || !liveHudLocalPlayer ||
+        !g_LocalPlayerMatchNameSetter || !g_il2cpp.runtime_invoke ||
+        !g_il2cpp.string_new)
+        return false;
+    __try {
+        Il2CppString* managedName = g_il2cpp.string_new(nickname);
+        if (!managedName) return false;
+        void* args[] = { managedName };
+        Il2CppObject* exception = nullptr;
+        // dump1 PlayerController::mzq is the compiler-generated caws string setter.
+        // Update only this local presentation field. Never mutate the dwg actor: that
+        // object participates in hit/death state and caused the camera regression.
+        g_il2cpp.runtime_invoke(g_LocalPlayerMatchNameSetter,
+            reinterpret_cast<void*>(liveHudLocalPlayer), args, &exception);
+        return exception == nullptr;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
 static void ProcessNicknameChanger()
 {
     LONG command = InterlockedExchange(&pendingNicknameCommand, 0);
@@ -5151,8 +5173,13 @@ static void ProcessNicknameChanger()
         return;
     }
     const bool serverInvoked = ApplyNicknameServerUnsafe(requestedName);
-    if (serverInvoked)
-        sprintf_s(nicknameStatus, "Profile changed; reconnect to update the match name");
+    const bool localMatchUpdated = ApplyNicknameToLocalPlayerUnsafe(requestedName);
+    if (serverInvoked && localMatchUpdated)
+        sprintf_s(nicknameStatus, "Profile + current match name: %s", requestedName);
+    else if (serverInvoked)
+        sprintf_s(nicknameStatus, "Profile changed; local match player unavailable");
+    else if (localMatchUpdated)
+        sprintf_s(nicknameStatus, "Current match name changed locally: %s", requestedName);
     else if (!g_PlayerModelGetInstanceMethod)
         strcpy_s(nicknameStatus, "Player model getter not resolved");
     else if (!g_PlayerModelSetNameMethod)
@@ -10084,7 +10111,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::TextColored(accent, "Nickname Changer");
         ImGui::Separator();
         ImGui::Spacing();
-        ImGui::TextDisabled("Updates the profile only; reconnect to publish it in a match.");
+        ImGui::TextDisabled("Updates the profile and the local player name in the current match.");
         AcquireSRWLockExclusive(&nicknameSettingsLock);
         ImGui::InputText("Nickname 1", nicknameFirst, sizeof(nicknameFirst));
         ImGui::InputText("Nickname 2", nicknameSecond, sizeof(nicknameSecond));
@@ -10101,7 +10128,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (nicknameAnimationEnabled) {
             ImGui::SliderFloat("Change interval", &nicknameAnimationInterval,
                 0.5f, 10.0f, "%.1f s");
-            ImGui::TextDisabled("Changes the profile value only; does not mutate live match actors.");
+            ImGui::TextDisabled("Animates the local PlayerController name without touching the match actor.");
         }
         ImGui::Spacing();
         ImGui::TextWrapped("Status: %s", nicknameStatus);
@@ -10284,9 +10311,17 @@ DWORD WINAPI HackThread(LPVOID)
                 g_PlayerModelGetInstanceMethod = g_il2cpp.class_get_method_from_name(
                     playerModelParent, "bemy", 0);
         }
-        LINDY_LOG("[nickname] model=%p getter=%p setter=%p",
+        Il2CppClass* localPlayerClass = g_il2cpp.find_class(
+            "Chillow.StandChillow.Player", "PlayerController");
+        if (!localPlayerClass)
+            localPlayerClass = g_il2cpp.find_class("", "PlayerController");
+        if (localPlayerClass && g_il2cpp.class_get_method_from_name)
+            g_LocalPlayerMatchNameSetter = g_il2cpp.class_get_method_from_name(
+                localPlayerClass, "mzq", 1);
+        LINDY_LOG("[nickname] model=%p getter=%p setter=%p match-player=%p",
             (void*)g_PlayerModelClass, (void*)g_PlayerModelGetInstanceMethod,
-            (void*)g_PlayerModelSetNameMethod);
+            (void*)g_PlayerModelSetNameMethod,
+            (void*)g_LocalPlayerMatchNameSetter);
         g_GlovesManagerClass = g_il2cpp.find_class("Chillow.StandChillow.Main.Inventory.Gloves", "GlovesManager");
         LINDY_LOG("[init] GlovesManagerClass=%p", (void*)g_GlovesManagerClass);
         if (g_GlovesManagerClass) {
