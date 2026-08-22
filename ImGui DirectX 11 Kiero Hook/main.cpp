@@ -758,6 +758,7 @@ float thirdPersonHorizontalOffset = 0.0f;
 float thirdPersonHeightAdjustment = 0.0f;
 float thirdPersonDistanceAdjustment = 0.0f;
 volatile LONG pendingThirdPersonCommand = 0;
+bool thirdPersonSuspendedForDeath = false;
 Il2CppClass* g_GameControllerClass = nullptr;
 Il2CppField* g_GameControllerInstanceField = nullptr;
 void(__fastcall* o_CheatRuntime_SetThirdPerson)(uintptr_t, bool, const Il2CppMethod*) = nullptr;
@@ -3032,12 +3033,23 @@ static uintptr_t GetNativeCheatRuntime()
     return 0;
 }
 
-static bool ApplyCustomizedThirdPersonOffsets()
+static int ReadAuthoritativeLocalHealthUnsafe()
+{
+    const uintptr_t player = liveHudLocalPlayer;
+    if (!player) return -1;
+    __try {
+        const uintptr_t healthState = *reinterpret_cast<uintptr_t*>(player + 0x148);
+        return healthState ? ReadHealthStateNow(healthState) : -1;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
+
+static bool ApplyCustomizedThirdPersonOffsets(bool enableThirdPerson)
 {
     const uintptr_t player = liveHudLocalPlayer;
     if (!player) {
-        if (thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Waiting for local player camera offsets");
-        return !thirdPersonEnabled;
+        if (enableThirdPerson) strcpy_s(thirdPersonStatus, "Waiting for local player camera offsets");
+        return !enableThirdPerson;
     }
     __try {
         const uintptr_t gameController = GetActiveGameController();
@@ -3057,7 +3069,7 @@ static bool ApplyCustomizedThirdPersonOffsets()
             void* localPlayer = GetLocalPC();
             const int localHealth = GetPCHealth(localPlayer);
             if (!gameController || !localPlayer || localHealth <= 0) {
-                if (thirdPersonEnabled)
+                if (enableThirdPerson)
                     strcpy_s(thirdPersonStatus, "Waiting for live TPS camera baseline");
                 return false;
             }
@@ -3075,7 +3087,7 @@ static bool ApplyCustomizedThirdPersonOffsets()
             originalTpsOffsetsGameController = gameController;
             originalTpsOffsetsCaptured = true;
         }
-        if (thirdPersonEnabled) {
+        if (enableThirdPerson) {
             Vector3 standing = originalDefaultTpsOffset;
             Vector3 crouching = originalCrouchingTpsOffset;
             // X is absolute so zero always means centered. Y/Z are adjustments
@@ -3097,8 +3109,8 @@ static bool ApplyCustomizedThirdPersonOffsets()
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         originalTpsOffsetsCaptured = false;
-        if (thirdPersonEnabled) strcpy_s(thirdPersonStatus, "Waiting for local player camera offsets");
-        return !thirdPersonEnabled;
+        if (enableThirdPerson) strcpy_s(thirdPersonStatus, "Waiting for local player camera offsets");
+        return !enableThirdPerson;
     }
 }
 
@@ -3126,13 +3138,13 @@ static uintptr_t GetDirectAdminRuntime()
     return runtime;
 }
 
-static bool ApplyNativeThirdPersonState()
+static bool ApplyNativeThirdPersonState(bool enableThirdPerson)
 {
     if (!liveHudLocalPlayer || !o_CheatRuntime_SetThirdPerson) {
         strcpy_s(thirdPersonStatus, "Waiting for local PlayerController");
         return false;
     }
-    if (!ApplyCustomizedThirdPersonOffsets()) return false;
+    if (!ApplyCustomizedThirdPersonOffsets(enableThirdPerson)) return false;
     const uintptr_t runtime = GetDirectAdminRuntime();
     if (!runtime) {
         strcpy_s(thirdPersonStatus, "Waiting for direct admin runtime");
@@ -3141,9 +3153,9 @@ static bool ApplyNativeThirdPersonState()
     __try {
         // Use the actual admin implementation crk.baee(bool). Do not call mzy:
         // mzy is the handedness transition that only moves the weapon left/right.
-        o_CheatRuntime_SetThirdPerson(runtime, thirdPersonEnabled, nullptr);
-        if (!ApplyCustomizedThirdPersonOffsets()) return false;
-        strcpy_s(thirdPersonStatus, thirdPersonEnabled ?
+        o_CheatRuntime_SetThirdPerson(runtime, enableThirdPerson, nullptr);
+        if (!ApplyCustomizedThirdPersonOffsets(enableThirdPerson)) return false;
+        strcpy_s(thirdPersonStatus, enableThirdPerson ?
             "Active; native admin TPS logic" :
             "Disabled; original offsets restored");
         return true;
@@ -5243,10 +5255,32 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     UpdatePenetrableSurfaceVisualization();
     UpdateVisibleAimbotCamera();
     InfinityAmmoLoop();
-    if (thirdPersonEnabled && !InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0))
-        ApplyCustomizedThirdPersonOffsets();
-    if (InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0) && ApplyNativeThirdPersonState())
-        InterlockedExchange(&pendingThirdPersonCommand, 0);
+    const int localHealth = ReadAuthoritativeLocalHealthUnsafe();
+    if (thirdPersonEnabled && localHealth == 0) {
+        // Give the native death/kill/spectator camera exclusive control. Reapplying
+        // TPS offsets here races its coroutine and can strand Camera.main at the corpse.
+        if (!thirdPersonSuspendedForDeath) {
+            if (ApplyNativeThirdPersonState(false)) {
+                thirdPersonSuspendedForDeath = true;
+                InterlockedExchange(&pendingThirdPersonCommand, 0);
+                strcpy_s(thirdPersonStatus, "Suspended during death camera");
+            }
+        }
+    }
+    else {
+        if (thirdPersonSuspendedForDeath && localHealth > 0) {
+            thirdPersonSuspendedForDeath = false;
+            originalTpsOffsetsCaptured = false;
+            customizedThirdPersonPlayer = 0;
+            InterlockedExchange(&pendingThirdPersonCommand, 1);
+        }
+        if (thirdPersonEnabled && !thirdPersonSuspendedForDeath &&
+            !InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0))
+            ApplyCustomizedThirdPersonOffsets(true);
+        if (InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0) &&
+            ApplyNativeThirdPersonState(thirdPersonEnabled))
+            InterlockedExchange(&pendingThirdPersonCommand, 0);
+    }
     ApplyScopeOverlayState();
 }
 
@@ -8998,6 +9032,7 @@ static void SetBoundFeatureState(BindAction action, bool enabled)
         penetrableSurfacesEnabled = enabled; penetrableSurfaceNextScan = 0; break;
     case BindAction::ThirdPerson:
         thirdPersonEnabled = enabled;
+        if (!enabled) thirdPersonSuspendedForDeath = false;
         InterlockedExchange(&pendingThirdPersonCommand, 1);
         break;
     case BindAction::CameraFov: cameraFovEnabled = enabled; break;
@@ -9732,6 +9767,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::TextDisabled("%s", penetrableSurfaceStatus);
         }
         if (ImGui::Checkbox("Third Person", &thirdPersonEnabled)) {
+            if (!thirdPersonEnabled) thirdPersonSuspendedForDeath = false;
             strcpy_s(thirdPersonStatus, thirdPersonEnabled ? "TPS transition queued" : "FPS transition queued");
             InterlockedExchange(&pendingThirdPersonCommand, 1);
         }
