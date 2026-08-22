@@ -1062,6 +1062,8 @@ Vector3 silentAntiAimLatestRealAimEuler;
 Vector3 silentAntiAimLatestFakeAngles;
 Vector3 silentAntiAimRealCameraAngles;
 bool silentAntiAimRealCameraValid = false;
+Vector2 silentAntiAimPreviousAimDelta;
+bool silentAntiAimPreviousAimDeltaValid = false;
 Vector3 silentAntiAimOriginalAngles;  // Real angles from DeltaAimAngles
 Vector3 silentAntiAimOriginalEulerAngles;  // Real euler angles
 volatile LONG silentAntiAimCameraRestoreCalls = 0;
@@ -4681,22 +4683,17 @@ static bool ResolveRotationAntiAimEdgeYawUnsafe(uintptr_t player,
     return true;
 }
 
-static bool ReadSourceStyleCameraAnglesUnsafe(Vector3* outAngles);
-
 static void RestoreSourceStyleAntiAimViewUnsafe()
 {
-    if (!silentAntiAimLatestAimingData) {
-        silentAntiAimRestoreCameraPending = false;
-        return;
-    }
-    Vector3 realAngles = {};
-    if (!ReadSourceStyleCameraAnglesUnsafe(&realAngles)) {
+    if (!silentAntiAimLatestAimingData || !silentAntiAimRealCameraValid) {
         silentAntiAimRestoreCameraPending = false;
         return;
     }
     __try {
-        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x18) = realAngles;
-        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x24) = realAngles;
+        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x18) =
+            silentAntiAimRealCameraAngles;
+        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x24) =
+            silentAntiAimRealCameraAngles;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
     silentAntiAimRestoreCameraPending = false;
@@ -4715,23 +4712,43 @@ static void ClearRotationAntiAimTargetUnsafe()
     InterlockedIncrement(&silentAntiAimSnapshotSequence); // publication complete (even)
 }
 
-static bool ReadSourceStyleCameraAnglesUnsafe(Vector3* outAngles)
+static bool UpdateSourceStyleRealAnglesUnsafe(uintptr_t aimingData,
+    uintptr_t command, Vector3* outAngles)
 {
-    if (!outAngles || !o_Component_get_transform || !o_Transform_get_eulerAngles) return false;
+    if (!aimingData || !command || !outAngles) return false;
     __try {
-        const uintptr_t camera = GetCamera();
-        const uintptr_t transform = camera ? o_Component_get_transform(camera) : 0;
-        if (!transform) return false;
-        *outAngles = o_Transform_get_eulerAngles(transform);
-        outAngles->x = NormalizeAngle180(outAngles->x);
-        outAngles->y = NormalizeAngle360(outAngles->y);
-        outAngles->z = 0.0f;
-        return isfinite(outAngles->x) && isfinite(outAngles->y);
+        const Vector2 currentDelta = *reinterpret_cast<Vector2*>(command + 0x38);
+        if (!isfinite(currentDelta.x) || !isfinite(currentDelta.y)) return false;
+
+        if (!silentAntiAimRealCameraValid) {
+            silentAntiAimRealCameraAngles =
+                *reinterpret_cast<Vector3*>(aimingData + 0x18);
+            if (!isfinite(silentAntiAimRealCameraAngles.x) ||
+                !isfinite(silentAntiAimRealCameraAngles.y)) return false;
+            silentAntiAimRealCameraValid = true;
+        }
+        else if (silentAntiAimPreviousAimDeltaValid) {
+            // Exact reference semantics:
+            // camera.pitch -= oldCmd.m_vecDeltaAimAngles.x;
+            // camera.yaw   += oldCmd.m_vecDeltaAimAngles.y;
+            silentAntiAimRealCameraAngles.x -= silentAntiAimPreviousAimDelta.x;
+            silentAntiAimRealCameraAngles.y += silentAntiAimPreviousAimDelta.y;
+        }
+
+        silentAntiAimPreviousAimDelta = currentDelta;
+        silentAntiAimPreviousAimDeltaValid = true;
+        silentAntiAimRealCameraAngles.x = fmaxf(-70.0f,
+            fminf(70.0f, NormalizeAngle180(silentAntiAimRealCameraAngles.x)));
+        silentAntiAimRealCameraAngles.y =
+            NormalizeAngle360(silentAntiAimRealCameraAngles.y);
+        silentAntiAimRealCameraAngles.z = 0.0f;
+        *outAngles = silentAntiAimRealCameraAngles;
+        return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-static void UpdateRotationAntiAimTarget(uintptr_t player, bool jumpProfile)
+static void UpdateRotationAntiAimTarget(uintptr_t player, uintptr_t command, bool jumpProfile)
 {
     // BuildCommand is invoked for more than one player. Never publish a remote
     // controller as local, especially during death/respawn and round transitions.
@@ -4759,10 +4776,7 @@ static void UpdateRotationAntiAimTarget(uintptr_t player, bool jumpProfile)
         }
 
         Vector3 realAngles = {};
-        if (!ReadSourceStyleCameraAnglesUnsafe(&realAngles)) {
-            // Camera is authoritative like m_cameraAngles in the supplied source.
-            // AimingData may already contain last command's fake angles and must not
-            // become the base for the next tick, otherwise yaw compounds every frame.
+        if (!UpdateSourceStyleRealAnglesUnsafe(aimingData, command, &realAngles)) {
             ClearRotationAntiAimTargetUnsafe();
             return;
         }
@@ -5132,12 +5146,16 @@ static bool ApplySourceStyleAntiAimCommandUnsafe(uintptr_t player,
         *reinterpret_cast<Vector3*>(aimingData + 0x18) = fakeAngles;
         *reinterpret_cast<Vector3*>(aimingData + 0x24) = fakeAngles;
 
-        const uintptr_t camera = GetCamera();
-        const uintptr_t cameraTransform = camera && o_Component_get_transform ?
-            o_Component_get_transform(camera) : 0;
-        if (cameraTransform && o_Transform_get_eulerAngles) {
+        // Reference getCamera(): in FPS mode restore AimController::FPSCamera.
+        // Restoring the main Camera transform to a value captured before mouse input
+        // caused the view to be written back to the same angle every LateAim.
+        uintptr_t cameraTransform =
+            *reinterpret_cast<uintptr_t*>(aimController + 0x68);
+        if (!cameraTransform)
+            cameraTransform = *reinterpret_cast<uintptr_t*>(aimController + 0x78);
+        if (cameraTransform) {
             silentAntiAimRestoreCameraTransform = cameraTransform;
-            silentAntiAimRestoreCameraAngles = o_Transform_get_eulerAngles(cameraTransform);
+            silentAntiAimRestoreCameraAngles = realAngles;
             silentAntiAimRestoreCameraPending = true;
         }
         return true;
@@ -5265,7 +5283,7 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
         // build it stays set during normal play and blocked every outgoing patch.
         // Build the fake angles first, then write the detached xl command directly.
         silentAntiAimLatestFiring = false;
-        UpdateRotationAntiAimTarget(player, jumpProfile);
+        UpdateRotationAntiAimTarget(player, command, jumpProfile);
         if (silentAntiAimLatestInputValid &&
             ApplySourceStyleAntiAimCommandUnsafe(player, command,
                 silentAntiAimLatestRealAimAngle, silentAntiAimLatestFakeAngles)) {
@@ -10075,7 +10093,11 @@ static void SetBoundFeatureState(BindAction action, bool enabled)
     case BindAction::AntiAim:
         if (!enabled) RestoreSourceStyleAntiAimViewUnsafe();
         silentAntiAimEnabled = enabled;
-        if (!enabled) ClearRotationAntiAimTargetUnsafe();
+        if (!enabled) {
+            ClearRotationAntiAimTargetUnsafe();
+            silentAntiAimRealCameraValid = false;
+            silentAntiAimPreviousAimDeltaValid = false;
+        }
         break;
     case BindAction::BoxEsp:
         boxEsp = enabled; b_HookEnemyCords = enabled; b_HookLocalCords = enabled;
@@ -10674,6 +10696,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             silentAntiAimLatestFiring = false;
             silentAntiAimCameraTransform = 0;
             silentAntiAimRealCameraValid = false;
+            silentAntiAimPreviousAimDeltaValid = false;
             silentAntiAimSpinEpoch = 0;
             silentAntiAimSpinYaw = 0.0f;
             silentAntiAimLastJitterTick = 0;
