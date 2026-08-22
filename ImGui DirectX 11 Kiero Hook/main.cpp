@@ -822,6 +822,7 @@ struct Matrix16 {
 #define OFFSET_COMPONENT_GET_GAMEOBJECT             0x3474720
 #define OFFSET_OBJECT_INSTANTIATE                    0x347BAC0
 #define OFFSET_OBJECT_DESTROY                        0x347B060
+#define OFFSET_OBJECT_SET_HIDE_FLAGS                 0x347CAD0
 #define OFFSET_TRANSFORM_GET_LOCALSCALE              0x348B800
 #define OFFSET_TRANSFORM_SET_LOCALSCALE              0x348C030
 #define OFFSET_GAMEOBJECT_SETACTIVE                 0x3478090
@@ -7338,8 +7339,25 @@ static void RestoreWeaponChams()
     weaponChamsController = 0;
 }
 
+static void KeepBundleChamsObjectAlive(uintptr_t object)
+{
+    if (!object || !base) return;
+    using SetHideFlagsFn = void(__fastcall*)(uintptr_t, int, const Il2CppMethod*);
+    reinterpret_cast<SetHideFlagsFn>(base + OFFSET_OBJECT_SET_HIDE_FLAGS)(object, 32, nullptr); // DontUnloadUnusedAsset
+}
+
+static void ResetDeadBundleChamsObject(uintptr_t* object, uint32_t* handle)
+{
+    if (!object || !*object || !o_Object_IsAlive || IsUnityObjectAliveUnsafe(*object)) return;
+    if (handle && *handle && g_il2cpp.gchandle_free) g_il2cpp.gchandle_free(*handle);
+    if (handle) *handle = 0;
+    *object = 0;
+}
+
 static uintptr_t CreateWireframeChamsMaterial()
 {
+    ResetDeadBundleChamsObject(&wireframeSourceMaterial, &wireframeSourceMaterialHandle);
+    ResetDeadBundleChamsObject(&wireframeAssetBundle, &wireframeAssetBundleHandle);
     if (!wireframeSourceMaterial) {
         Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
         Il2CppClass* byteClass = g_il2cpp.find_class("System", "Byte");
@@ -7362,6 +7380,7 @@ static uintptr_t CreateWireframeChamsMaterial()
         wireframeAssetBundle = reinterpret_cast<LoadMemoryFn>(base + OFFSET_ASSETBUNDLE_LOAD_FROM_MEMORY)(data, nullptr);
         if (!wireframeAssetBundle) { strcpy_s(wireframeBundleStatus, "Bundle incompatible with this Unity build"); return 0; }
         if (g_il2cpp.gchandle_new) wireframeAssetBundleHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(wireframeAssetBundle), false);
+        KeepBundleChamsObjectAlive(wireframeAssetBundle);
         const Il2CppType* materialType = g_il2cpp.class_get_type(materialClass);
         Il2CppObject* typeObject = materialType ? g_il2cpp.type_get_object(materialType) : nullptr;
         if (!typeObject) { strcpy_s(wireframeBundleStatus, "Material type unavailable"); return 0; }
@@ -7374,17 +7393,23 @@ static uintptr_t CreateWireframeChamsMaterial()
         }
         if (!wireframeSourceMaterial) { strcpy_s(wireframeBundleStatus, "WireMat not found in bundle"); return 0; }
         if (g_il2cpp.gchandle_new) wireframeSourceMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(wireframeSourceMaterial), false);
+        KeepBundleChamsObjectAlive(wireframeSourceMaterial);
         strcpy_s(wireframeBundleStatus, "Loaded");
     }
     Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
     if (!materialClass || !g_il2cpp.object_new || !o_Material_copy_ctor) return 0;
     const uintptr_t material = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
-    if (material) o_Material_copy_ctor(material, wireframeSourceMaterial, nullptr);
+    if (material) {
+        o_Material_copy_ctor(material, wireframeSourceMaterial, nullptr);
+        KeepBundleChamsObjectAlive(material);
+    }
     return material;
 }
 
 static uintptr_t CreateSeascapeChamsMaterial()
 {
+    ResetDeadBundleChamsObject(&seascapeSourceMaterial, &seascapeSourceMaterialHandle);
+    ResetDeadBundleChamsObject(&seascapeAssetBundle, &seascapeAssetBundleHandle);
     if (!seascapeSourceMaterial) {
         Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
         Il2CppClass* byteClass = g_il2cpp.find_class("System", "Byte");
@@ -7407,6 +7432,7 @@ static uintptr_t CreateSeascapeChamsMaterial()
         seascapeAssetBundle = reinterpret_cast<LoadMemoryFn>(base + OFFSET_ASSETBUNDLE_LOAD_FROM_MEMORY)(data, nullptr);
         if (!seascapeAssetBundle) { strcpy_s(seascapeBundleStatus, "Bundle incompatible with this Unity build"); return 0; }
         if (g_il2cpp.gchandle_new) seascapeAssetBundleHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(seascapeAssetBundle), false);
+        KeepBundleChamsObjectAlive(seascapeAssetBundle);
         const Il2CppType* materialType = g_il2cpp.class_get_type(materialClass);
         Il2CppObject* typeObject = materialType ? g_il2cpp.type_get_object(materialType) : nullptr;
         if (!typeObject) { strcpy_s(seascapeBundleStatus, "Material type unavailable"); return 0; }
@@ -7419,17 +7445,23 @@ static uintptr_t CreateSeascapeChamsMaterial()
         }
         if (!seascapeSourceMaterial) { strcpy_s(seascapeBundleStatus, "SeascapeMat not found in bundle"); return 0; }
         if (g_il2cpp.gchandle_new) seascapeSourceMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(seascapeSourceMaterial), false);
+        KeepBundleChamsObjectAlive(seascapeSourceMaterial);
         strcpy_s(seascapeBundleStatus, "Loaded");
     }
     Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
     if (!materialClass || !g_il2cpp.object_new || !o_Material_copy_ctor) return 0;
     const uintptr_t material = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
-    if (material) o_Material_copy_ctor(material, seascapeSourceMaterial, nullptr);
+    if (material) {
+        o_Material_copy_ctor(material, seascapeSourceMaterial, nullptr);
+        KeepBundleChamsObjectAlive(material);
+    }
     return material;
 }
 
 static uintptr_t CreateBaseWarpChamsMaterial()
 {
+    ResetDeadBundleChamsObject(&baseWarpSourceMaterial, &baseWarpSourceMaterialHandle);
+    ResetDeadBundleChamsObject(&baseWarpAssetBundle, &baseWarpAssetBundleHandle);
     if (!baseWarpSourceMaterial) {
         Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
         Il2CppClass* byteClass = g_il2cpp.find_class("System", "Byte");
@@ -7452,6 +7484,7 @@ static uintptr_t CreateBaseWarpChamsMaterial()
         baseWarpAssetBundle = reinterpret_cast<LoadMemoryFn>(base + OFFSET_ASSETBUNDLE_LOAD_FROM_MEMORY)(data, nullptr);
         if (!baseWarpAssetBundle) { strcpy_s(baseWarpBundleStatus, "Bundle incompatible with this Unity build"); return 0; }
         if (g_il2cpp.gchandle_new) baseWarpAssetBundleHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(baseWarpAssetBundle), false);
+        KeepBundleChamsObjectAlive(baseWarpAssetBundle);
         const Il2CppType* materialType = g_il2cpp.class_get_type(materialClass);
         Il2CppObject* typeObject = materialType ? g_il2cpp.type_get_object(materialType) : nullptr;
         if (!typeObject) { strcpy_s(baseWarpBundleStatus, "Material type unavailable"); return 0; }
@@ -7464,17 +7497,23 @@ static uintptr_t CreateBaseWarpChamsMaterial()
         }
         if (!baseWarpSourceMaterial) { strcpy_s(baseWarpBundleStatus, "BaseWarpMat not found in bundle"); return 0; }
         if (g_il2cpp.gchandle_new) baseWarpSourceMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(baseWarpSourceMaterial), false);
+        KeepBundleChamsObjectAlive(baseWarpSourceMaterial);
         strcpy_s(baseWarpBundleStatus, "Loaded");
     }
     Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
     if (!materialClass || !g_il2cpp.object_new || !o_Material_copy_ctor) return 0;
     const uintptr_t material = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
-    if (material) o_Material_copy_ctor(material, baseWarpSourceMaterial, nullptr);
+    if (material) {
+        o_Material_copy_ctor(material, baseWarpSourceMaterial, nullptr);
+        KeepBundleChamsObjectAlive(material);
+    }
     return material;
 }
 
 static uintptr_t CreateBundleGlassChamsMaterial()
 {
+    ResetDeadBundleChamsObject(&bundleGlassSourceMaterial, &bundleGlassSourceMaterialHandle);
+    ResetDeadBundleChamsObject(&bundleGlassAssetBundle, &bundleGlassAssetBundleHandle);
     if (!bundleGlassSourceMaterial) {
         Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
         Il2CppClass* byteClass = g_il2cpp.find_class("System", "Byte");
@@ -7497,6 +7536,7 @@ static uintptr_t CreateBundleGlassChamsMaterial()
         bundleGlassAssetBundle = reinterpret_cast<LoadMemoryFn>(base + OFFSET_ASSETBUNDLE_LOAD_FROM_MEMORY)(data, nullptr);
         if (!bundleGlassAssetBundle) { strcpy_s(bundleGlassStatus, "Bundle incompatible with this Unity build"); return 0; }
         if (g_il2cpp.gchandle_new) bundleGlassAssetBundleHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(bundleGlassAssetBundle), false);
+        KeepBundleChamsObjectAlive(bundleGlassAssetBundle);
         const Il2CppType* materialType = g_il2cpp.class_get_type(materialClass);
         Il2CppObject* typeObject = materialType ? g_il2cpp.type_get_object(materialType) : nullptr;
         if (!typeObject) { strcpy_s(bundleGlassStatus, "Material type unavailable"); return 0; }
@@ -7517,12 +7557,16 @@ static uintptr_t CreateBundleGlassChamsMaterial()
         }
         if (!bundleGlassSourceMaterial) { strcpy_s(bundleGlassStatus, "Glass material not found in bundle"); return 0; }
         if (g_il2cpp.gchandle_new) bundleGlassSourceMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(bundleGlassSourceMaterial), false);
+        KeepBundleChamsObjectAlive(bundleGlassSourceMaterial);
         strcpy_s(bundleGlassStatus, "Loaded");
     }
     Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
     if (!materialClass || !g_il2cpp.object_new || !o_Material_copy_ctor) return 0;
     const uintptr_t material = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
-    if (material) o_Material_copy_ctor(material, bundleGlassSourceMaterial, nullptr);
+    if (material) {
+        o_Material_copy_ctor(material, bundleGlassSourceMaterial, nullptr);
+        KeepBundleChamsObjectAlive(material);
+    }
     return material;
 }
 
