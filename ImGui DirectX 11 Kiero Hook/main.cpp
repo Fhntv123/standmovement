@@ -5145,10 +5145,10 @@ static bool ApplyNicknameToCurrentMatchUnsafe(const char* nickname)
             reinterpret_cast<void*>(liveHudLocalPlayer), args, &exception);
         if (exception) return false;
 
-        // PlayerController.dhqj/cawz actor is +0x190 in dump1. Its first string
-        // backing field (cnoy) is the match nickname consumed by player views.
-        const uintptr_t actor = *reinterpret_cast<uintptr_t*>(
-            liveHudLocalPlayer + 0x190);
+        // PlayerController.dhqj is computed by mzj(); +0x190 is cawz (xl), not
+        // the actor. Use the existing dump-backed native getter instead.
+        const uintptr_t actor = SafeGetPlayerActor(
+            reinterpret_cast<void*>(liveHudLocalPlayer));
         if (actor && g_ActorMatchNameSetter) {
             exception = nullptr;
             g_il2cpp.runtime_invoke(g_ActorMatchNameSetter,
@@ -5185,7 +5185,7 @@ static void ProcessNicknameChanger()
     const bool serverInvoked = ApplyNicknameServerUnsafe(requestedName);
     const bool matchCacheUpdated = ApplyNicknameToCurrentMatchUnsafe(requestedName);
     if (serverInvoked && matchCacheUpdated)
-        sprintf_s(nicknameStatus, "Profile + local match name: %s", requestedName);
+        sprintf_s(nicknameStatus, "Profile + local match preview: %s", requestedName);
     else if (serverInvoked)
         sprintf_s(nicknameStatus, "Profile changed; active match kept its join name");
     else if (!g_PlayerModelGetInstanceMethod)
@@ -10119,7 +10119,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::TextColored(accent, "Nickname Changer");
         ImGui::Separator();
         ImGui::Spacing();
-        ImGui::TextDisabled("Updates the server profile and the already spawned local match actor.");
+        ImGui::TextDisabled("Updates the profile; active-match animation is local preview only.");
         AcquireSRWLockExclusive(&nicknameSettingsLock);
         ImGui::InputText("Nickname 1", nicknameFirst, sizeof(nicknameFirst));
         ImGui::InputText("Nickname 2", nicknameSecond, sizeof(nicknameSecond));
@@ -10140,7 +10140,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
         ImGui::Spacing();
         ImGui::TextWrapped("Status: %s", nicknameStatus);
-        ImGui::TextDisabled("Existing peers may keep the join-time name; the server profile applies to new sessions.");
+        ImGui::TextDisabled("Other players receive the name on session join; reconnect to publish it in-match.");
         ImGui::EndChild();
     }
     else if (currentTab == 6) { // BINDS
