@@ -5111,7 +5111,11 @@ static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
             offset.x = NextAntiAimRandomAngle(-70.0f, 70.0f);
             offset.y = NextAntiAimRandomAngle(-180.0f, 180.0f);
         }
-        const Vector3 fake(offset.x,
+        // Keep local/native pitch real. Fake pitch in live AimingData is what
+        // locks vertical camera control and makes native TPS look straight up.
+        // Remote anti-aim remains authoritative through fake yaw, which the user
+        // already confirmed by the radar rotation on this exact code path.
+        const Vector3 fake(realAngles.x,
             NormalizeAngle360(realAngles.y - offset.y), 0.0f);
 
         // sourse/hooks.hpp PlayerInputs: fire +0x21, drop +0x23,
@@ -5154,31 +5158,11 @@ static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-static void RestoreLiveRealAimAfterInputUnsafe()
-{
-    if (!silentAntiAimLatestAimingData || !silentAntiAimRealCameraValid) return;
-    __try {
-        Vector3 liveAim = *reinterpret_cast<Vector3*>(
-            silentAntiAimLatestAimingData + 0x18);
-        Vector3 liveEuler = *reinterpret_cast<Vector3*>(
-            silentAntiAimLatestAimingData + 0x24);
-        liveAim.x = silentAntiAimRealCameraAngles.x;
-        liveEuler.y = silentAntiAimRealCameraAngles.y;
-        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x18) = liveAim;
-        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x24) = liveEuler;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
-}
-
 void __fastcall hk_InputFilter(uintptr_t target, uintptr_t inputs,
     const Il2CppMethod* method)
 {
-    const bool applied = inputs && RunSourceAntiAimInputUnsafe(inputs);
-    // Original InputFilter consumes the fake command. Do not leave fake pitch in
-    // live AimingData afterwards: both FPS and TPS native camera passes read it
-    // later and clamp vertical view to the configured anti-aim pitch.
+    if (inputs) RunSourceAntiAimInputUnsafe(inputs);
     if (o_InputFilter) o_InputFilter(target, inputs, method);
-    if (applied) RestoreLiveRealAimAfterInputUnsafe();
 }
 
 static uintptr_t GetPlayerControlsInstanceUnsafe()
@@ -5571,10 +5555,29 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(
 void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
+    // Match sourse/hooks.cpp literally: restore Camera.main's actual Transform
+    // before the native late-aim pass. AimController::FPSCamera (+0x68) is a
+    // director/parent transform; forcing its world euler after native aim cancels
+    // the native vertical camera motion.
+    if (silentAntiAimEnabled && silentAntiAimRealCameraValid &&
+        aimController == silentAntiAimLatestController &&
+        o_Camera_get_main && o_Component_get_transform &&
+        o_Transform_set_eulerAngles) {
+        __try {
+            const uintptr_t camera = o_Camera_get_main();
+            const uintptr_t cameraTransform = camera ?
+                o_Component_get_transform(camera) : 0;
+            if (cameraTransform) {
+                o_Transform_set_eulerAngles(cameraTransform,
+                    silentAntiAimRealCameraAngles);
+                InterlockedIncrement(&silentAntiAimCameraRestoreCalls);
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
     o_AimController_LateAim(aimController, method);
     InterlockedIncrement(&silentAntiAimLateAimCalls);
 }
-
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
 static uintptr_t GetCurrentLocalWeaponController();
@@ -10789,9 +10792,11 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             (!silentAntiAimHookReady ? "Rotation anti-aim hook failed" :
             (InterlockedCompareExchange(&silentAntiAimFilterCalls, 0, 0) <= 0 ?
                 "Waiting for source InputFilter" :
-                "Working: source InputFilter active"));
+            (InterlockedCompareExchange(&silentAntiAimNetworkCalls, 0, 0) <= 0 ?
+                "Source InputFilter active; waiting for network" :
+                "Working: source InputFilter + network")));
         ImGui::TextWrapped("Status: %s", antiAimRuntimeStatus);
-        ImGui::TextDisabled("filter:%ld mxc:%ld fake:(%.0f, %.0f)",
+        ImGui::TextDisabled("filter:%ld net:%ld fake:(%.0f, %.0f)",
             InterlockedCompareExchange(&silentAntiAimFilterCalls, 0, 0),
             InterlockedCompareExchange(&silentAntiAimNetworkCalls, 0, 0),
             silentAntiAimLatestFakeAngles.x,
