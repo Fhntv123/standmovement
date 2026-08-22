@@ -445,6 +445,7 @@ struct Matrix16 {
 #define OFFSET_ARMSLOD_SET_GLOVE_MATERIALS         0xBCD2B0
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0xBFA0C0
 #define OFFSET_WEAPONRY_GIVE_WEAPON                 0xBFC8A0  // WeaponryController.nhw(dvu,cdy)
+#define OFFSET_PLAYER_MODEL_SET_NAME                0x6FF750  // djg.beqx(string) -> PlayerRemoteService.setPlayerName
 #define OFFSET_GUNCONTROLLER_FIRE                  0xA21040
 #define OFFSET_GUNCONTROLLER_COMMAND               0xA1E030
 #define OFFSET_HITCASTER_CAST                      0xEEE090  // HitCaster.vxe<ceq>
@@ -1198,6 +1199,8 @@ extern Il2CppArray*(__fastcall* o_Object_FindObjectsOfType)(Il2CppObject*, bool,
 Il2CppClass* g_PlayerManagerClass = nullptr;
 Il2CppField* g_PlayerManagerInstanceField = nullptr;
 Il2CppObject* g_PlayerControllerReflectionType = nullptr;
+Il2CppClass* g_PlayerModelClass = nullptr;
+Il2CppField* g_PlayerModelInstanceField = nullptr;
 std::vector<void*> g_LivePlayerRegistry;
 SRWLOCK g_LivePlayerRegistryLock = SRWLOCK_INIT;
 
@@ -1711,6 +1714,17 @@ int giveWeaponSelection = 0;
 int giveKnifeSelection = 0;
 char giveWeaponStatus[128] = "Select a weapon";
 
+// Server-backed nickname changer. UI only edits settings/queues commands; the
+// confirmed djg.beqz(string) path runs from HUDView.Update on the game thread.
+bool nicknameAnimationEnabled = false;
+char nicknameFirst[32] = "kottl";
+char nicknameSecond[32] = "ze0nware";
+float nicknameAnimationInterval = 2.0f;
+volatile LONG pendingNicknameCommand = 0; // 1=first, 2=second
+volatile LONG64 nicknameNextSwitchAt = 0;
+int nicknameAnimationIndex = 0;
+char nicknameStatus[160] = "Waiting for player service";
+SRWLOCK nicknameSettingsLock = SRWLOCK_INIT;
 
 
 // Config menu
@@ -2009,6 +2023,27 @@ static float ReadConfigFloat(const std::wstring& path, const char* key, float fa
     const float value = static_cast<float>(_wtof(text));
     return isfinite(value) ? value : fallback;
 }
+static void WriteConfigString(const std::wstring& path, const char* key, const char* value)
+{
+    wchar_t text[64] = {};
+    MultiByteToWideChar(CP_UTF8, 0, value ? value : "", -1, text,
+        static_cast<int>(sizeof(text) / sizeof(text[0])));
+    const std::wstring k = WideKey(key);
+    WritePrivateProfileStringW(L"ze0nware", k.c_str(), text, path.c_str());
+}
+static void ReadConfigString(const std::wstring& path, const char* key,
+    const char* fallback, char* output, int outputSize)
+{
+    if (!output || outputSize <= 1) return;
+    wchar_t fallbackText[64] = {}, text[64] = {};
+    MultiByteToWideChar(CP_UTF8, 0, fallback ? fallback : "", -1, fallbackText,
+        static_cast<int>(sizeof(fallbackText) / sizeof(fallbackText[0])));
+    const std::wstring k = WideKey(key);
+    GetPrivateProfileStringW(L"ze0nware", k.c_str(), fallbackText, text,
+        static_cast<DWORD>(sizeof(text) / sizeof(text[0])), path.c_str());
+    WideCharToMultiByte(CP_UTF8, 0, text, -1, output, outputSize, nullptr, nullptr);
+    output[outputSize - 1] = '\0';
+}
 
 static void WriteConfigColor(const std::wstring& path, const char* key, const float color[3])
 {
@@ -2094,6 +2129,12 @@ static bool SaveConfig(const char* requestedName)
     WriteConfigValue(path, "giveItemBindKey_0", giveItemBind.key);
     WriteConfigValue(path, "giveItemBindSelection_0", giveItemBindSelection);
     WriteConfigValue(path, "giveItemBindAmount_0", giveItemBindAmount);
+    AcquireSRWLockShared(&nicknameSettingsLock);
+    WriteConfigString(path, "nicknameFirst", nicknameFirst);
+    WriteConfigString(path, "nicknameSecond", nicknameSecond);
+    ReleaseSRWLockShared(&nicknameSettingsLock);
+    SAVE_BOOL(nicknameAnimationEnabled);
+    SAVE_FLOAT(nicknameAnimationInterval);
     WriteConfigColor(path, "menuColor", menuColor); WriteConfigColor(path, "accentColor", accentColor);
     WriteConfigColor(path, "worldColor", worldColor); WriteConfigColor(path, "fogColor", fogColor);
     WriteConfigColor(path, "penetrableSurfaceFillColor", penetrableSurfaceFillColor);
@@ -2200,6 +2241,19 @@ static bool LoadConfig(const char* requestedName)
     if (giveItemBindAmount < 1) giveItemBindAmount = 1;
     if (giveItemBindAmount > 50) giveItemBindAmount = 50;
     giveItemBind.toggleMode = false;
+    AcquireSRWLockExclusive(&nicknameSettingsLock);
+    ReadConfigString(path, "nicknameFirst", nicknameFirst, nicknameFirst,
+        static_cast<int>(sizeof(nicknameFirst)));
+    ReadConfigString(path, "nicknameSecond", nicknameSecond, nicknameSecond,
+        static_cast<int>(sizeof(nicknameSecond)));
+    ReleaseSRWLockExclusive(&nicknameSettingsLock);
+    LOAD_BOOL(nicknameAnimationEnabled);
+    LOAD_FLOAT(nicknameAnimationInterval);
+    if (!isfinite(nicknameAnimationInterval) || nicknameAnimationInterval < 0.5f)
+        nicknameAnimationInterval = 0.5f;
+    if (nicknameAnimationInterval > 10.0f) nicknameAnimationInterval = 10.0f;
+    nicknameAnimationIndex = 0;
+    InterlockedExchange64(&nicknameNextSwitchAt, 0);
     // Config files are user-editable. Clamp every value used as an array index or
     // collection bound before any pending refresh can consume it.
     if (worldColorMode < 0 || worldColorMode > 6) worldColorMode = 0;
@@ -5032,6 +5086,60 @@ static void ProcessPendingGiveWeapon()
     if (remaining <= 0) InterlockedExchange(&pendingGiveWeaponId, 0);
 }
 
+static bool ApplyNicknameServerUnsafe(const char* nickname)
+{
+    if (!nickname || !nickname[0] || !base || !g_PlayerModelInstanceField ||
+        !g_il2cpp.field_static_get_value || !g_il2cpp.string_new)
+        return false;
+    __try {
+        uintptr_t playerModel = 0;
+        g_il2cpp.field_static_get_value(g_PlayerModelInstanceField, &playerModel);
+        if (!playerModel) return false;
+        Il2CppString* managedName = g_il2cpp.string_new(nickname);
+        if (!managedName) return false;
+        using SetNameFn = uintptr_t(__fastcall*)(uintptr_t, Il2CppString*,
+            const Il2CppMethod*);
+        reinterpret_cast<SetNameFn>(base + OFFSET_PLAYER_MODEL_SET_NAME)(
+            playerModel, managedName, nullptr);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static void ProcessNicknameChanger()
+{
+    LONG command = InterlockedExchange(&pendingNicknameCommand, 0);
+    const LONG64 now = static_cast<LONG64>(GetTickCount64());
+    if (!command && nicknameAnimationEnabled) {
+        const LONG64 next = InterlockedCompareExchange64(
+            &nicknameNextSwitchAt, 0, 0);
+        if (!next || now >= next) {
+            command = nicknameAnimationIndex == 0 ? 1 : 2;
+            nicknameAnimationIndex = nicknameAnimationIndex == 0 ? 1 : 0;
+        }
+    }
+    if (!command) return;
+
+    char requestedName[32] = {};
+    AcquireSRWLockShared(&nicknameSettingsLock);
+    strcpy_s(requestedName, command == 2 ? nicknameSecond : nicknameFirst);
+    ReleaseSRWLockShared(&nicknameSettingsLock);
+    if (!requestedName[0]) {
+        strcpy_s(nicknameStatus, "Enter a non-empty nickname");
+        return;
+    }
+    if (ApplyNicknameServerUnsafe(requestedName))
+        sprintf_s(nicknameStatus, "Server name request sent: %s", requestedName);
+    else
+        strcpy_s(nicknameStatus, "Player service unavailable; try after login");
+
+    float interval = nicknameAnimationInterval;
+    if (!isfinite(interval) || interval < 0.5f) interval = 0.5f;
+    if (interval > 10.0f) interval = 10.0f;
+    InterlockedExchange64(&nicknameNextSwitchAt,
+        now + static_cast<LONG64>(interval * 1000.0f));
+}
+
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
     __try {
@@ -5063,6 +5171,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
     o_HUDView_Update(instance, method);
+    ProcessNicknameChanger();
     ProcessPendingGiveWeapon();
     ApplyViewModelPosition();
     MaintainChamsForCurrentScene();
@@ -9270,7 +9379,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     ImGui::TextColored(accent, "ze0nware");
     ImGui::SetCursorPosY(93.0f);
 
-    const char* navLabels[] = { "AIMBOT", "ANTI-AIM", "VISUALS", "WEAPONS", "GUN", "BINDS", "CONFIGS" };
+    const char* navLabels[] = { "AIMBOT", "ANTI-AIM", "VISUALS", "WEAPONS", "GUN", "NICK", "BINDS", "CONFIGS" };
     for (int tab = 0; tab < IM_ARRAYSIZE(navLabels); ++tab) {
         const bool selected = currentTab == tab;
         ImGui::SetCursorPosX(3.0f);
@@ -9943,7 +10052,36 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::TextDisabled("Uses native WeaponryController SetAndTake on the game thread.");
         ImGui::EndChild();
     }
-    else if (currentTab == 5) { // BINDS
+    else if (currentTab == 5) { // NICK
+        ImGui::BeginChild("NicknameChanger", ImVec2(0, 0), true);
+        ImGui::TextColored(accent, "Nickname Changer");
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextDisabled("Uses the game server profile path; changes are not local-only.");
+        AcquireSRWLockExclusive(&nicknameSettingsLock);
+        ImGui::InputText("Nickname 1", nicknameFirst, sizeof(nicknameFirst));
+        ImGui::InputText("Nickname 2", nicknameSecond, sizeof(nicknameSecond));
+        ReleaseSRWLockExclusive(&nicknameSettingsLock);
+        if (ImGui::Button("Apply nickname 1", ImVec2(150.0f, 0.0f)))
+            InterlockedExchange(&pendingNicknameCommand, 1);
+        ImGui::SameLine();
+        if (ImGui::Button("Apply nickname 2", ImVec2(150.0f, 0.0f)))
+            InterlockedExchange(&pendingNicknameCommand, 2);
+        if (ImGui::Checkbox("Animate nickname", &nicknameAnimationEnabled)) {
+            nicknameAnimationIndex = 0;
+            InterlockedExchange64(&nicknameNextSwitchAt, 0);
+        }
+        if (nicknameAnimationEnabled) {
+            ImGui::SliderFloat("Change interval", &nicknameAnimationInterval,
+                0.5f, 10.0f, "%.1f s");
+            ImGui::TextDisabled("Example: kottl -> ze0nware -> kottl every 2 seconds.");
+        }
+        ImGui::Spacing();
+        ImGui::TextWrapped("Status: %s", nicknameStatus);
+        ImGui::TextDisabled("The backend may reject rapid or invalid name changes.");
+        ImGui::EndChild();
+    }
+    else if (currentTab == 6) { // BINDS
         ImGui::BeginChild("Binds", ImVec2(0, 0), true);
         ImGui::TextColored(accent, "Feature Binds");
         ImGui::Separator();
@@ -9987,7 +10125,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
         ImGui::EndChild();
     }
-    else if (currentTab == 6) { // CONFIGS
+    else if (currentTab == 7) { // CONFIGS
         ImGui::BeginChild("Configs", ImVec2(0, 0), true);
         ImGui::TextColored(accent, "Configs");
         ImGui::Separator();
@@ -10109,6 +10247,19 @@ DWORD WINAPI HackThread(LPVOID)
                 g_PlayerManagerInstanceField = g_il2cpp.class_get_field_from_name(g_PlayerManagerClass, "ckjy");
             }
         }
+        g_PlayerModelClass = g_il2cpp.find_class("", "djg");
+        if (g_PlayerModelClass) {
+            Il2CppClass* playerModelParent = g_il2cpp.class_get_parent ?
+                g_il2cpp.class_get_parent(g_PlayerModelClass) : nullptr;
+            if (playerModelParent)
+                g_PlayerModelInstanceField = g_il2cpp.class_get_field_from_name(
+                    playerModelParent, "<cmlz>k__BackingField");
+            if (!g_PlayerModelInstanceField)
+                g_PlayerModelInstanceField = g_il2cpp.class_get_field_from_name(
+                    g_PlayerModelClass, "<cmlz>k__BackingField");
+        }
+        LINDY_LOG("[nickname] model=%p instance-field=%p",
+            (void*)g_PlayerModelClass, (void*)g_PlayerModelInstanceField);
         g_GlovesManagerClass = g_il2cpp.find_class("Chillow.StandChillow.Main.Inventory.Gloves", "GlovesManager");
         LINDY_LOG("[init] GlovesManagerClass=%p", (void*)g_GlovesManagerClass);
         if (g_GlovesManagerClass) {
