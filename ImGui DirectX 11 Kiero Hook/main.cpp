@@ -805,6 +805,7 @@ struct Matrix16 {
 #define OFFSET_PLAYERSNAPSHOT_NEV                   0xBED6D0  // PlayerSnapshot.nev(gfk)
 #define OFFSET_MOVEMENTCONTROLLER_GET_SNAPSHOT      0xC08500  // MovementController.mwq() -> MovementSnapshot
 #define OFFSET_PLAYERCONTROLS_UPDATE                 0xB4CFB0
+#define OFFSET_PLAYERCONTROLS_GET_INSTANCE           0xB4D510  // PlayerControls.bbvn()
 #define OFFSET_PLAYERCONTROLS_INPUTFILTER_DELEGATE   0x88  // Action<xl> <ckqt>k__BackingField
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_UPDATE       0xB5C790
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_FIXEDUPDATE 0xB5C700
@@ -5160,6 +5161,21 @@ void __fastcall hk_InputFilter(uintptr_t target, uintptr_t inputs,
     if (o_InputFilter) o_InputFilter(target, inputs, method);
 }
 
+static uintptr_t GetPlayerControlsInstanceUnsafe()
+{
+    if (!base) return 0;
+    __try {
+        // dump1: Chillow.StandChillow.Controls.PlayerControls.bbvn(), RVA 0xB4D510.
+        // The previous lookup used namespace "" and field "ckqr"; the real class
+        // namespace and backing-field name differ, so it never found the singleton.
+        using t_GetPlayerControls = uintptr_t(__fastcall*)(const Il2CppMethod*);
+        const auto getInstance = reinterpret_cast<t_GetPlayerControls>(
+            base + OFFSET_PLAYERCONTROLS_GET_INSTANCE);
+        return getInstance ? getInstance(nullptr) : 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
 // Initialize InputFilter delegate hook from PlayerControls instance
 static bool InitializeInputFilterHook(uintptr_t playerControls)
 {
@@ -5872,25 +5888,10 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
         liveHudLocalPlayer = instance ? *(uintptr_t*)(instance + 0xD0) : 0;
         sniperSightObject = liveAimView ? *(uintptr_t*)(liveAimView + 0x50) : 0;
         
-        // Try to initialize InputFilter hook if not already done
+        // Retry until PlayerControls singleton and Action<xl> exist.
         if (!o_InputFilter && instance) {
-            // Get PlayerControls singleton: PlayerControls.ckqr (static property at 0x0)
-            uintptr_t playerControlsClass = 0;
-            __try {
-                // Find PlayerControls class
-                Il2CppClass* pcClass = g_il2cpp.find_class("", "PlayerControls");
-                if (pcClass) {
-                    Il2CppField* instanceField = g_il2cpp.class_get_field_from_name(pcClass, "ckqr");
-                    if (instanceField) {
-                        uintptr_t playerControlsInstance = 0;
-                        g_il2cpp.field_static_get_value(instanceField, &playerControlsInstance);
-                        if (playerControlsInstance) {
-                            InitializeInputFilterHook(playerControlsInstance);
-                        }
-                    }
-                }
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) {}
+            const uintptr_t playerControls = GetPlayerControlsInstanceUnsafe();
+            if (playerControls) InitializeInputFilterHook(playerControls);
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { liveAimView = 0; liveHitMarkerView = 0; liveHudLocalPlayer = 0; sniperSightObject = 0; }
