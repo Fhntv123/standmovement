@@ -182,6 +182,7 @@ ID3D11Device* pDevice = NULL;
 ID3D11DeviceContext* pContext = NULL;
 
 ID3D11RenderTargetView* mainRenderTargetView;
+ID3D11ShaderResourceView* espGlowTexture = nullptr;
 
 
 
@@ -209,6 +210,67 @@ static bool CreateRenderTarget(IDXGISwapChain* swapChain) {
     const HRESULT viewResult = pDevice->CreateRenderTargetView(backBuffer, nullptr, &mainRenderTargetView);
     backBuffer->Release();
     return SUCCEEDED(viewResult) && mainRenderTargetView != nullptr;
+}
+
+static void ReleaseEspGlowTexture()
+{
+    if (espGlowTexture) {
+        espGlowTexture->Release();
+        espGlowTexture = nullptr;
+    }
+}
+
+static bool CreateEspGlowTexture()
+{
+    ReleaseEspGlowTexture();
+    if (!pDevice) return false;
+    constexpr int textureSize = 96;
+    constexpr float innerMin = 32.0f;
+    constexpr float innerMax = 63.0f;
+    constexpr float sigma = 10.0f;
+    std::vector<unsigned int> pixels(textureSize * textureSize, 0);
+    for (int y = 0; y < textureSize; ++y) {
+        for (int x = 0; x < textureSize; ++x) {
+            const bool inside = x >= static_cast<int>(innerMin) &&
+                x <= static_cast<int>(innerMax) &&
+                y >= static_cast<int>(innerMin) &&
+                y <= static_cast<int>(innerMax);
+            float alpha = 0.0f;
+            if (!inside) {
+                const float dx = x < innerMin ? innerMin - x :
+                    (x > innerMax ? x - innerMax : 0.0f);
+                const float dy = y < innerMin ? innerMin - y :
+                    (y > innerMax ? y - innerMax : 0.0f);
+                const float distanceSquared = dx * dx + dy * dy;
+                alpha = expf(-distanceSquared / (2.0f * sigma * sigma));
+            }
+            const unsigned int a = static_cast<unsigned int>(
+                fmaxf(0.0f, fminf(255.0f, alpha * 255.0f)));
+            pixels[static_cast<size_t>(y) * textureSize + x] =
+                (a << 24) | 0x00FFFFFFu;
+        }
+    }
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = textureSize;
+    desc.Height = textureSize;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA initialData = {};
+    initialData.pSysMem = pixels.data();
+    initialData.SysMemPitch = textureSize * sizeof(unsigned int);
+    ID3D11Texture2D* texture = nullptr;
+    if (FAILED(pDevice->CreateTexture2D(&desc, &initialData, &texture)) ||
+        !texture)
+        return false;
+    const HRESULT result = pDevice->CreateShaderResourceView(
+        texture, nullptr, &espGlowTexture);
+    texture->Release();
+    return SUCCEEDED(result) && espGlowTexture != nullptr;
 }
 
 HRESULT __stdcall hkResizeBuffers(IDXGISwapChain* swapChain, UINT bufferCount, UINT width, UINT height, DXGI_FORMAT format, UINT flags) {
@@ -1170,7 +1232,7 @@ bool espGradient = true;
 bool espHealthGradient = true;
 bool espBoxGlow = false;
 bool espHealthGlow = false;
-float espGlowRadius = 6.0f;
+float espGlowRadius = 10.0f;
 float espGlowIntensity = 0.55f;
 float espTopColor[3] = { 1.0f, 0.20f, 0.35f };
 float espBottomColor[3] = { 0.55f, 0.10f, 1.0f };
@@ -1684,76 +1746,64 @@ static ImU32 EspColorAt(float t, float alpha = 1.0f) {
     return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, alpha));
 }
 
+static void DrawGaussianRectGlow(ImDrawList* draw, const ImVec2& min,
+    const ImVec2& max, ImU32 color, float radius)
+{
+    if (!draw || !espGlowTexture || radius <= 0.0f ||
+        min.x >= max.x || min.y >= max.y)
+        return;
+    const ImTextureID texture = reinterpret_cast<ImTextureID>(espGlowTexture);
+    constexpr float uv0 = 0.0f;
+    constexpr float uv1 = 1.0f / 3.0f;
+    constexpr float uv2 = 2.0f / 3.0f;
+    constexpr float uv3 = 1.0f;
+    const ImVec2 outerMin(min.x - radius, min.y - radius);
+    const ImVec2 outerMax(max.x + radius, max.y + radius);
+    // Nine-slice a pre-blurred Gaussian alpha mask. The transparent center is
+    // intentionally omitted, leaving a true soft outer bloom around the crisp ESP.
+    draw->AddImage(texture, outerMin, min, ImVec2(uv0, uv0), ImVec2(uv1, uv1), color);
+    draw->AddImage(texture, ImVec2(min.x, outerMin.y), ImVec2(max.x, min.y),
+        ImVec2(uv1, uv0), ImVec2(uv2, uv1), color);
+    draw->AddImage(texture, ImVec2(max.x, outerMin.y), ImVec2(outerMax.x, min.y),
+        ImVec2(uv2, uv0), ImVec2(uv3, uv1), color);
+    draw->AddImage(texture, ImVec2(outerMin.x, min.y), ImVec2(min.x, max.y),
+        ImVec2(uv0, uv1), ImVec2(uv1, uv2), color);
+    draw->AddImage(texture, ImVec2(max.x, min.y), ImVec2(outerMax.x, max.y),
+        ImVec2(uv2, uv1), ImVec2(uv3, uv2), color);
+    draw->AddImage(texture, ImVec2(outerMin.x, max.y), ImVec2(min.x, outerMax.y),
+        ImVec2(uv0, uv2), ImVec2(uv1, uv3), color);
+    draw->AddImage(texture, ImVec2(min.x, max.y), ImVec2(max.x, outerMax.y),
+        ImVec2(uv1, uv2), ImVec2(uv2, uv3), color);
+    draw->AddImage(texture, max, outerMax, ImVec2(uv2, uv2),
+        ImVec2(uv3, uv3), color);
+}
+
 static void DrawEspBoxGlow(ImDrawList* draw, const ImVec2& boxMin,
     const ImVec2& boxMax)
 {
-    if (!draw || !espBoxGlow) return;
-    const float radius = fmaxf(1.0f, fminf(12.0f, espGlowRadius));
+    if (!espBoxGlow) return;
+    const float radius = fmaxf(2.0f, fminf(24.0f, espGlowRadius));
     const float intensity = fmaxf(0.05f, fminf(1.0f, espGlowIntensity));
-    constexpr int layers = 5;
-    constexpr int segments = 32;
-    const float height = boxMax.y - boxMin.y;
-    // Wide low-alpha passes are drawn first. The quadratic falloff avoids the
-    // stacked neon rectangles produced by equally opaque outlines.
-    for (int layer = layers; layer >= 1; --layer) {
-        const float normalized = static_cast<float>(layer) / layers;
-        const float spread = radius * normalized;
-        const float alpha = intensity * 0.13f *
-            (1.0f - normalized * 0.72f);
-        const float thickness = 1.5f + spread * 1.35f;
-        if (espGradient) {
-            for (int segment = 0; segment < segments; ++segment) {
-                const float t0 = static_cast<float>(segment) / segments;
-                const float t1 = static_cast<float>(segment + 1) / segments;
-                const float y0 = boxMin.y + height * t0;
-                const float y1 = boxMin.y + height * t1;
-                const ImU32 color = EspColorAt((t0 + t1) * 0.5f, alpha);
-                draw->AddLine(ImVec2(boxMin.x, y0), ImVec2(boxMin.x, y1),
-                    color, thickness);
-                draw->AddLine(ImVec2(boxMax.x, y0), ImVec2(boxMax.x, y1),
-                    color, thickness);
-            }
-            draw->AddLine(boxMin, ImVec2(boxMax.x, boxMin.y),
-                EspColorAt(0.0f, alpha), thickness);
-            draw->AddLine(ImVec2(boxMin.x, boxMax.y), boxMax,
-                EspColorAt(1.0f, alpha), thickness);
-        }
-        else {
-            draw->AddRect(boxMin, boxMax, EspColorAt(0.0f, alpha),
-                2.0f, 0, thickness);
-        }
-    }
+    // Two Gaussian blooms preserve the top/bottom gradient without banding: each
+    // contributes softly, while the original crisp gradient remains authoritative.
+    DrawGaussianRectGlow(draw, boxMin, boxMax, EspColorAt(0.20f,
+        intensity * 0.48f), radius);
+    DrawGaussianRectGlow(draw, boxMin, boxMax, EspColorAt(0.80f,
+        intensity * 0.32f), radius * 0.72f);
 }
 
 static void DrawEspHealthGlow(ImDrawList* draw, float barX, float fillTop,
     float bottom)
 {
-    if (!draw || !espHealthGlow || fillTop >= bottom) return;
-    const float radius = fmaxf(1.0f, fminf(12.0f, espGlowRadius));
+    if (!espHealthGlow || fillTop >= bottom) return;
+    const float radius = fmaxf(2.0f, fminf(24.0f, espGlowRadius));
     const float intensity = fmaxf(0.05f, fminf(1.0f, espGlowIntensity));
-    constexpr int layers = 5;
-    constexpr int segments = 24;
-    const float fillHeight = bottom - fillTop;
-    for (int layer = layers; layer >= 1; --layer) {
-        const float normalized = static_cast<float>(layer) / layers;
-        const float spread = radius * normalized;
-        const float alpha = intensity * 0.11f *
-            (1.0f - normalized * 0.70f);
-        for (int segment = 0; segment < segments; ++segment) {
-            const float t0 = static_cast<float>(segment) / segments;
-            const float t1 = static_cast<float>(segment + 1) / segments;
-            const float segmentBottom = bottom - fillHeight * t0;
-            const float segmentTop = bottom - fillHeight * t1;
-            const ImU32 color = espHealthGradient ?
-                EspLerpColor(espHealthColor, espHealthBottomColor,
-                    1.0f - (t0 + t1) * 0.5f, alpha) :
-                EspArrayColor(espHealthColor, alpha);
-            draw->AddRectFilled(
-                ImVec2(barX - spread, segmentTop - spread * 0.10f),
-                ImVec2(barX + 5.0f + spread,
-                    segmentBottom + spread * 0.10f), color, spread);
-        }
-    }
+    const ImU32 color = espHealthGradient ?
+        EspLerpColor(espHealthColor, espHealthBottomColor, 0.5f,
+            intensity * 0.55f) :
+        EspArrayColor(espHealthColor, intensity * 0.55f);
+    DrawGaussianRectGlow(draw, ImVec2(barX, fillTop),
+        ImVec2(barX + 5.0f, bottom), color, radius * 0.78f);
 }
 
 static void* GetLocalPC() {
@@ -2271,7 +2321,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(espShowName); LOAD_BOOL(espShowHealth); LOAD_BOOL(espShowWeapon); LOAD_BOOL(espGradient);
     LOAD_BOOL(espBoxGlow); LOAD_BOOL(espHealthGlow); LOAD_FLOAT(espGlowRadius); LOAD_FLOAT(espGlowIntensity);
     if (!isfinite(espGlowRadius) || espGlowRadius < 1.0f) espGlowRadius = 1.0f;
-    if (espGlowRadius > 12.0f) espGlowRadius = 12.0f;
+    if (espGlowRadius > 24.0f) espGlowRadius = 24.0f;
     if (!isfinite(espGlowIntensity) || espGlowIntensity < 0.05f) espGlowIntensity = 0.05f;
     if (espGlowIntensity > 1.0f) espGlowIntensity = 1.0f;
     LOAD_BOOL(worldColorEnabled); LOAD_INT(worldColorMode); LOAD_FLOAT(worldColorStrength); LOAD_FLOAT(worldColorAlpha);
@@ -9174,6 +9224,7 @@ void InitImGui()
     ImGui_ImplWin32_Init(window);
 
     ImGui_ImplDX11_Init(pDevice, pContext);
+    CreateEspGlowTexture();
 
     // The default ImGui glyph range is Latin-only. Load Cyrillic explicitly so
     // UTF-8 player nicknames and nickname input render as letters instead of '?'.
@@ -9774,7 +9825,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::Checkbox("ESP HP Glow", &espHealthGlow);
             if (espBoxGlow || espHealthGlow) {
                 ImGui::SliderFloat("ESP Glow Radius", &espGlowRadius,
-                    1.0f, 12.0f, "%.1f px");
+                    2.0f, 24.0f, "%.1f px");
                 ImGui::SliderFloat("ESP Glow Intensity", &espGlowIntensity,
                     0.05f, 1.0f, "%.2f");
             }
@@ -10803,6 +10854,7 @@ BOOL WINAPI DllMain(HMODULE hMod, DWORD dwReason, LPVOID lpReserved)
 
     case DLL_PROCESS_DETACH:
 
+        ReleaseEspGlowTexture();
         kiero::shutdown();
 
         MH_Uninitialize();
