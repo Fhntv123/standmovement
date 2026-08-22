@@ -8916,6 +8916,28 @@ static void UpdateSkyParticlesGameThread()
 }
 
 
+static bool ProjectSkyParticle(const Vector3& position, Vector2* screen, float* depth)
+{
+    if (!screen || !depth || !o_WorldToScreenPoint) return false;
+    const uintptr_t camera = GetCamera();
+    if (!camera) return false;
+    __try {
+        const Vector3 projected = o_WorldToScreenPoint(camera, position);
+        if (!isfinite(projected.x) || !isfinite(projected.y) ||
+            !isfinite(projected.z) || projected.z <= 0.05f)
+            return false;
+        const ImVec2 display = ImGui::GetIO().DisplaySize;
+        screen->x = projected.x;
+        screen->y = display.y - projected.y;
+        *depth = projected.z;
+        return screen->x >= -64.0f && screen->x <= display.x + 64.0f &&
+            screen->y >= -64.0f && screen->y <= display.y + 64.0f;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        *screen = {}; *depth = 0.0f; return false;
+    }
+}
+
 static void DrawSkyParticles()
 {
     if (!skyParticlesEnabled || !keyValidated || !o_WorldToScreenPoint) return;
@@ -8925,31 +8947,62 @@ static void DrawSkyParticles()
     ReleaseSRWLockShared(&skyParticleLock);
     ImDrawList* draw = ImGui::GetForegroundDrawList();
     const float time = static_cast<float>(ImGui::GetTime());
+    constexpr float phi = 1.61803398875f;
+    constexpr float invLength = 0.52573111212f;
+    static const float vertices[12][3] = {
+        {-1, phi, 0}, {1, phi, 0}, {-1, -phi, 0}, {1, -phi, 0},
+        {0, -1, phi}, {0, 1, phi}, {0, -1, -phi}, {0, 1, -phi},
+        {phi, 0, -1}, {phi, 0, 1}, {-phi, 0, -1}, {-phi, 0, 1}
+    };
+    static const int faces[20][3] = {
+        {0,11,5}, {0,5,1}, {0,1,7}, {0,7,10}, {0,10,11},
+        {1,5,9}, {5,11,4}, {11,10,2}, {10,7,6}, {7,1,8},
+        {3,9,4}, {3,4,2}, {3,2,6}, {3,6,8}, {3,8,9},
+        {4,9,5}, {2,4,11}, {6,2,10}, {8,6,7}, {9,8,1}
+    };
     for (const SkyParticleEntry& particle : snapshot) {
         if (!particle.visible) continue;
-        Vector2 screen;
-        if (!UnityWorldToScreen(particle.position, screen)) continue;
-        const float pulse = 0.86f + 0.14f * sinf(time * 1.4f + particle.phase);
-        const float size = skyParticleSize * pulse;
-        const float drift = sinf(time * 0.9f + particle.phase) * size * 1.4f;
-        const ImVec2 center(screen.x + drift, screen.y);
-        const ImU32 glow = ImGui::ColorConvertFloat4ToU32(ImVec4(
-            skyParticleColor[0], skyParticleColor[1], skyParticleColor[2],
-            particle.alpha * 0.20f));
-        const ImU32 core = ImGui::ColorConvertFloat4ToU32(ImVec4(
-            skyParticleColor[0], skyParticleColor[1], skyParticleColor[2],
-            particle.alpha));
-        draw->AddCircleFilled(center, size * 1.9f, glow, 10);
-        // Three crossing axes form a six-arm flake instead of the old glowing dot.
-        for (int arm = 0; arm < 3; ++arm) {
-            const float angle = particle.phase + arm * 1.0471975512f;
-            const float dx = cosf(angle) * size;
-            const float dy = sinf(angle) * size;
-            draw->AddLine(ImVec2(center.x - dx, center.y - dy),
-                ImVec2(center.x + dx, center.y + dy), core,
-                fmaxf(1.0f, size * 0.42f));
+        const float pulse = 0.90f + 0.10f * sinf(time * 1.4f + particle.phase);
+        const float worldRadius = skyParticleSize * 0.018f * pulse;
+        const float drift = sinf(time * 0.9f + particle.phase) * worldRadius * 1.8f;
+        const Vector3 center(particle.position.x + drift,
+            particle.position.y, particle.position.z);
+        ImVec2 projected[12];
+        float depth[12] = {};
+        bool complete = true;
+        for (int vertex = 0; vertex < 12; ++vertex) {
+            const Vector3 worldVertex(
+                center.x + vertices[vertex][0] * invLength * worldRadius,
+                center.y + vertices[vertex][1] * invLength * worldRadius,
+                center.z + vertices[vertex][2] * invLength * worldRadius);
+            Vector2 screen;
+            if (!ProjectSkyParticle(worldVertex, &screen, &depth[vertex])) {
+                complete = false;
+                break;
+            }
+            projected[vertex] = ImVec2(screen.x, screen.y);
         }
-        draw->AddCircleFilled(center, fmaxf(0.7f, size * 0.26f), core, 8);
+        if (!complete) continue;
+        for (int face = 0; face < 20; ++face) {
+            const int a = faces[face][0];
+            const int b = faces[face][1];
+            const int c = faces[face][2];
+            float nx = (vertices[a][0] + vertices[b][0] + vertices[c][0]) * invLength;
+            float ny = (vertices[a][1] + vertices[b][1] + vertices[c][1]) * invLength;
+            float nz = (vertices[a][2] + vertices[b][2] + vertices[c][2]) * invLength;
+            const float normalLength = sqrtf(nx * nx + ny * ny + nz * nz);
+            if (normalLength > 0.0001f) {
+                nx /= normalLength; ny /= normalLength; nz /= normalLength;
+            }
+            const float light = fmaxf(0.18f, fminf(1.0f,
+                nx * -0.38f + ny * 0.72f + nz * -0.58f));
+            const ImU32 color = ImGui::ColorConvertFloat4ToU32(ImVec4(
+                fminf(1.0f, skyParticleColor[0] * (0.48f + light * 0.62f)),
+                fminf(1.0f, skyParticleColor[1] * (0.48f + light * 0.62f)),
+                fminf(1.0f, skyParticleColor[2] * (0.48f + light * 0.62f)),
+                particle.alpha));
+            draw->AddTriangleFilled(projected[a], projected[b], projected[c], color);
+        }
     }
 }
 
@@ -10339,9 +10392,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::SliderFloat("Particle Radius", &skyParticleRadius, 4.0f, 40.0f, "%.0f m");
             ImGui::SliderFloat("Particle Spawn Height", &skyParticleHeight, 6.0f, 40.0f, "%.0f m");
             ImGui::SliderFloat("Particle Fall Speed", &skyParticleFallSpeed, 0.5f, 20.0f, "%.1f m/s");
-            ImGui::SliderFloat("Particle Size", &skyParticleSize, 0.5f, 8.0f, "%.1f px");
+            ImGui::SliderFloat("Particle Size", &skyParticleSize, 0.5f, 8.0f, "%.1f");
             ImGui::ColorEdit3("Particle Color", skyParticleColor);
-            ImGui::TextDisabled("Dense snowfall + floor collision + wall occlusion");
+            ImGui::TextDisabled("World-space 3D snow spheres + collision");
         }
         if (ImGui::Checkbox("Freeze Corpses", &freezeCorpsesEnabled) && !freezeCorpsesEnabled)
             UpdateFrozenCorpses();
