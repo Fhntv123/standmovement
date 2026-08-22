@@ -5551,23 +5551,28 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(
 void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
+    // Match sourse/hooks.cpp literally: restore Camera.main's actual Transform
+    // before the native late-aim pass. AimController::FPSCamera (+0x68) is a
+    // director/parent transform; forcing its world euler after native aim cancels
+    // the native vertical camera motion.
+    if (silentAntiAimEnabled && silentAntiAimRealCameraValid &&
+        aimController == silentAntiAimLatestController &&
+        o_Camera_get_main && o_Component_get_transform &&
+        o_Transform_set_eulerAngles) {
+        __try {
+            const uintptr_t camera = o_Camera_get_main();
+            const uintptr_t cameraTransform = camera ?
+                o_Component_get_transform(camera) : 0;
+            if (cameraTransform) {
+                o_Transform_set_eulerAngles(cameraTransform,
+                    silentAntiAimRealCameraAngles);
+                InterlockedIncrement(&silentAntiAimCameraRestoreCalls);
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
     o_AimController_LateAim(aimController, method);
     InterlockedIncrement(&silentAntiAimLateAimCalls);
-    if (!silentAntiAimEnabled || !silentAntiAimRealCameraValid ||
-        aimController != silentAntiAimLatestController ||
-        !o_Transform_set_eulerAngles) return;
-    __try {
-        uintptr_t cameraTransform =
-            *reinterpret_cast<uintptr_t*>(aimController + 0x68);
-        if (!cameraTransform)
-            cameraTransform = *reinterpret_cast<uintptr_t*>(aimController + 0x78);
-        if (cameraTransform) {
-            o_Transform_set_eulerAngles(cameraTransform,
-                silentAntiAimRealCameraAngles);
-            InterlockedIncrement(&silentAntiAimCameraRestoreCalls);
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
