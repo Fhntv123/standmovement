@@ -29,6 +29,8 @@ extern uintptr_t(__fastcall* o_Component_get_transform)(uintptr_t);
 extern Vector3(__fastcall* o_Transform_get_position)(uintptr_t);
 extern void(__fastcall* o_Transform_set_position)(uintptr_t, Vector3);
 extern void(__fastcall* o_Transform_set_eulerAngles)(uintptr_t, Vector3);
+extern bool(__fastcall* o_Physics_RaycastHit)(Vector3, Vector3,
+    RaycastHitNative*, float, int, int, const Il2CppMethod*);
 
 // Existing native transition is kept as the authoritative view-mode switch.
 // Declared here because its implementation and runtime ownership stay in
@@ -36,6 +38,9 @@ extern void(__fastcall* o_Transform_set_eulerAngles)(uintptr_t, Vector3);
 static bool ApplyNativeThirdPersonState();
 
 volatile LONG g_TpsCameraLateUpdates = 0;
+volatile LONG g_TpsShotCorrections = 0;
+Vector3 g_TpsCrosshairTarget;
+bool g_TpsCrosshairTargetValid = false;
 char g_TpsCameraStatus[160] = "Idle";
 
 // Function 1: switch native view mode. Call only for a queued toggle/config
@@ -56,7 +61,11 @@ static bool TpsThirdPerson_SetViewState()
 static void TpsThirdPerson_LateUpdate(
     uintptr_t controlledCamera, bool isFpsCamera)
 {
-    if (!thirdPersonEnabled || isFpsCamera) return;
+    if (!thirdPersonEnabled) {
+        g_TpsCrosshairTargetValid = false;
+        return;
+    }
+    if (isFpsCamera) return;
     if (!liveHudLocalPlayer || !controlledCamera ||
         !o_Component_get_transform || !o_Transform_get_position ||
         !o_Transform_set_position || !o_Transform_set_eulerAngles) {
@@ -106,6 +115,27 @@ static void TpsThirdPerson_LateUpdate(
 
         o_Transform_set_eulerAngles(cameraTransform, view);
         o_Transform_set_position(cameraTransform, position);
+
+        // Third-person parallax: the screen crosshair ray starts at the moved
+        // camera, but native HitCaster starts at the weapon. Cache the point
+        // under the crosshair; VEH later redirects the genuine weapon-origin
+        // ray to this point. That preserves walls/muzzle origin and fixes TPS
+        // misses without changing first-person behavior.
+        RaycastHitNative crosshairHit = {};
+        if (o_Physics_RaycastHit && o_Physics_RaycastHit(position, forward,
+                &crosshairHit, 300.0f, -1, 1, nullptr) &&
+            isfinite(crosshairHit.point.x) &&
+            isfinite(crosshairHit.point.y) &&
+            isfinite(crosshairHit.point.z)) {
+            g_TpsCrosshairTarget = crosshairHit.point;
+        }
+        else {
+            g_TpsCrosshairTarget = Vector3(
+                position.x + forward.x * 300.0f,
+                position.y + forward.y * 300.0f,
+                position.z + forward.z * 300.0f);
+        }
+        g_TpsCrosshairTargetValid = true;
         InterlockedIncrement(&g_TpsCameraLateUpdates);
         strcpy_s(g_TpsCameraStatus, "Late camera placed from real view");
     }

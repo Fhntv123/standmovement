@@ -6946,7 +6946,7 @@ static LONG WINAPI HitCasterBreakpointHandler(EXCEPTION_POINTERS* info)
             aimbotLastCeqGun = activeLocalWeaponController;
             aimbotLastHitCasterMethod = liveMethod;
         }
-        if (hitCasterDirectionPending && context->R8) {
+        if (context->R8 && hitCasterDirectionPending) {
             HitCasterVector3Abi* direction =
                 reinterpret_cast<HitCasterVector3Abi*>(context->R8);
             direction->x = hitCasterPendingDirection.x;
@@ -6954,6 +6954,26 @@ static LONG WINAPI HitCasterBreakpointHandler(EXCEPTION_POINTERS* info)
             direction->z = hitCasterPendingDirection.z;
             InterlockedIncrement(&aimbotShots);
             InterlockedIncrement(&aimbotApplied);
+        }
+        else if (context->R8 && context->Rdx && insideLocalGunFire &&
+            thirdPersonEnabled && g_TpsCrosshairTargetValid) {
+            // RDX is the genuine HitCaster origin argument. Redirect only the
+            // direction toward the point under the moved TPS crosshair; never
+            // replace origin, so close walls and muzzle obstruction stay native.
+            const HitCasterVector3Abi* origin =
+                reinterpret_cast<const HitCasterVector3Abi*>(context->Rdx);
+            HitCasterVector3Abi* direction =
+                reinterpret_cast<HitCasterVector3Abi*>(context->R8);
+            const float dx = g_TpsCrosshairTarget.x - origin->x;
+            const float dy = g_TpsCrosshairTarget.y - origin->y;
+            const float dz = g_TpsCrosshairTarget.z - origin->z;
+            const float length = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (isfinite(length) && length > 0.001f) {
+                direction->x = dx / length;
+                direction->y = dy / length;
+                direction->z = dz / length;
+                InterlockedIncrement(&g_TpsShotCorrections);
+            }
         }
         context->Rip = hitCasterBreakpointAddress;
         context->EFlags |= 0x100UL;
@@ -10941,8 +10961,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&pendingThirdPersonCommand, 1);
         }
         ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f),
-            "TPS camera: %s (late=%ld)",
-            g_TpsCameraStatus, g_TpsCameraLateUpdates);
+            "TPS camera: %s (late=%ld, shots=%ld)",
+            g_TpsCameraStatus, g_TpsCameraLateUpdates,
+            g_TpsShotCorrections);
         if (thirdPersonEnabled) {
             ImGui::SliderFloat("TPS Horizontal", &thirdPersonHorizontalOffset, -3.0f, 3.0f, "%.2f");
             ImGui::SliderFloat("TPS Height", &thirdPersonHeightAdjustment, -3.0f, 3.0f, "%.2f");
