@@ -5126,16 +5126,16 @@ static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
             *reinterpret_cast<bool*>(inputs + 0x21) ||
             *reinterpret_cast<bool*>(inputs + 0x23) ||
             *reinterpret_cast<bool*>(inputs + 0x26);
-        // Spin changes every frame. Leaving that rapidly-changing yaw in live
-        // AimingData makes native movement chase the spin. Keep the local live
-        // view real for Spin; detached outgoing snapshots still receive `fake`.
-        const bool localRealForSpin = mode == 2;
-        const Vector3 output = (returnAngles || localRealForSpin) ?
-            realAngles : fake;
+        const Vector3 output = returnAngles ? realAngles : fake;
 
         const float oldSide = *reinterpret_cast<float*>(inputs + 0x10);
         const float oldForward = *reinterpret_cast<float*>(inputs + 0x14);
-        const float radians = NormalizeAngle180(realAngles.y - output.y) *
+        // The game consumes the real local movement frame during Spin even while
+        // the model/snapshot yaw is fake. Do not rotate WASD by a yaw that changes
+        // every callback; keep Spin visible/networked and movement camera-relative.
+        const Vector3 movementAngles = mode == 2 ? realAngles : output;
+        const float radians = NormalizeAngle180(
+            realAngles.y - movementAngles.y) *
             0.01745329251994329577f;
         const float cosine = cosf(radians);
         const float sine = sinf(radians);
@@ -5154,7 +5154,7 @@ static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
         silentAntiAimLatestController = aimController;
         silentAntiAimLatestAimingData = aimingData;
         silentAntiAimLatestRealAimAngle = realAngles;
-        silentAntiAimLatestFakeAngles = returnAngles ? realAngles : fake;
+        silentAntiAimLatestFakeAngles = output;
         silentAntiAimLatestCommandTick = GetTickCount64();
         silentAntiAimLatestInputValid = true;
         InterlockedIncrement(&silentAntiAimSnapshotSequence);
@@ -6952,30 +6952,30 @@ static LONG WINAPI HitCasterBreakpointHandler(EXCEPTION_POINTERS* info)
             aimbotLastHitCasterMethod = liveMethod;
         }
         if (context->R8 && hitCasterDirectionPending) {
+            HitCasterVector3Abi corrected = hitCasterPendingDirection;
+            // For aimbot, converge from the genuine native weapon origin (RDX)
+            // to the selected enemy point. This corrects TPS parallax without
+            // touching ordinary shots or inventing a camera-origin cast.
+            if (context->Rdx && aimbotSelectedTargetPointValid) {
+                const HitCasterVector3Abi* origin =
+                    reinterpret_cast<const HitCasterVector3Abi*>(context->Rdx);
+                const float dx = aimbotSelectedTargetPoint.x - origin->x;
+                const float dy = aimbotSelectedTargetPoint.y - origin->y;
+                const float dz = aimbotSelectedTargetPoint.z - origin->z;
+                const float length = sqrtf(dx * dx + dy * dy + dz * dz);
+                if (isfinite(length) && length > 0.001f) {
+                    corrected.x = dx / length;
+                    corrected.y = dy / length;
+                    corrected.z = dz / length;
+                }
+            }
             HitCasterVector3Abi* direction =
                 reinterpret_cast<HitCasterVector3Abi*>(context->R8);
-            direction->x = hitCasterPendingDirection.x;
-            direction->y = hitCasterPendingDirection.y;
-            direction->z = hitCasterPendingDirection.z;
+            direction->x = corrected.x;
+            direction->y = corrected.y;
+            direction->z = corrected.z;
             InterlockedIncrement(&aimbotShots);
             InterlockedIncrement(&aimbotApplied);
-        }
-        else if (context->R8 && context->Rdx && insideLocalGunFire &&
-            thirdPersonEnabled && g_TpsCrosshairTargetValid) {
-            const HitCasterVector3Abi* origin =
-                reinterpret_cast<const HitCasterVector3Abi*>(context->Rdx);
-            HitCasterVector3Abi* direction =
-                reinterpret_cast<HitCasterVector3Abi*>(context->R8);
-            const float dx = g_TpsCrosshairTarget.x - origin->x;
-            const float dy = g_TpsCrosshairTarget.y - origin->y;
-            const float dz = g_TpsCrosshairTarget.z - origin->z;
-            const float length = sqrtf(dx * dx + dy * dy + dz * dz);
-            if (isfinite(length) && length > 0.001f) {
-                direction->x = dx / length;
-                direction->y = dy / length;
-                direction->z = dz / length;
-                InterlockedIncrement(&g_TpsShotCorrections);
-            }
         }
         context->Rip = hitCasterBreakpointAddress;
         context->EFlags |= 0x100UL;
@@ -10964,9 +10964,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&pendingThirdPersonCommand, 1);
         }
         ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f),
-            "TPS camera: %s (late=%ld, shots=%ld)",
-            g_TpsCameraStatus, g_TpsCameraLateUpdates,
-            g_TpsShotCorrections);
+            "TPS camera: %s (late=%ld)",
+            g_TpsCameraStatus, g_TpsCameraLateUpdates);
         if (thirdPersonEnabled) {
             ImGui::SliderFloat("TPS Horizontal", &thirdPersonHorizontalOffset, -3.0f, 3.0f, "%.2f");
             ImGui::SliderFloat("TPS Height", &thirdPersonHeightAdjustment, -3.0f, 3.0f, "%.2f");
