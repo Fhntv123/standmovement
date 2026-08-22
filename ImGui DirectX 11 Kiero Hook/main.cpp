@@ -365,9 +365,12 @@ float4 PSMain(VsOut input) : SV_TARGET {
     float fresnel = 0.04 + 0.96 * pow(1.0 - saturate(normal.z), 5.0);
     float specular = pow(saturate(dot(normal, lightDir)), 42.0) * bevel;
     float rim = pow(bevel, 2.4) * 0.32;
-    float3 glass = lerp(frosted, frosted * tint.rgb + tint.rgb * 0.12, tint.a);
-    glass += (specular * 0.75 + rim + fresnel * bevel * 0.16);
-    float alpha = mask * viewport.w * (0.42 + bevel * 0.48);
+    // Preserve transmitted scene brightness: tint is additive, never a dark
+    // multiply. This keeps the material transparent instead of looking smoked.
+    float luminance = dot(frosted, float3(0.2126, 0.7152, 0.0722));
+    float3 glass = frosted + tint.rgb * tint.a * (0.10 + luminance * 0.04);
+    glass += (specular * 0.92 + rim * 1.15 + fresnel * bevel * 0.22);
+    float alpha = mask * viewport.w * (0.72 + bevel * 0.24);
     return float4(glass, alpha);
 }
 )HLSL";
@@ -8898,7 +8901,7 @@ void BoxEsp() {
         const ImVec2 boxMin(centerX - width * 0.5f, top);
         const ImVec2 boxMax(centerX + width * 0.5f, bottom);
         QueueEspLiquidGlass(ImVec2(boxMin.x + 2.0f, boxMin.y + 2.0f),
-            ImVec2(boxMax.x - 2.0f, boxMax.y - 2.0f), 5.0f, 0.62f, espTopColor);
+            ImVec2(boxMax.x - 2.0f, boxMax.y - 2.0f), 5.0f, 0.92f, espTopColor);
         DrawEspBoxGlow(draw, boxMin, boxMax);
         draw->AddRect(boxMin, boxMax, IM_COL32(0, 0, 0, 220), 2.0f, 0, 4.0f);
         if (espGradient) {
@@ -8939,10 +8942,11 @@ void BoxEsp() {
                 const float barX = boxMin.x - 9.0f;
                 const float fillTop = bottom - height * healthFraction;
                 draw->AddRectFilled(ImVec2(barX - 1.0f, top - 1.0f),
-                    ImVec2(barX + 6.0f, bottom + 1.0f), IM_COL32(0, 0, 0, 235));
+                    ImVec2(barX + 6.0f, bottom + 1.0f),
+                    espLiquidGlass ? IM_COL32(0, 0, 0, 72) : IM_COL32(0, 0, 0, 235));
                 if (fillTop < bottom) {
                     QueueEspLiquidGlass(ImVec2(barX, fillTop),
-                        ImVec2(barX + 5.0f, bottom), 2.0f, 0.82f, espHealthColor);
+                        ImVec2(barX + 5.0f, bottom), 2.0f, 1.0f, espHealthColor);
                     DrawEspHealthGlow(draw, barX, fillTop, bottom);
                 }
                 constexpr int healthSegments = 24;
@@ -8951,9 +8955,12 @@ void BoxEsp() {
                     const float t1 = static_cast<float>(segment + 1) / healthSegments;
                     const float segmentBottom = bottom - (bottom - fillTop) * t0;
                     const float segmentTop = bottom - (bottom - fillTop) * t1;
+                    const float healthT = 1.0f - (t0 + t1) * 0.5f;
                     const ImU32 healthColor = espLiquidGlass ?
-                        EspHealthColorAt(1.0f - (t0 + t1) * 0.5f) & 0x55FFFFFFu :
-                        EspHealthColorAt(1.0f - (t0 + t1) * 0.5f);
+                        (espHealthGradient ? EspLerpColor(espHealthColor,
+                            espHealthBottomColor, healthT, 0.12f) :
+                            EspArrayColor(espHealthColor, 0.12f)) :
+                        EspHealthColorAt(healthT);
                     draw->AddRectFilled(ImVec2(barX, segmentTop),
                         ImVec2(barX + 5.0f, segmentBottom), healthColor);
                 }
