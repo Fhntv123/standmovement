@@ -717,6 +717,8 @@ struct Matrix16 {
 #define OFFSET_MATERIAL_CTOR                       0x34506B0
 #define OFFSET_MATERIAL_COPY_CTOR                  0x34507A0
 #define OFFSET_MATERIAL_SET_SHADER                 0x34510A0
+#define OFFSET_ASSETBUNDLE_LOAD_FROM_MEMORY         0x343AC20
+#define OFFSET_ASSETBUNDLE_LOAD_ASSET               0x343A9D0
 #define OFFSET_MATERIAL_SET_MAINTEXTURE            0x3450F90
 #define OFFSET_RENDERER_GET_MATERIAL                0x345A740
 #define OFFSET_RENDERER_SET_MATERIAL                0x345AAD0
@@ -7323,29 +7325,36 @@ static void RestoreWeaponChams()
 static uintptr_t CreateWireframeChamsMaterial()
 {
     if (!wireframeSourceMaterial) {
-        Il2CppClass* bundleClass = g_il2cpp.find_class("UnityEngine", "AssetBundle");
         Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
-        if (!bundleClass || !materialClass || !g_il2cpp.class_get_method_from_name ||
-            !g_il2cpp.runtime_invoke || !g_il2cpp.string_new || !g_il2cpp.class_get_type || !g_il2cpp.type_get_object) {
+        Il2CppClass* byteClass = g_il2cpp.find_class("System", "Byte");
+        if (!materialClass || !byteClass || !g_il2cpp.array_new || !g_il2cpp.string_new ||
+            !g_il2cpp.class_get_type || !g_il2cpp.type_get_object || !base) {
             strcpy_s(wireframeBundleStatus, "AssetBundle API unavailable"); return 0;
         }
-        const Il2CppMethod* loadFile = g_il2cpp.class_get_method_from_name(bundleClass, "LoadFromFile", 1);
-        const Il2CppMethod* loadAsset = g_il2cpp.class_get_method_from_name(bundleClass, "LoadAsset", 2);
+        const std::wstring path = GetConfigDirectory() + L"\\wireframe\\wirebundle.wirebundl";
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file) { strcpy_s(wireframeBundleStatus, "wirebundle.wirebundl not found"); return 0; }
+        const std::streamsize fileSize = file.tellg();
+        if (fileSize <= 0 || fileSize > 64 * 1024 * 1024) { strcpy_s(wireframeBundleStatus, "Invalid bundle size"); return 0; }
+        std::vector<unsigned char> bytes(static_cast<size_t>(fileSize));
+        file.seekg(0, std::ios::beg);
+        if (!file.read(reinterpret_cast<char*>(bytes.data()), fileSize)) { strcpy_s(wireframeBundleStatus, "Bundle read failed"); return 0; }
+        Il2CppArray* data = g_il2cpp.array_new(byteClass, bytes.size());
+        if (!data) { strcpy_s(wireframeBundleStatus, "Bundle byte array failed"); return 0; }
+        memcpy(reinterpret_cast<unsigned char*>(data) + 0x20, bytes.data(), bytes.size());
+        using LoadMemoryFn = uintptr_t(__fastcall*)(Il2CppArray*, const Il2CppMethod*);
+        wireframeAssetBundle = reinterpret_cast<LoadMemoryFn>(base + OFFSET_ASSETBUNDLE_LOAD_FROM_MEMORY)(data, nullptr);
+        if (!wireframeAssetBundle) { strcpy_s(wireframeBundleStatus, "Bundle incompatible with this Unity build"); return 0; }
+        if (g_il2cpp.gchandle_new) wireframeAssetBundleHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(wireframeAssetBundle), false);
         const Il2CppType* materialType = g_il2cpp.class_get_type(materialClass);
         Il2CppObject* typeObject = materialType ? g_il2cpp.type_get_object(materialType) : nullptr;
-        if (!loadFile || !loadAsset || !typeObject) { strcpy_s(wireframeBundleStatus, "AssetBundle methods unavailable"); return 0; }
-        const std::wstring path = GetConfigDirectory() + L"\\wireframe\\wirebundle.wirebundl";
-        if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) { strcpy_s(wireframeBundleStatus, "wirebundle.wirebundl not found"); return 0; }
-        char utf8[1024] = {}; WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, utf8, 1024, nullptr, nullptr);
-        Il2CppString* pathString = g_il2cpp.string_new(utf8); void* fileArgs[] = { pathString }; Il2CppObject* exception = nullptr;
-        wireframeAssetBundle = reinterpret_cast<uintptr_t>(g_il2cpp.runtime_invoke(loadFile, nullptr, fileArgs, &exception));
-        if (!wireframeAssetBundle || exception) { strcpy_s(wireframeBundleStatus, "Bundle load failed"); return 0; }
-        if (g_il2cpp.gchandle_new) wireframeAssetBundleHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(wireframeAssetBundle), false);
+        if (!typeObject) { strcpy_s(wireframeBundleStatus, "Material type unavailable"); return 0; }
+        using LoadAssetFn = uintptr_t(__fastcall*)(uintptr_t, Il2CppString*, Il2CppObject*, const Il2CppMethod*);
+        const auto loadAsset = reinterpret_cast<LoadAssetFn>(base + OFFSET_ASSETBUNDLE_LOAD_ASSET);
         const char* names[] = { "Assets/WireMat.mat", "assets/wiremat.mat", "WireMat" };
         for (const char* name : names) {
-            Il2CppString* assetName = g_il2cpp.string_new(name); void* assetArgs[] = { assetName, typeObject }; exception = nullptr;
-            wireframeSourceMaterial = reinterpret_cast<uintptr_t>(g_il2cpp.runtime_invoke(loadAsset, reinterpret_cast<void*>(wireframeAssetBundle), assetArgs, &exception));
-            if (wireframeSourceMaterial && !exception) break; wireframeSourceMaterial = 0;
+            wireframeSourceMaterial = loadAsset(wireframeAssetBundle, g_il2cpp.string_new(name), typeObject, nullptr);
+            if (wireframeSourceMaterial) break;
         }
         if (!wireframeSourceMaterial) { strcpy_s(wireframeBundleStatus, "WireMat not found in bundle"); return 0; }
         if (g_il2cpp.gchandle_new) wireframeSourceMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(wireframeSourceMaterial), false);
@@ -7353,7 +7362,7 @@ static uintptr_t CreateWireframeChamsMaterial()
     }
     Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
     if (!materialClass || !g_il2cpp.object_new || !o_Material_copy_ctor) return 0;
-    uintptr_t material = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
+    const uintptr_t material = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
     if (material) o_Material_copy_ctor(material, wireframeSourceMaterial, nullptr);
     return material;
 }
