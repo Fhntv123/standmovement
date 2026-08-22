@@ -5590,13 +5590,21 @@ void __fastcall hk_CameraController_OnPreCull(
     // tps_anti_aim_camera.h; this hook body never touches AimingData,
     // InputFilter, or any snapshot writer.
     uintptr_t controlledCamera = 0;
+    bool isFpsCamera = true;
     __try {
-        // dump1 CameraController::clgs is its own Camera at +0x28.
+        // dump1 CameraController::_isFpsCamera +0x22 identifies the FPS and
+        // TPS controllers; clgs +0x28 is that controller's Camera component.
         controlledCamera = cameraController ?
             *reinterpret_cast<uintptr_t*>(cameraController + 0x28) : 0;
+        isFpsCamera = !cameraController ||
+            *reinterpret_cast<bool*>(cameraController + 0x22);
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { controlledCamera = 0; }
-    TpsCameraWorkaround_AfterNativeOnPreCull(controlledCamera);
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        controlledCamera = 0;
+        isFpsCamera = true;
+    }
+    TpsCameraWorkaround_AfterNativeOnPreCull(
+        controlledCamera, isFpsCamera);
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -10931,9 +10939,9 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             InterlockedExchange(&pendingThirdPersonCommand, 1);
         }
         ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f),
-            "TPS camera fix: %s (fires=%ld, applied=%ld)",
-            g_TpsCameraWorkaroundStatus,
-            g_TpsCameraHookFires, g_TpsCameraRestoreApplied);
+            "TPS camera fix: %s (all=%ld, tps=%ld, applied=%ld)",
+            g_TpsCameraWorkaroundStatus, g_TpsCameraHookFires,
+            g_TpsCameraTargetFires, g_TpsCameraRestoreApplied);
         if (thirdPersonEnabled) {
             ImGui::SliderFloat("TPS Horizontal", &thirdPersonHorizontalOffset, -3.0f, 3.0f, "%.2f");
             ImGui::SliderFloat("TPS Height", &thirdPersonHeightAdjustment, -3.0f, 3.0f, "%.2f");

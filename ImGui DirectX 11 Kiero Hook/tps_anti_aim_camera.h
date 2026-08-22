@@ -60,6 +60,7 @@ extern void(__fastcall* o_Transform_set_eulerAngles)(uintptr_t, Vector3);
 extern volatile LONG silentAntiAimCameraRestoreCalls;
 
 volatile LONG g_TpsCameraHookFires = 0;
+volatile LONG g_TpsCameraTargetFires = 0;
 volatile LONG g_TpsCameraRestoreApplied = 0;
 char g_TpsCameraWorkaroundStatus[160] = "Idle";
 
@@ -67,7 +68,11 @@ char g_TpsCameraWorkaroundStatus[160] = "Idle";
 // main.cpp, strictly after the native OnPreCull has already run for this
 // specific camera instance. controlledCamera is that camera's own Camera
 // component (dump1 CameraController::clgs, +0x28), read by the caller.
-void TpsCameraWorkaround_AfterNativeOnPreCull(uintptr_t controlledCamera)
+// isFpsCamera is dump1 CameraController::_isFpsCamera at +0x22. Camera.main
+// remains the tagged FPS camera in TPS mode, so it must NOT be used to select
+// the third-person camera.
+void TpsCameraWorkaround_AfterNativeOnPreCull(
+    uintptr_t controlledCamera, bool isFpsCamera)
 {
     InterlockedIncrement(&g_TpsCameraHookFires);
 
@@ -75,38 +80,38 @@ void TpsCameraWorkaround_AfterNativeOnPreCull(uintptr_t controlledCamera)
         strcpy_s(g_TpsCameraWorkaroundStatus, "Idle: TPS or anti-aim disabled");
         return;
     }
+    // dump1 has two CameraController singletons. In third person Camera.main
+    // still resolves to the tagged FPS camera, while the visible orbit camera
+    // is the controller whose serialized _isFpsCamera flag is false.
+    if (isFpsCamera) return;
+    InterlockedIncrement(&g_TpsCameraTargetFires);
+
     if (!silentAntiAimRealCameraValid) {
-        strcpy_s(g_TpsCameraWorkaroundStatus, "Waiting: no real angle sample yet");
+        strcpy_s(g_TpsCameraWorkaroundStatus, "TPS found; waiting for real angles");
         return;
     }
-    if (!controlledCamera || !o_Camera_get_main || !o_Component_get_transform ||
+    if (!controlledCamera || !o_Component_get_transform ||
         !o_Transform_set_eulerAngles) {
-        strcpy_s(g_TpsCameraWorkaroundStatus, "Skipped: required pointers missing");
+        strcpy_s(g_TpsCameraWorkaroundStatus, "TPS found; required pointer missing");
         return;
     }
 
     __try {
-        const uintptr_t mainCamera = o_Camera_get_main();
-        if (!mainCamera) {
-            strcpy_s(g_TpsCameraWorkaroundStatus, "Skipped: Camera.main is null");
-            return;
-        }
-        if (controlledCamera != mainCamera) {
-            strcpy_s(g_TpsCameraWorkaroundStatus,
-                "Skipped: this OnPreCull is not Camera.main");
-            return;
-        }
-        const uintptr_t cameraTransform = o_Component_get_transform(mainCamera);
+        const uintptr_t cameraTransform =
+            o_Component_get_transform(controlledCamera);
         if (!cameraTransform) {
-            strcpy_s(g_TpsCameraWorkaroundStatus, "Skipped: no camera Transform");
+            strcpy_s(g_TpsCameraWorkaroundStatus, "TPS found; no camera Transform");
             return;
         }
-        o_Transform_set_eulerAngles(cameraTransform, silentAntiAimRealCameraAngles);
+        o_Transform_set_eulerAngles(cameraTransform,
+            silentAntiAimRealCameraAngles);
         InterlockedIncrement(&g_TpsCameraRestoreApplied);
         InterlockedIncrement(&silentAntiAimCameraRestoreCalls);
-        strcpy_s(g_TpsCameraWorkaroundStatus, "Applied this frame");
+        strcpy_s(g_TpsCameraWorkaroundStatus,
+            "Applied to non-FPS third-person camera");
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        strcpy_s(g_TpsCameraWorkaroundStatus, "Exception while applying");
+        strcpy_s(g_TpsCameraWorkaroundStatus,
+            "Exception while applying to TPS camera");
     }
 }
