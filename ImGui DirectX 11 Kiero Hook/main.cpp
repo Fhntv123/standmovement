@@ -4552,6 +4552,26 @@ static float NextAntiAimRandomAngle(float minimum, float maximum)
     return minimum + (maximum - minimum) * unit;
 }
 
+static void SyncDynamicAntiAimProfilePhase(bool jumpProfile)
+{
+    if (jumpProfile == silentAntiAimActiveJumpProfile) return;
+    if (jumpProfile) {
+        silentAntiAimJumpSpinYaw = silentAntiAimSpinYaw;
+        silentAntiAimJumpJitterFlip = silentAntiAimJitterFlip;
+        silentAntiAimJumpLastJitterTick = silentAntiAimLastJitterTick;
+        silentAntiAimJumpFlickNextTick = silentAntiAimFlickNextTick;
+    }
+    else {
+        silentAntiAimSpinYaw = silentAntiAimJumpSpinYaw;
+        silentAntiAimJitterFlip = silentAntiAimJumpJitterFlip;
+        silentAntiAimLastJitterTick = silentAntiAimJumpLastJitterTick;
+        silentAntiAimFlickNextTick = silentAntiAimJumpFlickNextTick;
+    }
+    silentAntiAimActiveJumpProfile = jumpProfile;
+    silentAntiAimEdgeScanFrame = 0;
+    silentAntiAimEdgeFound = false;
+}
+
 static Vector3 GetSourceStyleAntiAimAngles(int mode, float pitch, float yaw,
     float jitterRange, float spinSpeed, float flickRate, bool jumpProfile)
 {
@@ -4770,11 +4790,7 @@ static void UpdateRotationAntiAimTarget(uintptr_t player, bool jumpProfile)
             return;
         }
 
-        if (jumpProfile != silentAntiAimActiveJumpProfile) {
-            silentAntiAimActiveJumpProfile = jumpProfile;
-            silentAntiAimEdgeScanFrame = 0;
-            silentAntiAimEdgeFound = false;
-        }
+        SyncDynamicAntiAimProfilePhase(jumpProfile);
         const int mode = jumpProfile ? silentAntiAimJumpMode : silentAntiAimMode;
         const int pitchMode = jumpProfile ? silentAntiAimJumpPitch : silentAntiAimPitch;
         const float yaw = jumpProfile ? silentAntiAimJumpYaw : silentAntiAimYaw;
@@ -5105,7 +5121,7 @@ static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
             if (characterController)
                 jumpProfile = !o_CC_get_isGrounded(characterController);
         }
-        silentAntiAimActiveJumpProfile = jumpProfile;
+        SyncDynamicAntiAimProfilePhase(jumpProfile);
         const int mode = jumpProfile ? silentAntiAimJumpMode : silentAntiAimMode;
         const int pitchMode = jumpProfile ? silentAntiAimJumpPitch : silentAntiAimPitch;
         const float configuredYaw = jumpProfile ? silentAntiAimJumpYaw : silentAntiAimYaw;
@@ -9327,52 +9343,25 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 
     const float movementDeltaTime = GetMovementDeltaTime();
 
-    // Keep accumulated world-space momentum independent of the Ground/Jump
-    // anti-aim profile. CharacterController.Move receives previous velocity plus
-    // this frame's input acceleration. Preserve velocity * deltaTime unchanged and
-    // rotate only the new input delta out of fake-yaw space. Rotating the complete
-    // motion made a Ground -> Jump Spin profile switch rotate momentum itself,
-    // which looked like a one-second stop before bunnyhop resumed.
-    if (keyValidated && silentAntiAimEnabled && o_CC_get_velocity) {
+    // Dynamic fake yaw must never steer local movement. Rotate the final native
+    // horizontal motion by the current correction; a pure rotation preserves the
+    // game's exact speed, acceleration and vertical motion. Ground/Jump dynamic
+    // phases are synchronized before this correction is published.
+    if (keyValidated && silentAntiAimEnabled) {
         float yawCorrection = 0.0f;
         ULONGLONG commandTick = 0;
         const ULONGLONG now = GetTickCount64();
         if (ReadDynamicAntiAimMoveYawCorrection(
                 &yawCorrection, &commandTick) &&
             now >= commandTick && now - commandTick <= 80ULL) {
-            const Vector3 previousVelocity = o_CC_get_velocity(instance);
-            const float nativeHorizontalLength = sqrtf(
-                motion.x * motion.x + motion.z * motion.z);
-            if (isfinite(previousVelocity.x) &&
-                isfinite(previousVelocity.z) &&
-                isfinite(nativeHorizontalLength) &&
-                isfinite(movementDeltaTime) && movementDeltaTime > 0.0f) {
-                const float momentumX =
-                    previousVelocity.x * movementDeltaTime;
-                const float momentumZ =
-                    previousVelocity.z * movementDeltaTime;
-                const float inputX = motion.x - momentumX;
-                const float inputZ = motion.z - momentumZ;
-                const float radians = yawCorrection *
-                    0.01745329251994329577f;
-                const float cosine = cosf(radians);
-                const float sine = sinf(radians);
-                motion.x = momentumX + inputX * cosine + inputZ * sine;
-                motion.z = momentumZ - inputX * sine + inputZ * cosine;
-                // Recombining momentum and rotated input can increase their
-                // resultant length. Preserve the exact native Move magnitude so
-                // anti-aim correction can never accelerate bunnyhop.
-                const float correctedHorizontalLength = sqrtf(
-                    motion.x * motion.x + motion.z * motion.z);
-                if (nativeHorizontalLength > 0.00001f &&
-                    isfinite(correctedHorizontalLength) &&
-                    correctedHorizontalLength > 0.00001f) {
-                    const float nativeScale =
-                        nativeHorizontalLength / correctedHorizontalLength;
-                    motion.x *= nativeScale;
-                    motion.z *= nativeScale;
-                }
-            }
+            const float radians = yawCorrection *
+                0.01745329251994329577f;
+            const float cosine = cosf(radians);
+            const float sine = sinf(radians);
+            const float oldX = motion.x;
+            const float oldZ = motion.z;
+            motion.x = oldX * cosine + oldZ * sine;
+            motion.z = -oldX * sine + oldZ * cosine;
         }
     }
 
