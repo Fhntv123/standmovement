@@ -608,14 +608,11 @@ BindConfig hitMarkerBind = { 0, true };
 BindConfig bulletImpactsBind = { 0, true };
 BindConfig bulletTracerBind = { 0, true };
 
-// One-shot weapon/knife binds. Each key press queues one native SetAndTake call;
-// these are actions, not toggleable feature states.
-constexpr int kGiveItemBindLimit = 15;
-BindConfig giveItemBinds[kGiveItemBindLimit] = {};
-int giveItemBindSelections[kGiveItemBindLimit] = {};
-int giveItemBindAmounts[kGiveItemBindLimit] = {
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
-};
+// Single hold-to-give action bind. While held, it continuously queues the selected
+// batch after the previous one finishes. This is not a toggleable feature state.
+BindConfig giveItemBind = { 0, false };
+int giveItemBindSelection = 0;
+int giveItemBindAmount = 1;
 static const char* giveItemNames[] = {
     "G22", "USP", "P350", "Deagle", "Tec-9", "Five-Seven", "Berettas",
     "UMP45", "Akimbo Uzi", "MP7", "P90", "MP5", "MAC10", "VAL",
@@ -2091,15 +2088,9 @@ static bool SaveConfig(const char* requestedName)
     SAVE_INT(enemyThroughWallsBind.key); SAVE_BOOL(enemyThroughWallsBind.toggleMode); SAVE_INT(hitLogBind.key); SAVE_BOOL(hitLogBind.toggleMode);
     SAVE_INT(hitMarkerBind.key); SAVE_BOOL(hitMarkerBind.toggleMode); SAVE_INT(bulletImpactsBind.key); SAVE_BOOL(bulletImpactsBind.toggleMode);
     SAVE_INT(bulletTracerBind.key); SAVE_BOOL(bulletTracerBind.toggleMode);
-    for (int i = 0; i < kGiveItemBindLimit; ++i) {
-        char keyName[64];
-        sprintf_s(keyName, "giveItemBindKey_%d", i);
-        WriteConfigValue(path, keyName, giveItemBinds[i].key);
-        sprintf_s(keyName, "giveItemBindSelection_%d", i);
-        WriteConfigValue(path, keyName, giveItemBindSelections[i]);
-        sprintf_s(keyName, "giveItemBindAmount_%d", i);
-        WriteConfigValue(path, keyName, giveItemBindAmounts[i]);
-    }
+    WriteConfigValue(path, "giveItemBindKey_0", giveItemBind.key);
+    WriteConfigValue(path, "giveItemBindSelection_0", giveItemBindSelection);
+    WriteConfigValue(path, "giveItemBindAmount_0", giveItemBindAmount);
     WriteConfigColor(path, "menuColor", menuColor); WriteConfigColor(path, "accentColor", accentColor);
     WriteConfigColor(path, "worldColor", worldColor); WriteConfigColor(path, "fogColor", fogColor);
     WriteConfigColor(path, "penetrableSurfaceFillColor", penetrableSurfaceFillColor);
@@ -2193,21 +2184,16 @@ static bool LoadConfig(const char* requestedName)
     LOAD_INT(enemyThroughWallsBind.key); LOAD_BOOL(enemyThroughWallsBind.toggleMode); LOAD_INT(hitLogBind.key); LOAD_BOOL(hitLogBind.toggleMode);
     LOAD_INT(hitMarkerBind.key); LOAD_BOOL(hitMarkerBind.toggleMode); LOAD_INT(bulletImpactsBind.key); LOAD_BOOL(bulletImpactsBind.toggleMode);
     LOAD_INT(bulletTracerBind.key); LOAD_BOOL(bulletTracerBind.toggleMode);
-    for (int i = 0; i < kGiveItemBindLimit; ++i) {
-        char keyName[64];
-        sprintf_s(keyName, "giveItemBindKey_%d", i);
-        giveItemBinds[i].key = ReadConfigInt(path, keyName, giveItemBinds[i].key);
-        sprintf_s(keyName, "giveItemBindSelection_%d", i);
-        giveItemBindSelections[i] = ReadConfigInt(path, keyName, giveItemBindSelections[i]);
-        if (giveItemBindSelections[i] < 0 ||
-            giveItemBindSelections[i] >= IM_ARRAYSIZE(giveItemIds))
-            giveItemBindSelections[i] = 0;
-        sprintf_s(keyName, "giveItemBindAmount_%d", i);
-        giveItemBindAmounts[i] = ReadConfigInt(path, keyName, giveItemBindAmounts[i]);
-        if (giveItemBindAmounts[i] < 1) giveItemBindAmounts[i] = 1;
-        if (giveItemBindAmounts[i] > 50) giveItemBindAmounts[i] = 50;
-        giveItemBinds[i].toggleMode = false;
-    }
+    giveItemBind.key = ReadConfigInt(path, "giveItemBindKey_0", giveItemBind.key);
+    giveItemBindSelection = ReadConfigInt(path, "giveItemBindSelection_0",
+        giveItemBindSelection);
+    if (giveItemBindSelection < 0 || giveItemBindSelection >= IM_ARRAYSIZE(giveItemIds))
+        giveItemBindSelection = 0;
+    giveItemBindAmount = ReadConfigInt(path, "giveItemBindAmount_0",
+        giveItemBindAmount);
+    if (giveItemBindAmount < 1) giveItemBindAmount = 1;
+    if (giveItemBindAmount > 50) giveItemBindAmount = 50;
+    giveItemBind.toggleMode = false;
     // Config files are user-editable. Clamp every value used as an array index or
     // collection bound before any pending refresh can consume it.
     if (worldColorMode < 0 || worldColorMode > 6) worldColorMode = 0;
@@ -8848,7 +8834,6 @@ DWORD WINAPI KeyListenerThread(LPVOID)
     size_t bindCount = 0;
     BindEntry* entries = GetBindEntries(bindCount);
     std::vector<unsigned char> wasDown(bindCount, 0);
-    unsigned char giveWasDown[kGiveItemBindLimit] = {};
     while (!unloadRequested) {
         if (keyValidated && !waitingForBind) {
             for (size_t i = 0; i < bindCount; ++i) {
@@ -8865,21 +8850,13 @@ DWORD WINAPI KeyListenerThread(LPVOID)
                 }
                 wasDown[i] = down ? 1 : 0;
             }
-            for (int i = 0; i < kGiveItemBindLimit; ++i) {
-                if (giveItemBinds[i].key <= 0) {
-                    giveWasDown[i] = 0;
-                    continue;
-                }
-                const bool down =
-                    (GetAsyncKeyState(giveItemBinds[i].key) & 0x8000) != 0;
-                if (down && !giveWasDown[i]) {
-                    int selection = giveItemBindSelections[i];
-                    if (selection < 0 || selection >= IM_ARRAYSIZE(giveItemIds))
-                        selection = 0;
-                    QueueGiveWeapon(giveItemIds[selection],
-                        giveItemBindAmounts[i]);
-                }
-                giveWasDown[i] = down ? 1 : 0;
+            if (giveItemBind.key > 0 &&
+                (GetAsyncKeyState(giveItemBind.key) & 0x8000) != 0 &&
+                InterlockedCompareExchange(&pendingGiveWeaponCount, 0, 0) <= 0) {
+                int selection = giveItemBindSelection;
+                if (selection < 0 || selection >= IM_ARRAYSIZE(giveItemIds))
+                    selection = 0;
+                QueueGiveWeapon(giveItemIds[selection], giveItemBindAmount);
             }
         }
         Sleep(10);
@@ -9949,35 +9926,25 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Spacing();
         ImGui::TextColored(accent, "Weapon Give Binds");
         ImGui::Separator();
-        ImGui::TextDisabled("Choose an item, amount (1-50), and key. One press queues that many gives.");
-        for (int i = 0; i < kGiveItemBindLimit; ++i) {
-            ImGui::PushID(1000 + i);
-            ImGui::Text("%d", i + 1);
-            ImGui::SameLine(35.0f);
-            ImGui::SetNextItemWidth(190.0f);
-            ImGui::Combo("##giveItem", &giveItemBindSelections[i],
-                giveItemNames, IM_ARRAYSIZE(giveItemNames));
-            if (giveItemBindSelections[i] < 0 ||
-                giveItemBindSelections[i] >= IM_ARRAYSIZE(giveItemIds))
-                giveItemBindSelections[i] = 0;
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(55.0f);
-            ImGui::InputInt("##amount", &giveItemBindAmounts[i], 1, 5);
-            if (giveItemBindAmounts[i] < 1) giveItemBindAmounts[i] = 1;
-            if (giveItemBindAmounts[i] > 50) giveItemBindAmounts[i] = 50;
-            ImGui::SameLine();
-            const std::string keyName =
-                waitingForBind == &giveItemBinds[i].key ?
-                "Press a key..." : GetKeyName(giveItemBinds[i].key);
-            if (ImGui::Button(keyName.c_str(), ImVec2(105.0f, 0.0f)))
-                waitingForBind = &giveItemBinds[i].key;
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Clear")) {
-                giveItemBinds[i].key = 0;
-                if (waitingForBind == &giveItemBinds[i].key)
-                    waitingForBind = nullptr;
-            }
-            ImGui::PopID();
+        ImGui::TextDisabled("Hold the bound key/button to continuously give batches.");
+        ImGui::SetNextItemWidth(240.0f);
+        ImGui::Combo("Item", &giveItemBindSelection,
+            giveItemNames, IM_ARRAYSIZE(giveItemNames));
+        if (giveItemBindSelection < 0 || giveItemBindSelection >= IM_ARRAYSIZE(giveItemIds))
+            giveItemBindSelection = 0;
+        ImGui::SetNextItemWidth(140.0f);
+        ImGui::InputInt("Amount per batch", &giveItemBindAmount, 1, 5);
+        if (giveItemBindAmount < 1) giveItemBindAmount = 1;
+        if (giveItemBindAmount > 50) giveItemBindAmount = 50;
+        ImGui::Text("Selected amount: %d", giveItemBindAmount);
+        const std::string giveKeyName = waitingForBind == &giveItemBind.key ?
+            "Press a key..." : GetKeyName(giveItemBind.key);
+        if (ImGui::Button(giveKeyName.c_str(), ImVec2(140.0f, 0.0f)))
+            waitingForBind = &giveItemBind.key;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear##giveItemBind")) {
+            giveItemBind.key = 0;
+            if (waitingForBind == &giveItemBind.key) waitingForBind = nullptr;
         }
         ImGui::EndChild();
     }
