@@ -8897,7 +8897,8 @@ void BoxEsp() {
         const float bottom = fmaxf(headScreen.y, feetScreen.y);
         const ImVec2 boxMin(centerX - width * 0.5f, top);
         const ImVec2 boxMax(centerX + width * 0.5f, bottom);
-        QueueEspLiquidGlass(boxMin, boxMax, 7.0f, 0.22f, espTopColor);
+        QueueEspLiquidGlass(ImVec2(boxMin.x + 2.0f, boxMin.y + 2.0f),
+            ImVec2(boxMax.x - 2.0f, boxMax.y - 2.0f), 5.0f, 0.62f, espTopColor);
         DrawEspBoxGlow(draw, boxMin, boxMax);
         draw->AddRect(boxMin, boxMax, IM_COL32(0, 0, 0, 220), 2.0f, 0, 4.0f);
         if (espGradient) {
@@ -8933,32 +8934,31 @@ void BoxEsp() {
             const int health = GetPCHealth(player);
             if (health >= 0) {
                 const float healthFraction = fmaxf(0.0f, fminf(1.0f, health / 100.0f));
-                // Keep both the health bar and its value inside the player box.
-                const float healthTop = top + 4.0f;
-                const float healthBottom = fmaxf(healthTop + 1.0f, bottom - 4.0f);
-                const float healthHeight = healthBottom - healthTop;
-                const float barX = boxMin.x + 4.0f;
-                const float fillTop = healthBottom - healthHeight * healthFraction;
-                QueueEspLiquidGlass(ImVec2(barX - 2.0f, healthTop - 2.0f),
-                    ImVec2(barX + 7.0f, healthBottom + 2.0f), 4.0f, 0.50f, espHealthColor);
-                DrawEspHealthGlow(draw, barX, fillTop, healthBottom);
-                draw->AddRectFilled(ImVec2(barX - 1.0f, healthTop - 1.0f),
-                    ImVec2(barX + 6.0f, healthBottom + 1.0f), IM_COL32(0, 0, 0, 235));
+                // Preserve the original outside layout. Liquid Glass replaces the
+                // colored interior of the current HP fill, not the bar position.
+                const float barX = boxMin.x - 9.0f;
+                const float fillTop = bottom - height * healthFraction;
+                draw->AddRectFilled(ImVec2(barX - 1.0f, top - 1.0f),
+                    ImVec2(barX + 6.0f, bottom + 1.0f), IM_COL32(0, 0, 0, 235));
+                if (fillTop < bottom) {
+                    QueueEspLiquidGlass(ImVec2(barX, fillTop),
+                        ImVec2(barX + 5.0f, bottom), 2.0f, 0.82f, espHealthColor);
+                    DrawEspHealthGlow(draw, barX, fillTop, bottom);
+                }
                 constexpr int healthSegments = 24;
                 for (int segment = 0; segment < healthSegments; ++segment) {
                     const float t0 = static_cast<float>(segment) / healthSegments;
                     const float t1 = static_cast<float>(segment + 1) / healthSegments;
-                    const float segmentBottom = healthBottom - (healthBottom - fillTop) * t0;
-                    const float segmentTop = healthBottom - (healthBottom - fillTop) * t1;
-                    draw->AddRectFilled(ImVec2(barX, segmentTop), ImVec2(barX + 5.0f, segmentBottom),
-                        EspHealthColorAt(1.0f - (t0 + t1) * 0.5f));
+                    const float segmentBottom = bottom - (bottom - fillTop) * t0;
+                    const float segmentTop = bottom - (bottom - fillTop) * t1;
+                    const ImU32 healthColor = espLiquidGlass ?
+                        EspHealthColorAt(1.0f - (t0 + t1) * 0.5f) & 0x55FFFFFFu :
+                        EspHealthColorAt(1.0f - (t0 + t1) * 0.5f);
+                    draw->AddRectFilled(ImVec2(barX, segmentTop),
+                        ImVec2(barX + 5.0f, segmentBottom), healthColor);
                 }
                 char hpText[16]; sprintf_s(hpText, "%d HP", health);
-                const ImVec2 hpSize = ImGui::CalcTextSize(hpText);
-                const ImVec2 hpPos(barX + 9.0f, healthTop);
-                QueueEspLiquidGlass(ImVec2(hpPos.x - 3.0f, hpPos.y - 2.0f),
-                    ImVec2(fminf(hpPos.x + hpSize.x + 3.0f, boxMax.x - 2.0f),
-                        hpPos.y + hpSize.y + 2.0f), 5.0f, 0.48f, espHealthColor);
+                const ImVec2 hpPos(boxMax.x + 5.0f, top);
                 DrawAsciiGradientText(draw, hpPos, hpText);
             }
         }
