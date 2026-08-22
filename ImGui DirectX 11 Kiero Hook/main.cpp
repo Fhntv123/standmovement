@@ -1168,6 +1168,10 @@ bool espShowHealth = true;
 bool espShowWeapon = true;
 bool espGradient = true;
 bool espHealthGradient = true;
+bool espBoxGlow = false;
+bool espHealthGlow = false;
+float espGlowRadius = 6.0f;
+float espGlowIntensity = 0.55f;
 float espTopColor[3] = { 1.0f, 0.20f, 0.35f };
 float espBottomColor[3] = { 0.55f, 0.10f, 1.0f };
 float espNameColor[3] = { 1.0f, 0.25f, 0.55f };
@@ -1680,6 +1684,78 @@ static ImU32 EspColorAt(float t, float alpha = 1.0f) {
     return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, alpha));
 }
 
+static void DrawEspBoxGlow(ImDrawList* draw, const ImVec2& boxMin,
+    const ImVec2& boxMax)
+{
+    if (!draw || !espBoxGlow) return;
+    const float radius = fmaxf(1.0f, fminf(12.0f, espGlowRadius));
+    const float intensity = fmaxf(0.05f, fminf(1.0f, espGlowIntensity));
+    constexpr int layers = 5;
+    constexpr int segments = 32;
+    const float height = boxMax.y - boxMin.y;
+    // Wide low-alpha passes are drawn first. The quadratic falloff avoids the
+    // stacked neon rectangles produced by equally opaque outlines.
+    for (int layer = layers; layer >= 1; --layer) {
+        const float normalized = static_cast<float>(layer) / layers;
+        const float spread = radius * normalized;
+        const float alpha = intensity * 0.13f *
+            (1.0f - normalized * 0.72f);
+        const float thickness = 1.5f + spread * 1.35f;
+        if (espGradient) {
+            for (int segment = 0; segment < segments; ++segment) {
+                const float t0 = static_cast<float>(segment) / segments;
+                const float t1 = static_cast<float>(segment + 1) / segments;
+                const float y0 = boxMin.y + height * t0;
+                const float y1 = boxMin.y + height * t1;
+                const ImU32 color = EspColorAt((t0 + t1) * 0.5f, alpha);
+                draw->AddLine(ImVec2(boxMin.x, y0), ImVec2(boxMin.x, y1),
+                    color, thickness);
+                draw->AddLine(ImVec2(boxMax.x, y0), ImVec2(boxMax.x, y1),
+                    color, thickness);
+            }
+            draw->AddLine(boxMin, ImVec2(boxMax.x, boxMin.y),
+                EspColorAt(0.0f, alpha), thickness);
+            draw->AddLine(ImVec2(boxMin.x, boxMax.y), boxMax,
+                EspColorAt(1.0f, alpha), thickness);
+        }
+        else {
+            draw->AddRect(boxMin, boxMax, EspColorAt(0.0f, alpha),
+                2.0f, 0, thickness);
+        }
+    }
+}
+
+static void DrawEspHealthGlow(ImDrawList* draw, float barX, float fillTop,
+    float bottom)
+{
+    if (!draw || !espHealthGlow || fillTop >= bottom) return;
+    const float radius = fmaxf(1.0f, fminf(12.0f, espGlowRadius));
+    const float intensity = fmaxf(0.05f, fminf(1.0f, espGlowIntensity));
+    constexpr int layers = 5;
+    constexpr int segments = 24;
+    const float fillHeight = bottom - fillTop;
+    for (int layer = layers; layer >= 1; --layer) {
+        const float normalized = static_cast<float>(layer) / layers;
+        const float spread = radius * normalized;
+        const float alpha = intensity * 0.11f *
+            (1.0f - normalized * 0.70f);
+        for (int segment = 0; segment < segments; ++segment) {
+            const float t0 = static_cast<float>(segment) / segments;
+            const float t1 = static_cast<float>(segment + 1) / segments;
+            const float segmentBottom = bottom - fillHeight * t0;
+            const float segmentTop = bottom - fillHeight * t1;
+            const ImU32 color = espHealthGradient ?
+                EspLerpColor(espHealthColor, espHealthBottomColor,
+                    1.0f - (t0 + t1) * 0.5f, alpha) :
+                EspArrayColor(espHealthColor, alpha);
+            draw->AddRectFilled(
+                ImVec2(barX - spread, segmentTop - spread * 0.10f),
+                ImVec2(barX + 5.0f + spread,
+                    segmentBottom + spread * 0.10f), color, spread);
+        }
+    }
+}
+
 static void* GetLocalPC() {
     void* pm = GetPlayerManagerInstance();
     __try {
@@ -2092,6 +2168,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(aimbotEnabled); SAVE_BOOL(visibleAimbotEnabled); SAVE_BOOL(aimbotVisibleCheck); SAVE_BOOL(aimbotAutoWall); SAVE_FLOAT(aimbotAutoWallMinDamage); SAVE_BOOL(aimbotAutoFire); SAVE_BOOL(aimbotAutoStop);
     SAVE_BOOL(silentAntiAimEnabled); SAVE_INT(silentAntiAimMode); SAVE_INT(silentAntiAimPitch); SAVE_FLOAT(silentAntiAimYaw); SAVE_FLOAT(silentAntiAimJitterRange); SAVE_FLOAT(silentAntiAimSpinSpeed); SAVE_FLOAT(silentAntiAimEdgeDistance); SAVE_FLOAT(silentAntiAimEdgeOffset); SAVE_INT(silentAntiAimJumpMode); SAVE_INT(silentAntiAimJumpPitch); SAVE_FLOAT(silentAntiAimJumpYaw); SAVE_FLOAT(silentAntiAimJumpJitterRange); SAVE_FLOAT(silentAntiAimJumpSpinSpeed); SAVE_FLOAT(silentAntiAimJumpEdgeDistance); SAVE_FLOAT(silentAntiAimJumpEdgeOffset); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(freezeCorpsesFadeEnabled); SAVE_FLOAT(freezeCorpsesFadeDuration); SAVE_INT(freezeCorpsesChamsMode); SAVE_FLOAT(freezeCorpsesChamsAlpha); SAVE_FLOAT(freezeCorpsesMetallic); SAVE_FLOAT(freezeCorpsesSmoothness); SAVE_FLOAT(freezeCorpsesAnimationSpeed); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
     SAVE_BOOL(espShowName); SAVE_BOOL(espShowHealth); SAVE_BOOL(espShowWeapon); SAVE_BOOL(espGradient);
+    SAVE_BOOL(espBoxGlow); SAVE_BOOL(espHealthGlow); SAVE_FLOAT(espGlowRadius); SAVE_FLOAT(espGlowIntensity);
     SAVE_BOOL(worldColorEnabled); SAVE_INT(worldColorMode); SAVE_FLOAT(worldColorStrength); SAVE_FLOAT(worldColorAlpha);
     SAVE_BOOL(penetrableSurfacesEnabled); SAVE_FLOAT(penetrableSurfaceAlpha); SAVE_FLOAT(penetrableSurfaceScanDistance);
     SAVE_BOOL(fogEnabled); SAVE_FLOAT(fogStartDistance); SAVE_FLOAT(fogEndDistance); SAVE_FLOAT(fogDensity);
@@ -2192,6 +2269,11 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(aimbotEnabled); LOAD_BOOL(visibleAimbotEnabled); LOAD_BOOL(aimbotVisibleCheck); LOAD_BOOL(aimbotAutoWall); LOAD_FLOAT(aimbotAutoWallMinDamage); LOAD_BOOL(aimbotAutoFire); LOAD_BOOL(aimbotAutoStop);
     LOAD_BOOL(silentAntiAimEnabled); LOAD_INT(silentAntiAimMode); LOAD_INT(silentAntiAimPitch); LOAD_FLOAT(silentAntiAimYaw); LOAD_FLOAT(silentAntiAimJitterRange); LOAD_FLOAT(silentAntiAimSpinSpeed); LOAD_FLOAT(silentAntiAimEdgeDistance); LOAD_FLOAT(silentAntiAimEdgeOffset); LOAD_INT(silentAntiAimJumpMode); LOAD_INT(silentAntiAimJumpPitch); LOAD_FLOAT(silentAntiAimJumpYaw); LOAD_FLOAT(silentAntiAimJumpJitterRange); LOAD_FLOAT(silentAntiAimJumpSpinSpeed); LOAD_FLOAT(silentAntiAimJumpEdgeDistance); LOAD_FLOAT(silentAntiAimJumpEdgeOffset); if (!isfinite(silentAntiAimYaw)) silentAntiAimYaw = 180.0f; if (!isfinite(silentAntiAimJitterRange)) silentAntiAimJitterRange = 45.0f; if (!isfinite(silentAntiAimSpinSpeed)) silentAntiAimSpinSpeed = 180.0f; if (!isfinite(silentAntiAimEdgeDistance)) silentAntiAimEdgeDistance = 3.0f; if (!isfinite(silentAntiAimEdgeOffset)) silentAntiAimEdgeOffset = 0.0f; if (silentAntiAimMode < 0 || silentAntiAimMode > 3) silentAntiAimMode = 0; if (silentAntiAimPitch < 0 || silentAntiAimPitch > 2) silentAntiAimPitch = 0; if (silentAntiAimYaw < -180.0f) silentAntiAimYaw = -180.0f; if (silentAntiAimYaw > 180.0f) silentAntiAimYaw = 180.0f; if (silentAntiAimJitterRange < 0.0f) silentAntiAimJitterRange = 0.0f; if (silentAntiAimJitterRange > 180.0f) silentAntiAimJitterRange = 180.0f; if (silentAntiAimSpinSpeed < 1.0f) silentAntiAimSpinSpeed = 1.0f; if (silentAntiAimSpinSpeed > 3600.0f) silentAntiAimSpinSpeed = 3600.0f; if (silentAntiAimEdgeDistance < 0.5f) silentAntiAimEdgeDistance = 0.5f; if (silentAntiAimEdgeDistance > 6.0f) silentAntiAimEdgeDistance = 6.0f; if (silentAntiAimEdgeOffset < -180.0f) silentAntiAimEdgeOffset = -180.0f; if (silentAntiAimEdgeOffset > 180.0f) silentAntiAimEdgeOffset = 180.0f; if (!isfinite(silentAntiAimJumpYaw)) silentAntiAimJumpYaw = 180.0f; if (!isfinite(silentAntiAimJumpJitterRange)) silentAntiAimJumpJitterRange = 45.0f; if (!isfinite(silentAntiAimJumpSpinSpeed)) silentAntiAimJumpSpinSpeed = 180.0f; if (!isfinite(silentAntiAimJumpEdgeDistance)) silentAntiAimJumpEdgeDistance = 3.0f; if (!isfinite(silentAntiAimJumpEdgeOffset)) silentAntiAimJumpEdgeOffset = 0.0f; if (silentAntiAimJumpMode < 0 || silentAntiAimJumpMode > 3) silentAntiAimJumpMode = 0; if (silentAntiAimJumpPitch < 0 || silentAntiAimJumpPitch > 2) silentAntiAimJumpPitch = 0; if (silentAntiAimJumpYaw < -180.0f) silentAntiAimJumpYaw = -180.0f; if (silentAntiAimJumpYaw > 180.0f) silentAntiAimJumpYaw = 180.0f; if (silentAntiAimJumpJitterRange < 0.0f) silentAntiAimJumpJitterRange = 0.0f; if (silentAntiAimJumpJitterRange > 180.0f) silentAntiAimJumpJitterRange = 180.0f; if (silentAntiAimJumpSpinSpeed < 1.0f) silentAntiAimJumpSpinSpeed = 1.0f; if (silentAntiAimJumpSpinSpeed > 3600.0f) silentAntiAimJumpSpinSpeed = 3600.0f; if (silentAntiAimJumpEdgeDistance < 0.5f) silentAntiAimJumpEdgeDistance = 0.5f; if (silentAntiAimJumpEdgeDistance > 6.0f) silentAntiAimJumpEdgeDistance = 6.0f; if (silentAntiAimJumpEdgeOffset < -180.0f) silentAntiAimJumpEdgeOffset = -180.0f; if (silentAntiAimJumpEdgeOffset > 180.0f) silentAntiAimJumpEdgeOffset = 180.0f; LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(freezeCorpsesFadeEnabled); LOAD_FLOAT(freezeCorpsesFadeDuration); LOAD_INT(freezeCorpsesChamsMode); LOAD_FLOAT(freezeCorpsesChamsAlpha); LOAD_FLOAT(freezeCorpsesMetallic); LOAD_FLOAT(freezeCorpsesSmoothness); LOAD_FLOAT(freezeCorpsesAnimationSpeed); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
     LOAD_BOOL(espShowName); LOAD_BOOL(espShowHealth); LOAD_BOOL(espShowWeapon); LOAD_BOOL(espGradient);
+    LOAD_BOOL(espBoxGlow); LOAD_BOOL(espHealthGlow); LOAD_FLOAT(espGlowRadius); LOAD_FLOAT(espGlowIntensity);
+    if (!isfinite(espGlowRadius) || espGlowRadius < 1.0f) espGlowRadius = 1.0f;
+    if (espGlowRadius > 12.0f) espGlowRadius = 12.0f;
+    if (!isfinite(espGlowIntensity) || espGlowIntensity < 0.05f) espGlowIntensity = 0.05f;
+    if (espGlowIntensity > 1.0f) espGlowIntensity = 1.0f;
     LOAD_BOOL(worldColorEnabled); LOAD_INT(worldColorMode); LOAD_FLOAT(worldColorStrength); LOAD_FLOAT(worldColorAlpha);
     LOAD_BOOL(penetrableSurfacesEnabled); LOAD_FLOAT(penetrableSurfaceAlpha); LOAD_FLOAT(penetrableSurfaceScanDistance);
     if (penetrableSurfaceAlpha < 0.05f) penetrableSurfaceAlpha = 0.05f; if (penetrableSurfaceAlpha > 0.80f) penetrableSurfaceAlpha = 0.80f;
@@ -8503,6 +8585,7 @@ void BoxEsp() {
         const float bottom = fmaxf(headScreen.y, feetScreen.y);
         const ImVec2 boxMin(centerX - width * 0.5f, top);
         const ImVec2 boxMax(centerX + width * 0.5f, bottom);
+        DrawEspBoxGlow(draw, boxMin, boxMax);
         draw->AddRect(boxMin, boxMax, IM_COL32(0, 0, 0, 220), 2.0f, 0, 4.0f);
         if (espGradient) {
             constexpr int gradientSegments = 32;
@@ -8535,8 +8618,9 @@ void BoxEsp() {
             if (health >= 0) {
                 const float healthFraction = fmaxf(0.0f, fminf(1.0f, health / 100.0f));
                 const float barX = boxMin.x - 9.0f;
-                draw->AddRectFilled(ImVec2(barX - 1.0f, top - 1.0f), ImVec2(barX + 6.0f, bottom + 1.0f), IM_COL32(0, 0, 0, 235));
                 const float fillTop = bottom - height * healthFraction;
+                DrawEspHealthGlow(draw, barX, fillTop, bottom);
+                draw->AddRectFilled(ImVec2(barX - 1.0f, top - 1.0f), ImVec2(barX + 6.0f, bottom + 1.0f), IM_COL32(0, 0, 0, 235));
                 constexpr int healthSegments = 24;
                 for (int segment = 0; segment < healthSegments; ++segment) {
                     const float t0 = static_cast<float>(segment) / healthSegments;
@@ -9686,6 +9770,14 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::Checkbox("ESP Health", &espShowHealth);
             ImGui::Checkbox("ESP Weapons", &espShowWeapon);
             ImGui::Checkbox("ESP Gradient", &espGradient);
+            ImGui::Checkbox("ESP Box Glow", &espBoxGlow);
+            ImGui::Checkbox("ESP HP Glow", &espHealthGlow);
+            if (espBoxGlow || espHealthGlow) {
+                ImGui::SliderFloat("ESP Glow Radius", &espGlowRadius,
+                    1.0f, 12.0f, "%.1f px");
+                ImGui::SliderFloat("ESP Glow Intensity", &espGlowIntensity,
+                    0.05f, 1.0f, "%.2f");
+            }
             ImGui::ColorEdit3("ESP Box Color", espTopColor);
             if (espGradient) ImGui::ColorEdit3("ESP Box Gradient Color", espBottomColor);
             ImGui::ColorEdit3("ESP Name Color", espNameColor);
