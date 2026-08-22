@@ -197,7 +197,8 @@
     <ClInclude Include="kiero\minhook\src\trampoline.h" />
     <ClInclude Include="src\detours.h" />
     <ClInclude Include="src\detver.h" />
-  <ClInclude Include="velocity_limiter.h" /></ItemGroup>
+  <ClInclude Include="velocity_limiter.h" />
+    <ClInclude Include="tps_anti_aim_camera.h" /></ItemGroup>
   <ItemGroup>
     <Library Include="detours.X64\detours.lib" />
     <Library Include="detours.X64\syelog.lib" />

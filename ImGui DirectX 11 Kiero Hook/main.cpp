@@ -2,6 +2,7 @@
 #include "il2cpp.h"
 #include "velocity_limiter.h"
 #include "cat_skybox_bytes.h"
+#include "tps_anti_aim_camera.h"
 
 #include <vector>
 #include <algorithm>
@@ -809,6 +810,7 @@ struct Matrix16 {
 #define OFFSET_PLAYERCONTROLS_INPUTFILTER_DELEGATE   0x88  // Action<xl> <ckqt>k__BackingField
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_UPDATE       0xB5C790
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_FIXEDUPDATE 0xB5C700
+#define OFFSET_CAMERACONTROLLER_ONPRECULL            0xB74D50  // CameraController.OnPreCull()
 #define OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT         0xC19440  // AimController.mwp(AimSnapshot)
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0xC194C0
 #define OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE      0xC19D80  // AimController.och(Vector3)
@@ -3195,6 +3197,7 @@ typedef void(__fastcall* t_InputFilter)(uintptr_t, uintptr_t, const Il2CppMethod
 t_InputFilter o_InputFilter = nullptr;
 void(__fastcall* o_CameraMovementController_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CameraMovementController_FixedUpdate)(uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_CameraController_OnPreCull)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_NetworkController_WriteSnapshot)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 Vector3(__fastcall* o_AimController_GetHeadDirective)(uintptr_t, const Il2CppMethod*) = nullptr;
@@ -5573,6 +5576,26 @@ void __fastcall hk_AimController_LateAim(
     }
     o_AimController_LateAim(aimController, method);
     InterlockedIncrement(&silentAntiAimLateAimCalls);
+}
+
+void __fastcall hk_CameraController_OnPreCull(
+    uintptr_t cameraController, const Il2CppMethod* method)
+{
+    if (!o_CameraController_OnPreCull) return;
+    o_CameraController_OnPreCull(cameraController, method);
+
+    // Every anti-aim/network write already happened this frame before native
+    // OnPreCull ran. All TPS-camera-only logic lives in the isolated
+    // tps_anti_aim_camera.h; this hook body never touches AimingData,
+    // InputFilter, or any snapshot writer.
+    uintptr_t controlledCamera = 0;
+    __try {
+        // dump1 CameraController::clgs is its own Camera at +0x28.
+        controlledCamera = cameraController ?
+            *reinterpret_cast<uintptr_t*>(cameraController + 0x28) : 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { controlledCamera = 0; }
+    TpsCameraWorkaround_AfterNativeOnPreCull(controlledCamera);
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -10906,6 +10929,10 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             strcpy_s(thirdPersonStatus, thirdPersonEnabled ? "TPS transition queued" : "FPS transition queued");
             InterlockedExchange(&pendingThirdPersonCommand, 1);
         }
+        ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f),
+            "TPS camera fix: %s (fires=%ld, applied=%ld)",
+            g_TpsCameraWorkaroundStatus,
+            g_TpsCameraHookFires, g_TpsCameraRestoreApplied);
         if (thirdPersonEnabled) {
             ImGui::SliderFloat("TPS Horizontal", &thirdPersonHorizontalOffset, -3.0f, 3.0f, "%.2f");
             ImGui::SliderFloat("TPS Height", &thirdPersonHeightAdjustment, -3.0f, 3.0f, "%.2f");
@@ -11702,6 +11729,17 @@ DWORD WINAPI HackThread(LPVOID)
         MH_EnableHook((LPVOID)(base + OFFSET_HITMARKERVIEW_LOCAL_HIT)) : hitLogCreateStatus;
     if (hitLogCreateStatus != MH_OK || hitLogEnableStatus != MH_OK)
         hitLogEnabled = false;
+    const MH_STATUS tpsCameraPreCullCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_CAMERACONTROLLER_ONPRECULL),
+        hk_CameraController_OnPreCull,
+        (LPVOID*)&o_CameraController_OnPreCull);
+    const MH_STATUS tpsCameraPreCullEnableStatus =
+        tpsCameraPreCullCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_CAMERACONTROLLER_ONPRECULL)) :
+        tpsCameraPreCullCreateStatus;
+    LINDY_LOG("[tps-camera] precull=%d/%d",
+        (int)tpsCameraPreCullCreateStatus,
+        (int)tpsCameraPreCullEnableStatus);
     const MH_STATUS antiAimLateAimCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM),
         hk_AimController_LateAim,
