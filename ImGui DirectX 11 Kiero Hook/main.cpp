@@ -1065,6 +1065,9 @@ uintptr_t silentAntiAimCameraTransform = 0;
 Vector3 silentAntiAimLatestRealAimAngle;
 Vector3 silentAntiAimLatestRealAimEuler;
 Vector3 silentAntiAimLatestFakeAngles;
+Vector3 silentAntiAimDesiredMoveDirection;
+bool silentAntiAimDesiredMoveValid = false;
+ULONGLONG silentAntiAimDesiredMoveTick = 0;
 Vector3 silentAntiAimRealCameraAngles;
 bool silentAntiAimRealCameraValid = false;
 Vector3 silentAntiAimOriginalAngles;  // Real angles from DeltaAimAngles
@@ -4705,6 +4708,8 @@ static void ClearRotationAntiAimTargetUnsafe()
     silentAntiAimLatestController = 0;
     silentAntiAimLatestAimingData = 0;
     silentAntiAimLatestCommandTick = 0;
+    silentAntiAimDesiredMoveValid = false;
+    silentAntiAimDesiredMoveTick = 0;
     silentAntiAimEdgeScanFrame = 0;
     silentAntiAimEdgeFound = false;
     InterlockedIncrement(&silentAntiAimSnapshotSequence); // publication complete (even)
@@ -5130,22 +5135,41 @@ static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
 
         const float oldSide = *reinterpret_cast<float*>(inputs + 0x10);
         const float oldForward = *reinterpret_cast<float*>(inputs + 0x14);
-        // The game consumes the real local movement frame during Spin even while
-        // the model/snapshot yaw is fake. Do not rotate WASD by a yaw that changes
-        // every callback; keep Spin visible/networked and movement camera-relative.
-        const Vector3 movementAngles = mode == 2 ? realAngles : output;
-        const float radians = NormalizeAngle180(
-            realAngles.y - movementAngles.y) *
-            0.01745329251994329577f;
-        const float cosine = cosf(radians);
-        const float sine = sinf(radians);
-        // Rotate input from real-camera space into the fake-yaw command space.
-        // The inverse signs made 90-100 degree Jitter/Spin/Flick steer sideways;
-        // Static 180 masked the bug because sin(180) is zero.
-        *reinterpret_cast<float*>(inputs + 0x14) = fmaxf(-1.0f,
-            fminf(1.0f, cosine * oldForward + sine * oldSide));
-        *reinterpret_cast<float*>(inputs + 0x10) = fmaxf(-1.0f,
-            fminf(1.0f, cosine * oldSide - sine * oldForward));
+        const bool dynamicYaw = mode == 1 || mode == 2 || mode == 3;
+        Vector3 desiredMoveDirection = {};
+        bool desiredMoveValid = false;
+        if (dynamicYaw) {
+            const float inputLength = sqrtf(
+                oldSide * oldSide + oldForward * oldForward);
+            if (isfinite(inputLength) && inputLength > 0.001f) {
+                const float yawRadians = realAngles.y *
+                    0.01745329251994329577f;
+                const float yawSin = sinf(yawRadians);
+                const float yawCos = cosf(yawRadians);
+                const float worldX = oldForward * yawSin + oldSide * yawCos;
+                const float worldZ = oldForward * yawCos - oldSide * yawSin;
+                const float worldLength = sqrtf(
+                    worldX * worldX + worldZ * worldZ);
+                if (isfinite(worldLength) && worldLength > 0.001f) {
+                    desiredMoveDirection = Vector3(
+                        worldX / worldLength, 0.0f, worldZ / worldLength);
+                    desiredMoveValid = true;
+                }
+            }
+            // Let native input processing run unchanged. Its final horizontal
+            // direction is replaced at local CharacterController.Move, where
+            // movement is already world-space and fake yaw can no longer affect it.
+        }
+        else {
+            const float radians = NormalizeAngle180(
+                realAngles.y - output.y) * 0.01745329251994329577f;
+            const float cosine = cosf(radians);
+            const float sine = sinf(radians);
+            *reinterpret_cast<float*>(inputs + 0x14) = fmaxf(-1.0f,
+                fminf(1.0f, cosine * oldForward + sine * oldSide));
+            *reinterpret_cast<float*>(inputs + 0x10) = fmaxf(-1.0f,
+                fminf(1.0f, cosine * oldSide - sine * oldForward));
+        }
 
         // Match the original source: only the actual aim components are changed.
         reinterpret_cast<Vector3*>(aimingData + 0x18)->x = output.x;
@@ -5159,6 +5183,9 @@ static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
         silentAntiAimLatestRealAimAngle = realAngles;
         silentAntiAimLatestFakeAngles = output;
         silentAntiAimLatestCommandTick = GetTickCount64();
+        silentAntiAimDesiredMoveDirection = desiredMoveDirection;
+        silentAntiAimDesiredMoveValid = desiredMoveValid;
+        silentAntiAimDesiredMoveTick = silentAntiAimLatestCommandTick;
         silentAntiAimLatestInputValid = true;
         InterlockedIncrement(&silentAntiAimSnapshotSequence);
         InterlockedIncrement(&silentAntiAimFilterCalls);
@@ -9263,6 +9290,30 @@ static uintptr_t GetLocalCharacterControllerUnsafe()
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
+static bool ReadDynamicAntiAimMoveDirection(
+    Vector3* direction, ULONGLONG* commandTick)
+{
+    if (!direction || !commandTick) return false;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        const LONG before = InterlockedCompareExchange(
+            &silentAntiAimSnapshotSequence, 0, 0);
+        if (before & 1) continue;
+        const bool valid = silentAntiAimDesiredMoveValid;
+        const Vector3 value = silentAntiAimDesiredMoveDirection;
+        const ULONGLONG tick = silentAntiAimDesiredMoveTick;
+        MemoryBarrier();
+        const LONG after = InterlockedCompareExchange(
+            &silentAntiAimSnapshotSequence, 0, 0);
+        if (before != after || (after & 1)) continue;
+        if (!valid || !tick || !isfinite(value.x) || !isfinite(value.z))
+            return false;
+        *direction = value;
+        *commandTick = tick;
+        return true;
+    }
+    return false;
+}
+
 int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 {
     const uintptr_t localCharacterController =
@@ -9295,6 +9346,24 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 
 
     const float movementDeltaTime = GetMovementDeltaTime();
+
+    // Dynamic fake yaw must never steer local movement. CharacterController.Move
+    // is the authoritative world-space boundary: preserve native speed/vertical
+    // motion and replace only horizontal direction with raw WASD + real camera yaw.
+    if (keyValidated && silentAntiAimEnabled) {
+        Vector3 desiredDirection = {};
+        ULONGLONG commandTick = 0;
+        const ULONGLONG now = GetTickCount64();
+        const float horizontalLength = sqrtf(
+            motion.x * motion.x + motion.z * motion.z);
+        if (isfinite(horizontalLength) && horizontalLength > 0.00001f &&
+            ReadDynamicAntiAimMoveDirection(
+                &desiredDirection, &commandTick) &&
+            now >= commandTick && now - commandTick <= 80ULL) {
+            motion.x = desiredDirection.x * horizontalLength;
+            motion.z = desiredDirection.z * horizontalLength;
+        }
+    }
 
     if (keyValidated && jbActive) {
         pixelSurfCharacterController = instance;
