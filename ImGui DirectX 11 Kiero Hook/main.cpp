@@ -1065,11 +1065,9 @@ uintptr_t silentAntiAimCameraTransform = 0;
 Vector3 silentAntiAimLatestRealAimAngle;
 Vector3 silentAntiAimLatestRealAimEuler;
 Vector3 silentAntiAimLatestFakeAngles;
-Vector3 silentAntiAimDesiredMoveDirection;
-bool silentAntiAimDesiredMoveValid = false;
-ULONGLONG silentAntiAimDesiredMoveTick = 0;
-Vector3 silentAntiAimAirMoveDirection;
-bool silentAntiAimAirMoveDirectionValid = false;
+float silentAntiAimMoveYawCorrection = 0.0f;
+bool silentAntiAimMoveYawCorrectionValid = false;
+ULONGLONG silentAntiAimMoveYawCorrectionTick = 0;
 Vector3 silentAntiAimRealCameraAngles;
 bool silentAntiAimRealCameraValid = false;
 Vector3 silentAntiAimOriginalAngles;  // Real angles from DeltaAimAngles
@@ -4710,9 +4708,9 @@ static void ClearRotationAntiAimTargetUnsafe()
     silentAntiAimLatestController = 0;
     silentAntiAimLatestAimingData = 0;
     silentAntiAimLatestCommandTick = 0;
-    silentAntiAimDesiredMoveValid = false;
-    silentAntiAimDesiredMoveTick = 0;
-    silentAntiAimAirMoveDirectionValid = false;
+    silentAntiAimMoveYawCorrection = 0.0f;
+    silentAntiAimMoveYawCorrectionValid = false;
+    silentAntiAimMoveYawCorrectionTick = 0;
     silentAntiAimEdgeScanFrame = 0;
     silentAntiAimEdgeFound = false;
     InterlockedIncrement(&silentAntiAimSnapshotSequence); // publication complete (even)
@@ -5139,31 +5137,11 @@ static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
         const float oldSide = *reinterpret_cast<float*>(inputs + 0x10);
         const float oldForward = *reinterpret_cast<float*>(inputs + 0x14);
         const bool dynamicYaw = mode == 1 || mode == 2 || mode == 3;
-        Vector3 desiredMoveDirection = {};
-        bool desiredMoveValid = false;
-        if (dynamicYaw) {
-            const float inputLength = sqrtf(
-                oldSide * oldSide + oldForward * oldForward);
-            if (isfinite(inputLength) && inputLength > 0.001f) {
-                const float yawRadians = realAngles.y *
-                    0.01745329251994329577f;
-                const float yawSin = sinf(yawRadians);
-                const float yawCos = cosf(yawRadians);
-                const float worldX = oldForward * yawSin + oldSide * yawCos;
-                const float worldZ = oldForward * yawCos - oldSide * yawSin;
-                const float worldLength = sqrtf(
-                    worldX * worldX + worldZ * worldZ);
-                if (isfinite(worldLength) && worldLength > 0.001f) {
-                    desiredMoveDirection = Vector3(
-                        worldX / worldLength, 0.0f, worldZ / worldLength);
-                    desiredMoveValid = true;
-                }
-            }
-            // Let native input processing run unchanged. Its final horizontal
-            // direction is replaced at local CharacterController.Move, where
-            // movement is already world-space and fake yaw can no longer affect it.
-        }
-        else {
+        const float moveYawCorrection = dynamicYaw ?
+            NormalizeAngle180(realAngles.y - output.y) : 0.0f;
+        const bool moveYawCorrectionValid = dynamicYaw &&
+            isfinite(moveYawCorrection);
+        if (!dynamicYaw) {
             const float radians = NormalizeAngle180(
                 realAngles.y - output.y) * 0.01745329251994329577f;
             const float cosine = cosf(radians);
@@ -5186,9 +5164,9 @@ static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
         silentAntiAimLatestRealAimAngle = realAngles;
         silentAntiAimLatestFakeAngles = output;
         silentAntiAimLatestCommandTick = GetTickCount64();
-        silentAntiAimDesiredMoveDirection = desiredMoveDirection;
-        silentAntiAimDesiredMoveValid = desiredMoveValid;
-        silentAntiAimDesiredMoveTick = silentAntiAimLatestCommandTick;
+        silentAntiAimMoveYawCorrection = moveYawCorrection;
+        silentAntiAimMoveYawCorrectionValid = moveYawCorrectionValid;
+        silentAntiAimMoveYawCorrectionTick = silentAntiAimLatestCommandTick;
         silentAntiAimLatestInputValid = true;
         InterlockedIncrement(&silentAntiAimSnapshotSequence);
         InterlockedIncrement(&silentAntiAimFilterCalls);
@@ -9293,24 +9271,23 @@ static uintptr_t GetLocalCharacterControllerUnsafe()
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
-static bool ReadDynamicAntiAimMoveDirection(
-    Vector3* direction, ULONGLONG* commandTick)
+static bool ReadDynamicAntiAimMoveYawCorrection(
+    float* yawCorrection, ULONGLONG* commandTick)
 {
-    if (!direction || !commandTick) return false;
+    if (!yawCorrection || !commandTick) return false;
     for (int attempt = 0; attempt < 3; ++attempt) {
         const LONG before = InterlockedCompareExchange(
             &silentAntiAimSnapshotSequence, 0, 0);
         if (before & 1) continue;
-        const bool valid = silentAntiAimDesiredMoveValid;
-        const Vector3 value = silentAntiAimDesiredMoveDirection;
-        const ULONGLONG tick = silentAntiAimDesiredMoveTick;
+        const bool valid = silentAntiAimMoveYawCorrectionValid;
+        const float value = silentAntiAimMoveYawCorrection;
+        const ULONGLONG tick = silentAntiAimMoveYawCorrectionTick;
         MemoryBarrier();
         const LONG after = InterlockedCompareExchange(
             &silentAntiAimSnapshotSequence, 0, 0);
         if (before != after || (after & 1)) continue;
-        if (!valid || !tick || !isfinite(value.x) || !isfinite(value.z))
-            return false;
-        *direction = value;
+        if (!valid || !tick || !isfinite(value)) return false;
+        *yawCorrection = value;
         *commandTick = tick;
         return true;
     }
@@ -9350,61 +9327,25 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 
     const float movementDeltaTime = GetMovementDeltaTime();
 
-    // Dynamic fake yaw must never steer local movement. CharacterController.Move
-    // is the authoritative world-space boundary: preserve native speed/vertical
-    // motion and replace only horizontal direction with raw WASD + real camera yaw.
+    // Preserve the game's own ground/air acceleration, momentum and smoothing.
+    // Dynamic anti-aim is removed only as a world-space yaw rotation from the
+    // final native horizontal motion; no direction or speed is synthesized.
     if (keyValidated && silentAntiAimEnabled) {
-        Vector3 desiredDirection = {};
+        float yawCorrection = 0.0f;
         ULONGLONG commandTick = 0;
         const ULONGLONG now = GetTickCount64();
-        const float horizontalLength = sqrtf(
-            motion.x * motion.x + motion.z * motion.z);
-        if (isfinite(horizontalLength) && horizontalLength > 0.00001f &&
-            ReadDynamicAntiAimMoveDirection(
-                &desiredDirection, &commandTick) &&
+        if (ReadDynamicAntiAimMoveYawCorrection(
+                &yawCorrection, &commandTick) &&
             now >= commandTick && now - commandTick <= 80ULL) {
-            const bool grounded = o_CC_get_isGrounded &&
-                o_CC_get_isGrounded(instance);
-            Vector3 appliedDirection = desiredDirection;
-            if (!grounded) {
-                if (!silentAntiAimAirMoveDirectionValid) {
-                    const float inverseLength = 1.0f / horizontalLength;
-                    silentAntiAimAirMoveDirection = Vector3(
-                        motion.x * inverseLength, 0.0f,
-                        motion.z * inverseLength);
-                    silentAntiAimAirMoveDirectionValid = true;
-                }
-                // Keep the pre-jump momentum and turn it gradually toward WASD.
-                // The previous exact replacement snapped horizontal velocity on
-                // every airborne Move call and made jumping visibly abrupt.
-                const float blend = fminf(1.0f,
-                    fmaxf(0.0f, movementDeltaTime * 8.0f));
-                const float blendedX = silentAntiAimAirMoveDirection.x +
-                    (desiredDirection.x - silentAntiAimAirMoveDirection.x) * blend;
-                const float blendedZ = silentAntiAimAirMoveDirection.z +
-                    (desiredDirection.z - silentAntiAimAirMoveDirection.z) * blend;
-                const float blendedLength = sqrtf(
-                    blendedX * blendedX + blendedZ * blendedZ);
-                if (isfinite(blendedLength) && blendedLength > 0.001f) {
-                    appliedDirection = Vector3(
-                        blendedX / blendedLength, 0.0f,
-                        blendedZ / blendedLength);
-                    silentAntiAimAirMoveDirection = appliedDirection;
-                }
-            }
-            else {
-                silentAntiAimAirMoveDirection = desiredDirection;
-                silentAntiAimAirMoveDirectionValid = true;
-            }
-            motion.x = appliedDirection.x * horizontalLength;
-            motion.z = appliedDirection.z * horizontalLength;
+            const float radians = yawCorrection *
+                0.01745329251994329577f;
+            const float cosine = cosf(radians);
+            const float sine = sinf(radians);
+            const float oldX = motion.x;
+            const float oldZ = motion.z;
+            motion.x = oldX * cosine + oldZ * sine;
+            motion.z = -oldX * sine + oldZ * cosine;
         }
-        else {
-            silentAntiAimAirMoveDirectionValid = false;
-        }
-    }
-    else {
-        silentAntiAimAirMoveDirectionValid = false;
     }
 
     if (keyValidated && jbActive) {
