@@ -7510,8 +7510,10 @@ static uintptr_t CreateBundleGlassChamsMaterial()
         if (!bundleGlassSourceMaterial) {
             using LoadAllAssetsFn = Il2CppArray*(__fastcall*)(uintptr_t, Il2CppObject*, const Il2CppMethod*);
             Il2CppArray* materials = reinterpret_cast<LoadAllAssetsFn>(base + OFFSET_ASSETBUNDLE_LOAD_ALL_ASSETS)(bundleGlassAssetBundle, typeObject, nullptr);
-            if (materials && materials->max_length > 0)
-                bundleGlassSourceMaterial = *reinterpret_cast<uintptr_t*>(reinterpret_cast<unsigned char*>(materials) + 0x20);
+            const uintptr_t materialsAddress = reinterpret_cast<uintptr_t>(materials);
+            const uintptr_t materialCount = materialsAddress ? *reinterpret_cast<const uintptr_t*>(materialsAddress + 0x18) : 0;
+            if (materialCount > 0 && materialCount <= 1024)
+                bundleGlassSourceMaterial = *reinterpret_cast<const uintptr_t*>(materialsAddress + 0x20);
         }
         if (!bundleGlassSourceMaterial) { strcpy_s(bundleGlassStatus, "Glass material not found in bundle"); return 0; }
         if (g_il2cpp.gchandle_new) bundleGlassSourceMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(bundleGlassSourceMaterial), false);
