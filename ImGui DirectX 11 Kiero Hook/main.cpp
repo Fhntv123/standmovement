@@ -1417,9 +1417,6 @@ float enemyChamsAnimationSpeed = 1.0f;
 ULONGLONG enemyChamsLastAnimationTick = 0;
 uintptr_t enemyChamsMaterials[13] = {};
 uint32_t enemyChamsMaterialHandles[13] = {};
-uintptr_t enemyBundleWallMaterial = 0;
-uint32_t enemyBundleWallMaterialHandle = 0;
-int enemyBundleWallMaterialMode = -1;
 struct EnemyChamsRenderer { uintptr_t renderer; uintptr_t originalMaterial; bool originalEnabled; uintptr_t outlineObject; uintptr_t outlineRenderer; };
 std::vector<EnemyChamsRenderer> enemyChamsRenderers;
 std::vector<uintptr_t> enemyChamsInitializedOcclusionControllers;
@@ -8558,37 +8555,6 @@ static uintptr_t EnsureSelectedEnemyChamsMaterial()
 {
     return EnsureEnemyChamsMaterial(enemyChamsMode);
 }
-static uintptr_t EnsureEnemyBundleWallMaterial(uintptr_t visibleMaterial)
-{
-    if (enemyBundleWallMaterialMode != enemyChamsMode) {
-        if (enemyBundleWallMaterialHandle && g_il2cpp.gchandle_free)
-            g_il2cpp.gchandle_free(enemyBundleWallMaterialHandle);
-        enemyBundleWallMaterialHandle = 0;
-        enemyBundleWallMaterial = 0;
-        enemyBundleWallMaterialMode = -1;
-    }
-    if (const uintptr_t cached = GetLiveCachedChamsMaterial(
-        &enemyBundleWallMaterial, &enemyBundleWallMaterialHandle))
-        return cached;
-    if (!visibleMaterial || enemyChamsMode < 8 || enemyChamsMode > 11 ||
-        !g_il2cpp.object_new || !o_Material_copy_ctor) return 0;
-    Il2CppClass* materialClass = g_il2cpp.find_class("UnityEngine", "Material");
-    if (!materialClass) return 0;
-    enemyBundleWallMaterial = reinterpret_cast<uintptr_t>(g_il2cpp.object_new(materialClass));
-    if (!enemyBundleWallMaterial) return 0;
-    o_Material_copy_ctor(enemyBundleWallMaterial, visibleMaterial, nullptr);
-    KeepBundleChamsObjectAlive(enemyBundleWallMaterial);
-    if (o_Material_SetFloat && g_il2cpp.string_new) {
-        o_Material_SetFloat(enemyBundleWallMaterial, g_il2cpp.string_new("_ZTest"), 8.0f);
-        o_Material_SetFloat(enemyBundleWallMaterial, g_il2cpp.string_new("_ZWrite"), 0.0f);
-        o_Material_SetFloat(enemyBundleWallMaterial, g_il2cpp.string_new("_Cull"), 0.0f);
-    }
-    if (o_Material_set_renderQueue) o_Material_set_renderQueue(enemyBundleWallMaterial, 3998);
-    if (g_il2cpp.gchandle_new)
-        enemyBundleWallMaterialHandle = g_il2cpp.gchandle_new(reinterpret_cast<Il2CppObject*>(enemyBundleWallMaterial), false);
-    enemyBundleWallMaterialMode = enemyChamsMode;
-    return enemyBundleWallMaterial;
-}
 
 static Color GetEnemyChamsDisplayColor()
 {
@@ -8743,17 +8709,13 @@ static void UpdateEnemyChams()
 
     const uintptr_t replacement = EnsureSelectedEnemyChamsMaterial();
     if (!replacement) return;
-    uintptr_t wallOverlay = 0;
-    if (enemyChamsThroughWalls) {
-        wallOverlay = (enemyChamsMode >= 8 && enemyChamsMode <= 11) ?
-            EnsureEnemyBundleWallMaterial(replacement) : EnsureEnemyChamsMaterial(12);
-        if (!wallOverlay) return;
-    }
+    const uintptr_t wallOverlay = enemyChamsThroughWalls ? EnsureEnemyChamsMaterial(12) : 0;
+    if (enemyChamsThroughWalls && !wallOverlay) return;
     if (enemyChamsMode == 3 && o_Material_SetFloat && g_il2cpp.string_new) {
         o_Material_SetFloat(replacement, g_il2cpp.string_new("_Metallic"), enemyChamsMetallic);
         o_Material_SetFloat(replacement, g_il2cpp.string_new("_Glossiness"), enemyChamsSmoothness);
     }
-    if (o_Material_set_renderQueue && enemyChamsMode < 8)
+    if (o_Material_set_renderQueue)
         o_Material_set_renderQueue(replacement, enemyChamsThroughWalls ? 3999 :
             ((enemyChamsMode == 1 || enemyChamsMode == 4) ? 3000 : 2000));
     const Color displayColor = GetEnemyChamsDisplayColor();
