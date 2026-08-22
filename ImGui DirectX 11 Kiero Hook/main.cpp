@@ -5126,16 +5126,18 @@ static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
             *reinterpret_cast<bool*>(inputs + 0x21) ||
             *reinterpret_cast<bool*>(inputs + 0x23) ||
             *reinterpret_cast<bool*>(inputs + 0x26);
-        const Vector3 output = returnAngles ? realAngles : fake;
+        // Static yaw is stable enough for the original source-style command
+        // correction. Jitter/Spin/Random Flick can jump by 90-360 degrees between
+        // callbacks, so keep live local AimingData in the real camera frame and
+        // publish their fake yaw separately to the model/network snapshots.
+        const bool dynamicYaw = mode == 1 || mode == 2 || mode == 3;
+        const Vector3 output = (returnAngles || dynamicYaw) ? realAngles : fake;
+        const Vector3 publishedFake = returnAngles ? realAngles : fake;
 
         const float oldSide = *reinterpret_cast<float*>(inputs + 0x10);
         const float oldForward = *reinterpret_cast<float*>(inputs + 0x14);
-        // The game consumes the real local movement frame during Spin even while
-        // the model/snapshot yaw is fake. Do not rotate WASD by a yaw that changes
-        // every callback; keep Spin visible/networked and movement camera-relative.
-        const Vector3 movementAngles = mode == 2 ? realAngles : output;
         const float radians = NormalizeAngle180(
-            realAngles.y - movementAngles.y) *
+            realAngles.y - output.y) *
             0.01745329251994329577f;
         const float cosine = cosf(radians);
         const float sine = sinf(radians);
@@ -5154,7 +5156,7 @@ static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
         silentAntiAimLatestController = aimController;
         silentAntiAimLatestAimingData = aimingData;
         silentAntiAimLatestRealAimAngle = realAngles;
-        silentAntiAimLatestFakeAngles = output;
+        silentAntiAimLatestFakeAngles = publishedFake;
         silentAntiAimLatestCommandTick = GetTickCount64();
         silentAntiAimLatestInputValid = true;
         InterlockedIncrement(&silentAntiAimSnapshotSequence);
@@ -5583,6 +5585,17 @@ void __fastcall hk_AimController_LateAim(
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
     o_AimController_LateAim(aimController, method);
+
+    // Live AimingData remains real for movement/camera in dynamic yaw modes.
+    // Apply the coherent fake only to the third-person character rig after the
+    // native aim pass; outgoing serializers already use the same published fake.
+    float fakeYaw = 0.0f;
+    float fakePitch = 0.0f;
+    if (ReadLocalRotationAntiAimSnapshotUnsafe(
+            aimController, &fakeYaw, &fakePitch)) {
+        ApplyRotationAntiAimAfterAimPassUnsafe(
+            aimController, fakeYaw, fakePitch);
+    }
     InterlockedIncrement(&silentAntiAimLateAimCalls);
 }
 
