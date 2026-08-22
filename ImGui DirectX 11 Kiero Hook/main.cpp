@@ -1068,6 +1068,8 @@ Vector3 silentAntiAimLatestFakeAngles;
 Vector3 silentAntiAimDesiredMoveDirection;
 bool silentAntiAimDesiredMoveValid = false;
 ULONGLONG silentAntiAimDesiredMoveTick = 0;
+Vector3 silentAntiAimAirMoveDirection;
+bool silentAntiAimAirMoveDirectionValid = false;
 Vector3 silentAntiAimRealCameraAngles;
 bool silentAntiAimRealCameraValid = false;
 Vector3 silentAntiAimOriginalAngles;  // Real angles from DeltaAimAngles
@@ -4710,6 +4712,7 @@ static void ClearRotationAntiAimTargetUnsafe()
     silentAntiAimLatestCommandTick = 0;
     silentAntiAimDesiredMoveValid = false;
     silentAntiAimDesiredMoveTick = 0;
+    silentAntiAimAirMoveDirectionValid = false;
     silentAntiAimEdgeScanFrame = 0;
     silentAntiAimEdgeFound = false;
     InterlockedIncrement(&silentAntiAimSnapshotSequence); // publication complete (even)
@@ -9360,9 +9363,48 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
             ReadDynamicAntiAimMoveDirection(
                 &desiredDirection, &commandTick) &&
             now >= commandTick && now - commandTick <= 80ULL) {
-            motion.x = desiredDirection.x * horizontalLength;
-            motion.z = desiredDirection.z * horizontalLength;
+            const bool grounded = o_CC_get_isGrounded &&
+                o_CC_get_isGrounded(instance);
+            Vector3 appliedDirection = desiredDirection;
+            if (!grounded) {
+                if (!silentAntiAimAirMoveDirectionValid) {
+                    const float inverseLength = 1.0f / horizontalLength;
+                    silentAntiAimAirMoveDirection = Vector3(
+                        motion.x * inverseLength, 0.0f,
+                        motion.z * inverseLength);
+                    silentAntiAimAirMoveDirectionValid = true;
+                }
+                // Keep the pre-jump momentum and turn it gradually toward WASD.
+                // The previous exact replacement snapped horizontal velocity on
+                // every airborne Move call and made jumping visibly abrupt.
+                const float blend = fminf(1.0f,
+                    fmaxf(0.0f, movementDeltaTime * 8.0f));
+                const float blendedX = silentAntiAimAirMoveDirection.x +
+                    (desiredDirection.x - silentAntiAimAirMoveDirection.x) * blend;
+                const float blendedZ = silentAntiAimAirMoveDirection.z +
+                    (desiredDirection.z - silentAntiAimAirMoveDirection.z) * blend;
+                const float blendedLength = sqrtf(
+                    blendedX * blendedX + blendedZ * blendedZ);
+                if (isfinite(blendedLength) && blendedLength > 0.001f) {
+                    appliedDirection = Vector3(
+                        blendedX / blendedLength, 0.0f,
+                        blendedZ / blendedLength);
+                    silentAntiAimAirMoveDirection = appliedDirection;
+                }
+            }
+            else {
+                silentAntiAimAirMoveDirection = desiredDirection;
+                silentAntiAimAirMoveDirectionValid = true;
+            }
+            motion.x = appliedDirection.x * horizontalLength;
+            motion.z = appliedDirection.z * horizontalLength;
         }
+        else {
+            silentAntiAimAirMoveDirectionValid = false;
+        }
+    }
+    else {
+        silentAntiAimAirMoveDirectionValid = false;
     }
 
     if (keyValidated && jbActive) {
