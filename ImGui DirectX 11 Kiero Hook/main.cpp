@@ -5553,45 +5553,52 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(
 void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
-    // Match sourse/hooks.cpp literally: restore Camera.main's actual Transform
-    // before the native late-aim pass. AimController::FPSCamera (+0x68) is a
-    // director/parent transform; forcing its world euler after native aim cancels
-    // the native vertical camera motion.
-    if (silentAntiAimEnabled && silentAntiAimRealCameraValid &&
-        aimController == silentAntiAimLatestController &&
-        o_Camera_get_main && o_Component_get_transform &&
-        o_Transform_set_eulerAngles) {
-        __try {
-            const uintptr_t camera = o_Camera_get_main();
-            const uintptr_t cameraTransform = camera ?
-                o_Component_get_transform(camera) : 0;
-            if (cameraTransform) {
-                o_Transform_set_eulerAngles(cameraTransform,
-                    silentAntiAimRealCameraAngles);
-                InterlockedIncrement(&silentAntiAimCameraRestoreCalls);
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
     o_AimController_LateAim(aimController, method);
-
     InterlockedIncrement(&silentAntiAimLateAimCalls);
 }
 
-static void RestoreThirdPersonRealCameraUnsafe()
+static bool BeginLocalCameraRealAimUnsafe(uintptr_t cameraController,
+    Vector3* savedAim, Vector3* savedEuler, uintptr_t* aimingDataOut)
 {
-    if (!thirdPersonEnabled || !silentAntiAimEnabled ||
-        !silentAntiAimRealCameraValid || !o_Camera_get_main ||
-        !o_Component_get_transform || !o_Transform_set_eulerAngles) return;
+    if (!cameraController || !savedAim || !savedEuler || !aimingDataOut ||
+        !thirdPersonEnabled || !silentAntiAimEnabled ||
+        !silentAntiAimRealCameraValid || !liveHudLocalPlayer) return false;
     __try {
-        const uintptr_t camera = o_Camera_get_main();
-        const uintptr_t cameraTransform = camera ?
-            o_Component_get_transform(camera) : 0;
-        if (cameraTransform) {
-            o_Transform_set_eulerAngles(cameraTransform,
-                silentAntiAimRealCameraAngles);
-            InterlockedIncrement(&silentAntiAimCameraRestoreCalls);
-        }
+        // dump1 PlayerFPSCamera::<clfn>k__BackingField +0x138 identifies the
+        // exact local camera. Scope real aim around its native Update instead of
+        // trying to overwrite a Transform after the TPS rig has consumed fake aim.
+        const uintptr_t ownerPlayer =
+            *reinterpret_cast<uintptr_t*>(cameraController + 0x138);
+        if (ownerPlayer != liveHudLocalPlayer) return false;
+        const uintptr_t aimController =
+            *reinterpret_cast<uintptr_t*>(ownerPlayer + 0xC8);
+        const uintptr_t aimingData = aimController ?
+            *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
+        if (!aimingData || aimController != silentAntiAimLatestController) return false;
+        *savedAim = *reinterpret_cast<Vector3*>(aimingData + 0x18);
+        *savedEuler = *reinterpret_cast<Vector3*>(aimingData + 0x24);
+        Vector3 cameraAim = *savedAim;
+        Vector3 cameraEuler = *savedEuler;
+        cameraAim.x = silentAntiAimRealCameraAngles.x;
+        cameraEuler.y = silentAntiAimRealCameraAngles.y;
+        *reinterpret_cast<Vector3*>(aimingData + 0x18) = cameraAim;
+        *reinterpret_cast<Vector3*>(aimingData + 0x24) = cameraEuler;
+        *aimingDataOut = aimingData;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        *aimingDataOut = 0;
+        return false;
+    }
+}
+
+static void EndLocalCameraRealAimUnsafe(uintptr_t aimingData,
+    const Vector3& savedAim, const Vector3& savedEuler)
+{
+    if (!aimingData) return;
+    __try {
+        *reinterpret_cast<Vector3*>(aimingData + 0x18) = savedAim;
+        *reinterpret_cast<Vector3*>(aimingData + 0x24) = savedEuler;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
@@ -5600,11 +5607,20 @@ void __fastcall hk_PlayerFPSCamera_Update(
     uintptr_t cameraController, const Il2CppMethod* method)
 {
     if (!o_PlayerFPSCamera_Update) return;
+    Vector3 savedAim = {};
+    Vector3 savedEuler = {};
+    uintptr_t aimingData = 0;
+    const bool scopedRealAim = BeginLocalCameraRealAimUnsafe(
+        cameraController, &savedAim, &savedEuler, &aimingData);
+
+    // Native FPS/TPS camera now reads real pitch/yaw for this update. Restore the
+    // exact fake live state immediately afterwards so outgoing snapshots and the
+    // third-person body pose remain anti-aimed.
     o_PlayerFPSCamera_Update(cameraController, method);
-    // dump1 PlayerFPSCamera.Update is the final owner of the native FPS/TPS
-    // observer camera. Restore after it, not during AimController.nhi where a
-    // later camera update overwrites us and creates the unstable upward snap.
-    RestoreThirdPersonRealCameraUnsafe();
+    if (scopedRealAim) {
+        EndLocalCameraRealAimUnsafe(aimingData, savedAim, savedEuler);
+        InterlockedIncrement(&silentAntiAimCameraRestoreCalls);
+    }
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
