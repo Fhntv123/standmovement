@@ -4833,7 +4833,7 @@ void __fastcall hk_AimSnapshot_nev(uintptr_t snapshot, uintptr_t writer, const I
     // Patch only this detached outgoing snapshot and its detached buffer. Live
     // AimController.aimingData and all camera/input objects remain untouched.
     const bool outgoing = silentAntiAimEnabled && snapshot && writer &&
-        silentAntiAimLatestInputValid && !silentAntiAimLatestFiring;
+        silentAntiAimLatestInputValid;
     if (!outgoing) {
         o_AimSnapshot_nev(snapshot, writer, method);
         return;
@@ -4944,7 +4944,7 @@ void __fastcall hk_MovementSnapshot_nev(uintptr_t snapshot, uintptr_t writer,
     Vector3 savedCharacterRotation = {};
     Vector3 savedEuler = {};
     const bool outgoing = silentAntiAimEnabled && snapshot && writer &&
-        silentAntiAimLatestInputValid && !silentAntiAimLatestFiring;
+        silentAntiAimLatestInputValid;
     const bool patched = outgoing && PatchMovementSnapshotRotationUnsafe(
         snapshot, silentAntiAimLatestFakeAngles,
         &savedCharacterRotation, &savedEuler);
@@ -4965,7 +4965,7 @@ void __fastcall hk_PlayerSnapshot_nev(uintptr_t snapshot, uintptr_t writer,
     Vector3 savedEuler = {};
     bool patched = false;
     const bool outgoing = silentAntiAimEnabled && snapshot && writer &&
-        silentAntiAimLatestInputValid && !silentAntiAimLatestFiring;
+        silentAntiAimLatestInputValid;
     if (outgoing) {
         __try { movementSnapshot = *reinterpret_cast<uintptr_t*>(snapshot + 0x18); }
         __except (EXCEPTION_EXECUTE_HANDLER) { movementSnapshot = 0; }
@@ -4991,8 +4991,7 @@ uintptr_t __fastcall hk_MovementController_GetSnapshot(uintptr_t movementControl
     if (!o_MovementController_GetSnapshot) return 0;
     const uintptr_t snapshot = o_MovementController_GetSnapshot(
         movementController, method);
-    if (!silentAntiAimEnabled || !snapshot || !silentAntiAimLatestInputValid ||
-        silentAntiAimLatestFiring) return snapshot;
+    if (!silentAntiAimEnabled || !snapshot || !silentAntiAimLatestInputValid) return snapshot;
     uintptr_t ownerPlayer = 0;
     __try { ownerPlayer = *reinterpret_cast<uintptr_t*>(movementController + 0x58); }
     __except (EXCEPTION_EXECUTE_HANDLER) { ownerPlayer = 0; }
@@ -5016,51 +5015,7 @@ uintptr_t __fastcall hk_MovementController_GetSnapshot(uintptr_t movementControl
 // InputFilter delegate hook: patches fake angles into AimingData before original InputFilter runs
 void __fastcall hk_InputFilter(uintptr_t inputsPtr, const Il2CppMethod* method)
 {
-    if (!o_InputFilter) return;
-    
-    // inputsPtr points to xl struct (input data)
-    // Before calling original InputFilter, we need to patch AimingData if antiaim is active
-    
-    if (silentAntiAimEnabled && silentAntiAimLatestInputValid && !silentAntiAimLatestFiring &&
-        silentAntiAimLatestAimingData) {
-        
-        // Save original angles from AimingData
-        Vector3 savedAim{};
-        Vector3 savedEuler{};
-        bool patched = false;
-        
-        __try {
-            savedAim = *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x18);
-            savedEuler = *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x24);
-            
-            // Store real angles for LateUpdate camera restore
-            silentAntiAimOriginalAngles = savedAim;
-            silentAntiAimOriginalEulerAngles = savedEuler;
-            
-            // Patch with fake angles
-            const Vector3 fake = silentAntiAimLatestFakeAngles;
-            *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x18) = fake;
-            *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x24) = fake;
-            patched = true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) { patched = false; }
-        
-        // Call original InputFilter with fake angles
-        o_InputFilter(inputsPtr, method);
-        
-        // Restore real angles after original InputFilter runs
-        if (patched) {
-            __try {
-                *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x18) = savedAim;
-                *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x24) = savedEuler;
-                InterlockedIncrement(&silentAntiAimAppliedCalls);
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) {}
-        }
-    } else {
-        // No antiaim: just call original
-        o_InputFilter(inputsPtr, method);
-    }
+    if (o_InputFilter) o_InputFilter(inputsPtr, method);
 }
 
 // Initialize InputFilter delegate hook from PlayerControls instance
@@ -5098,6 +5053,23 @@ static bool InitializeInputFilterHook(uintptr_t playerControls)
     
     const MH_STATUS enableStatus = MH_EnableHook((LPVOID)methodPtr);
     return enableStatus == MH_OK || enableStatus == MH_ERROR_ALREADY_CREATED;
+}
+
+static bool PatchAntiAimCommandUnsafe(uintptr_t command, const Vector3& fake)
+{
+    if (!command || !isfinite(fake.x) || !isfinite(fake.y)) return false;
+    __try {
+        // dump1 xl::caxp is the only Vector3 carried by the native input command.
+        // Patch the detached command itself instead of mutating live transforms,
+        // AimingData, or guessing which serializer the current netcode build uses.
+        Vector3 commandAim = *reinterpret_cast<Vector3*>(command + 0x2C);
+        commandAim.x = fake.x;
+        commandAim.y = fake.y;
+        commandAim.z = 0.0f;
+        *reinterpret_cast<Vector3*>(command + 0x2C) = commandAim;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
 uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
@@ -5213,16 +5185,16 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
             }
             __except (EXCEPTION_EXECUTE_HANDLER) { jumpProfile = false; }
         }
-        __try {
-            // dump1 xl fire flag. Shots keep real network angles; anti-aim is
-            // applied only to non-firing outgoing snapshots.
-            silentAntiAimLatestFiring =
-                *reinterpret_cast<bool*>(command + 0x21);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            silentAntiAimLatestFiring = false;
-        }
+        // The old implementation guessed that xl+0x21 was a fire flag. In this
+        // build it stays set during normal play and blocked every outgoing patch.
+        // Build the fake angles first, then write the detached xl command directly.
+        silentAntiAimLatestFiring = false;
         UpdateRotationAntiAimTarget(player, jumpProfile);
+        if (silentAntiAimLatestInputValid &&
+            PatchAntiAimCommandUnsafe(command, silentAntiAimLatestFakeAngles)) {
+            InterlockedIncrement(&silentAntiAimCommandCalls);
+            InterlockedIncrement(&silentAntiAimAppliedCalls);
+        }
     }
     else if (silentAntiAimLatestPlayer == player || !silentAntiAimEnabled)
         ClearRotationAntiAimTargetUnsafe();
@@ -5239,7 +5211,7 @@ void __fastcall hk_NetworkController_WriteSnapshot(
     // now patches fake angles before original InputFilter runs.
     o_NetworkController_WriteSnapshot(networkController, writer, method);
     if (silentAntiAimEnabled && networkController && writer &&
-        silentAntiAimLatestInputValid && !silentAntiAimLatestFiring)
+        silentAntiAimLatestInputValid)
         InterlockedIncrement(&silentAntiAimCommandCalls);
 }
 
@@ -5454,19 +5426,10 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(
 void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
-    // Native nhi updates both rigs first. The anti-aim pass below targets only
-    // PlayerController::_characterBiped, so the separate _armsBiped/FPS weapon
-    // hierarchy remains entirely native in both first and third person.
-    float fakeYaw = 0.0f;
-    float fakePitch = 0.0f;
-    const bool applyLocal = silentAntiAimEnabled &&
-        ReadLocalRotationAntiAimSnapshotUnsafe(
-            aimController, &fakeYaw, &fakePitch);
+    // Network anti-aim must not rotate the local character rig. The previous local
+    // bone pass only made the effect visible to this client and was not replication.
     o_AimController_LateAim(aimController, method);
     InterlockedIncrement(&silentAntiAimLateAimCalls);
-    if (applyLocal)
-        ApplyRotationAntiAimAfterAimPassUnsafe(
-            aimController, fakeYaw, fakePitch);
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -10695,13 +10658,13 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     (silentAntiAimEdgeFound ? "Working: Edge Yaw locked" :
                                               "Edge Yaw: no nearby wall") :
                  "Working: rotation applied") :
-                "Waiting for outgoing player packet"));
+                "Waiting for local input command"));
         ImGui::TextWrapped("Status: %s", antiAimRuntimeStatus);
-        ImGui::TextDisabled("net:%ld late:%ld bones:%ld yaw:%.1f",
+        ImGui::TextDisabled("cmd:%ld input:%ld fake:(%.0f, %.0f)",
             InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
-            InterlockedCompareExchange(&silentAntiAimLateAimCalls, 0, 0),
-            InterlockedCompareExchange(&silentAntiAimBonePasses, 0, 0),
-            silentAntiAimRenderYaw);
+            InterlockedCompareExchange(&silentAntiAimInputBuildCalls, 0, 0),
+            silentAntiAimLatestFakeAngles.x,
+            silentAntiAimLatestFakeAngles.y);
 
         ImGui::EndChild();
     }
