@@ -809,6 +809,7 @@ struct Matrix16 {
 #define OFFSET_PLAYERCONTROLS_INPUTFILTER_DELEGATE   0x88  // Action<xl> <ckqt>k__BackingField
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_UPDATE       0xB5C790
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_FIXEDUPDATE 0xB5C700
+#define OFFSET_CAMERACONTROLLER_ONPRECULL            0xB74D50  // CameraController.OnPreCull()
 #define OFFSET_AIMCONTROLLER_APPLY_SNAPSHOT         0xC19440  // AimController.mwp(AimSnapshot)
 #define OFFSET_AIMCONTROLLER_GET_SNAPSHOT           0xC194C0
 #define OFFSET_AIMCONTROLLER_SET_HEAD_DIRECTIVE      0xC19D80  // AimController.och(Vector3)
@@ -3195,6 +3196,7 @@ typedef void(__fastcall* t_InputFilter)(uintptr_t, uintptr_t, const Il2CppMethod
 t_InputFilter o_InputFilter = nullptr;
 void(__fastcall* o_CameraMovementController_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CameraMovementController_FixedUpdate)(uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_CameraController_OnPreCull)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimController_SetHeadDirective)(uintptr_t, Vector3, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_NetworkController_WriteSnapshot)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 Vector3(__fastcall* o_AimController_GetHeadDirective)(uintptr_t, const Il2CppMethod*) = nullptr;
@@ -5573,6 +5575,37 @@ void __fastcall hk_AimController_LateAim(
     }
     o_AimController_LateAim(aimController, method);
     InterlockedIncrement(&silentAntiAimLateAimCalls);
+}
+
+void __fastcall hk_CameraController_OnPreCull(
+    uintptr_t cameraController, const Il2CppMethod* method)
+{
+    if (!o_CameraController_OnPreCull) return;
+    o_CameraController_OnPreCull(cameraController, method);
+
+    // CameraController.OnPreCull is the final Unity game-thread boundary before
+    // this camera is rendered. Keep CreateMove/InputFilter/AimingData and every
+    // network snapshot byte-for-byte on the confirmed b235f16 path; overwrite
+    // only the visible main-camera transform after all TPS/aim writers finished.
+    if (!thirdPersonEnabled || !silentAntiAimEnabled ||
+        !silentAntiAimRealCameraValid || !cameraController ||
+        !o_Camera_get_main || !o_Component_get_transform ||
+        !o_Transform_set_eulerAngles) return;
+    __try {
+        // dump1 CameraController::clgs is its Camera at +0x28. CameraController
+        // also exists for auxiliary cameras, so never touch one that is not main.
+        const uintptr_t controlledCamera =
+            *reinterpret_cast<uintptr_t*>(cameraController + 0x28);
+        const uintptr_t mainCamera = o_Camera_get_main();
+        if (!controlledCamera || controlledCamera != mainCamera) return;
+        const uintptr_t cameraTransform =
+            o_Component_get_transform(mainCamera);
+        if (!cameraTransform) return;
+        o_Transform_set_eulerAngles(cameraTransform,
+            silentAntiAimRealCameraAngles);
+        InterlockedIncrement(&silentAntiAimCameraRestoreCalls);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -11702,6 +11735,17 @@ DWORD WINAPI HackThread(LPVOID)
         MH_EnableHook((LPVOID)(base + OFFSET_HITMARKERVIEW_LOCAL_HIT)) : hitLogCreateStatus;
     if (hitLogCreateStatus != MH_OK || hitLogEnableStatus != MH_OK)
         hitLogEnabled = false;
+    const MH_STATUS tpsCameraPreCullCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_CAMERACONTROLLER_ONPRECULL),
+        hk_CameraController_OnPreCull,
+        (LPVOID*)&o_CameraController_OnPreCull);
+    const MH_STATUS tpsCameraPreCullEnableStatus =
+        tpsCameraPreCullCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_CAMERACONTROLLER_ONPRECULL)) :
+        tpsCameraPreCullCreateStatus;
+    LINDY_LOG("[tps-camera] precull=%d/%d",
+        (int)tpsCameraPreCullCreateStatus,
+        (int)tpsCameraPreCullEnableStatus);
     const MH_STATUS antiAimLateAimCreateStatus = MH_CreateHook(
         (LPVOID)(base + OFFSET_AIMCONTROLLER_LATE_AIM),
         hk_AimController_LateAim,
