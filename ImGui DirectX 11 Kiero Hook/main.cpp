@@ -5126,7 +5126,12 @@ static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
             *reinterpret_cast<bool*>(inputs + 0x21) ||
             *reinterpret_cast<bool*>(inputs + 0x23) ||
             *reinterpret_cast<bool*>(inputs + 0x26);
-        const Vector3 output = returnAngles ? realAngles : fake;
+        // Spin changes every frame. Leaving that rapidly-changing yaw in live
+        // AimingData makes native movement chase the spin. Keep the local live
+        // view real for Spin; detached outgoing snapshots still receive `fake`.
+        const bool localRealForSpin = mode == 2;
+        const Vector3 output = (returnAngles || localRealForSpin) ?
+            realAngles : fake;
 
         const float oldSide = *reinterpret_cast<float*>(inputs + 0x10);
         const float oldForward = *reinterpret_cast<float*>(inputs + 0x14);
@@ -5149,7 +5154,7 @@ static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
         silentAntiAimLatestController = aimController;
         silentAntiAimLatestAimingData = aimingData;
         silentAntiAimLatestRealAimAngle = realAngles;
-        silentAntiAimLatestFakeAngles = output;
+        silentAntiAimLatestFakeAngles = returnAngles ? realAngles : fake;
         silentAntiAimLatestCommandTick = GetTickCount64();
         silentAntiAimLatestInputValid = true;
         InterlockedIncrement(&silentAntiAimSnapshotSequence);
@@ -6957,9 +6962,6 @@ static LONG WINAPI HitCasterBreakpointHandler(EXCEPTION_POINTERS* info)
         }
         else if (context->R8 && context->Rdx && insideLocalGunFire &&
             thirdPersonEnabled && g_TpsCrosshairTargetValid) {
-            // RDX is the genuine HitCaster origin argument. Redirect only the
-            // direction toward the point under the moved TPS crosshair; never
-            // replace origin, so close walls and muzzle obstruction stay native.
             const HitCasterVector3Abi* origin =
                 reinterpret_cast<const HitCasterVector3Abi*>(context->Rdx);
             HitCasterVector3Abi* direction =
@@ -9290,6 +9292,7 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 
 
     const float movementDeltaTime = GetMovementDeltaTime();
+
     if (keyValidated && jbActive) {
         pixelSurfCharacterController = instance;
         const float speed = sqrtf(motion.x * motion.x + motion.z * motion.z);

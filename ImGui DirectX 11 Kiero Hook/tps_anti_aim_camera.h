@@ -29,8 +29,13 @@ extern uintptr_t(__fastcall* o_Component_get_transform)(uintptr_t);
 extern Vector3(__fastcall* o_Transform_get_position)(uintptr_t);
 extern void(__fastcall* o_Transform_set_position)(uintptr_t, Vector3);
 extern void(__fastcall* o_Transform_set_eulerAngles)(uintptr_t, Vector3);
-extern bool(__fastcall* o_Physics_RaycastHit)(Vector3, Vector3,
-    RaycastHitNative*, float, int, int, const Il2CppMethod*);
+extern Il2CppArray*(__fastcall* o_Physics_RaycastAll)(
+    Vector3, Vector3, float, int, int, const Il2CppMethod*);
+extern uintptr_t(__fastcall* o_RaycastHit_get_collider)(
+    RaycastHitNative*, const Il2CppMethod*);
+extern uintptr_t(__fastcall* o_Component_GetInParent)(
+    uintptr_t, uintptr_t, bool, const Il2CppMethod*);
+extern Il2CppObject* g_PlayerControllerReflectionType;
 
 // Existing native transition is kept as the authoritative view-mode switch.
 // Declared here because its implementation and runtime ownership stay in
@@ -116,26 +121,47 @@ static void TpsThirdPerson_LateUpdate(
         o_Transform_set_eulerAngles(cameraTransform, view);
         o_Transform_set_position(cameraTransform, position);
 
-        // Third-person parallax: the screen crosshair ray starts at the moved
-        // camera, but native HitCaster starts at the weapon. Cache the point
-        // under the crosshair; VEH later redirects the genuine weapon-origin
-        // ray to this point. That preserves walls/muzzle origin and fixes TPS
-        // misses without changing first-person behavior.
-        RaycastHitNative crosshairHit = {};
-        if (o_Physics_RaycastHit && o_Physics_RaycastHit(position, forward,
-                &crosshairHit, 300.0f, -1, 1, nullptr) &&
-            isfinite(crosshairHit.point.x) &&
-            isfinite(crosshairHit.point.y) &&
-            isfinite(crosshairHit.point.z)) {
-            g_TpsCrosshairTarget = crosshairHit.point;
+        // Select the first real object under the TPS crosshair, excluding the
+        // local player's own body (the camera starts behind it). The previous
+        // single Raycast hit our own collider and redirected shots back into us.
+        g_TpsCrosshairTargetValid = false;
+        float nearestDistance = 301.0f;
+        if (o_Physics_RaycastAll && o_RaycastHit_get_collider &&
+            o_Component_GetInParent && g_PlayerControllerReflectionType) {
+            Il2CppArray* hits = o_Physics_RaycastAll(
+                position, forward, 300.0f, -1, 1, nullptr);
+            const uintptr_t array = reinterpret_cast<uintptr_t>(hits);
+            const size_t count = array ?
+                *reinterpret_cast<size_t*>(array + 0x18) : 0;
+            if (array && count <= 128) {
+                for (size_t i = 0; i < count; ++i) {
+                    RaycastHitNative* hit = reinterpret_cast<RaycastHitNative*>(
+                        array + 0x20 + i * sizeof(RaycastHitNative));
+                    if (!isfinite(hit->distance) || hit->distance < 0.05f ||
+                        hit->distance >= nearestDistance)
+                        continue;
+                    const uintptr_t collider =
+                        o_RaycastHit_get_collider(hit, nullptr);
+                    if (!collider) continue;
+                    const uintptr_t hitPlayer = o_Component_GetInParent(
+                        collider,
+                        reinterpret_cast<uintptr_t>(g_PlayerControllerReflectionType),
+                        true, nullptr);
+                    if (hitPlayer == liveHudLocalPlayer) continue;
+                    nearestDistance = hit->distance;
+                    g_TpsCrosshairTarget = hit->point;
+                    g_TpsCrosshairTargetValid = true;
+                }
+            }
         }
-        else {
+        if (!g_TpsCrosshairTargetValid) {
             g_TpsCrosshairTarget = Vector3(
                 position.x + forward.x * 300.0f,
                 position.y + forward.y * 300.0f,
                 position.z + forward.z * 300.0f);
+            g_TpsCrosshairTargetValid = true;
         }
-        g_TpsCrosshairTargetValid = true;
+
         InterlockedIncrement(&g_TpsCameraLateUpdates);
         strcpy_s(g_TpsCameraStatus, "Late camera placed from real view");
     }
