@@ -30,6 +30,7 @@
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "d3dcompiler.lib")
 
 
 
@@ -273,8 +274,256 @@ static bool CreateEspGlowTexture()
     return SUCCEEDED(result) && espGlowTexture != nullptr;
 }
 
+struct EspLiquidGlassCommand {
+    ImVec2 min;
+    ImVec2 max;
+    float radius;
+    float opacity;
+    ImVec4 tint;
+};
+
+static std::vector<EspLiquidGlassCommand> espLiquidGlassCommands;
+static ID3D11Texture2D* espLiquidGlassSceneTexture = nullptr;
+static ID3D11ShaderResourceView* espLiquidGlassSceneSrv = nullptr;
+static ID3D11VertexShader* espLiquidGlassVertexShader = nullptr;
+static ID3D11PixelShader* espLiquidGlassPixelShader = nullptr;
+static ID3D11Buffer* espLiquidGlassConstantBuffer = nullptr;
+static ID3D11SamplerState* espLiquidGlassSampler = nullptr;
+static ID3D11BlendState* espLiquidGlassBlend = nullptr;
+static UINT espLiquidGlassWidth = 0;
+static UINT espLiquidGlassHeight = 0;
+static DXGI_FORMAT espLiquidGlassFormat = DXGI_FORMAT_UNKNOWN;
+
+struct EspLiquidGlassConstants {
+    float rect[4];
+    float viewport[4];
+    float tint[4];
+    float optical[4];
+};
+
+static const char* kEspLiquidGlassHlsl = R"HLSL(
+Texture2D sceneTexture : register(t0);
+SamplerState sceneSampler : register(s0);
+cbuffer GlassConstants : register(b0) {
+    float4 rectPx;
+    float4 viewport; // width, height, rounded radius, opacity
+    float4 tint;
+    float4 optical;  // refraction px, blur px, time, unused
+};
+struct VsOut { float4 position : SV_POSITION; float2 localUv : TEXCOORD0; float2 sceneUv : TEXCOORD1; };
+VsOut VSMain(uint id : SV_VertexID) {
+    float2 corner = float2((id == 1 || id == 2 || id == 4) ? 1.0 : 0.0,
+                           (id == 2 || id == 4 || id == 5) ? 1.0 : 0.0);
+    float2 pixel = lerp(rectPx.xy, rectPx.zw, corner);
+    VsOut output;
+    output.position = float4(pixel.x / viewport.x * 2.0 - 1.0,
+                             1.0 - pixel.y / viewport.y * 2.0, 0.0, 1.0);
+    output.localUv = corner;
+    output.sceneUv = pixel / viewport.xy;
+    return output;
+}
+float roundedRectSdf(float2 p, float2 halfSize, float radius) {
+    float2 q = abs(p) - max(halfSize - radius, 0.0);
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+}
+float4 PSMain(VsOut input) : SV_TARGET {
+    float2 size = rectPx.zw - rectPx.xy;
+    float2 local = (input.localUv - 0.5) * size;
+    float2 halfSize = size * 0.5;
+    float sdf = roundedRectSdf(local, halfSize, min(viewport.z, min(halfSize.x, halfSize.y)));
+    float mask = 1.0 - smoothstep(-0.35, 1.25, sdf);
+    float edgeDistance = max(0.0, -sdf);
+    float bevel = 1.0 - smoothstep(0.0, max(2.0, viewport.z * 0.70), edgeDistance);
+    float2 edgeDirection = normalize(float2(ddx(sdf), ddy(sdf)) + float2(0.0001, 0.0001));
+    float2 texel = 1.0 / viewport.xy;
+    float2 refractOffset = edgeDirection * optical.x * bevel * texel;
+    float2 uv = input.sceneUv - refractOffset;
+    float blur = optical.y;
+    float2 bx = float2(blur * texel.x, 0.0);
+    float2 by = float2(0.0, blur * texel.y);
+    float3 center;
+    // Chromatic dispersion is restricted to the bevel where real lensing occurs.
+    center.r = sceneTexture.Sample(sceneSampler, uv - refractOffset * 0.045).r;
+    center.g = sceneTexture.Sample(sceneSampler, uv).g;
+    center.b = sceneTexture.Sample(sceneSampler, uv + refractOffset * 0.045).b;
+    float3 frosted = center * 0.28;
+    frosted += sceneTexture.Sample(sceneSampler, uv + bx).rgb * 0.12;
+    frosted += sceneTexture.Sample(sceneSampler, uv - bx).rgb * 0.12;
+    frosted += sceneTexture.Sample(sceneSampler, uv + by).rgb * 0.12;
+    frosted += sceneTexture.Sample(sceneSampler, uv - by).rgb * 0.12;
+    frosted += sceneTexture.Sample(sceneSampler, uv + bx + by).rgb * 0.06;
+    frosted += sceneTexture.Sample(sceneSampler, uv - bx + by).rgb * 0.06;
+    frosted += sceneTexture.Sample(sceneSampler, uv + bx - by).rgb * 0.06;
+    frosted += sceneTexture.Sample(sceneSampler, uv - bx - by).rgb * 0.06;
+    float3 normal = normalize(float3(edgeDirection * bevel, 1.0));
+    float3 lightDir = normalize(float3(-0.55, -0.72, 0.9));
+    float fresnel = 0.04 + 0.96 * pow(1.0 - saturate(normal.z), 5.0);
+    float specular = pow(saturate(dot(normal, lightDir)), 42.0) * bevel;
+    float rim = pow(bevel, 2.4) * 0.32;
+    float3 glass = lerp(frosted, frosted * tint.rgb + tint.rgb * 0.12, tint.a);
+    glass += (specular * 0.75 + rim + fresnel * bevel * 0.16);
+    float alpha = mask * viewport.w * (0.42 + bevel * 0.48);
+    return float4(glass, alpha);
+}
+)HLSL";
+
+static void ReleaseEspLiquidGlassResources()
+{
+    if (espLiquidGlassBlend) { espLiquidGlassBlend->Release(); espLiquidGlassBlend = nullptr; }
+    if (espLiquidGlassSampler) { espLiquidGlassSampler->Release(); espLiquidGlassSampler = nullptr; }
+    if (espLiquidGlassConstantBuffer) { espLiquidGlassConstantBuffer->Release(); espLiquidGlassConstantBuffer = nullptr; }
+    if (espLiquidGlassPixelShader) { espLiquidGlassPixelShader->Release(); espLiquidGlassPixelShader = nullptr; }
+    if (espLiquidGlassVertexShader) { espLiquidGlassVertexShader->Release(); espLiquidGlassVertexShader = nullptr; }
+    if (espLiquidGlassSceneSrv) { espLiquidGlassSceneSrv->Release(); espLiquidGlassSceneSrv = nullptr; }
+    if (espLiquidGlassSceneTexture) { espLiquidGlassSceneTexture->Release(); espLiquidGlassSceneTexture = nullptr; }
+    espLiquidGlassWidth = espLiquidGlassHeight = 0;
+    espLiquidGlassFormat = DXGI_FORMAT_UNKNOWN;
+}
+
+static bool CreateEspLiquidGlassPipeline()
+{
+    if (!pDevice) return false;
+    ID3DBlob* vertexBlob = nullptr;
+    ID3DBlob* pixelBlob = nullptr;
+    ID3DBlob* errors = nullptr;
+    HRESULT result = D3DCompile(kEspLiquidGlassHlsl, strlen(kEspLiquidGlassHlsl),
+        "EspLiquidGlass", nullptr, nullptr, "VSMain", "vs_5_0",
+        D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vertexBlob, &errors);
+    if (errors) errors->Release();
+    if (FAILED(result) || !vertexBlob) return false;
+    result = D3DCompile(kEspLiquidGlassHlsl, strlen(kEspLiquidGlassHlsl),
+        "EspLiquidGlass", nullptr, nullptr, "PSMain", "ps_5_0",
+        D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pixelBlob, &errors);
+    if (errors) errors->Release();
+    if (FAILED(result) || !pixelBlob) { vertexBlob->Release(); return false; }
+    result = pDevice->CreateVertexShader(vertexBlob->GetBufferPointer(),
+        vertexBlob->GetBufferSize(), nullptr, &espLiquidGlassVertexShader);
+    if (SUCCEEDED(result)) result = pDevice->CreatePixelShader(pixelBlob->GetBufferPointer(),
+        pixelBlob->GetBufferSize(), nullptr, &espLiquidGlassPixelShader);
+    vertexBlob->Release(); pixelBlob->Release();
+    if (FAILED(result)) return false;
+    D3D11_BUFFER_DESC cb = {};
+    cb.ByteWidth = sizeof(EspLiquidGlassConstants);
+    cb.Usage = D3D11_USAGE_DYNAMIC;
+    cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    if (FAILED(pDevice->CreateBuffer(&cb, nullptr, &espLiquidGlassConstantBuffer))) return false;
+    D3D11_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampler.MaxLOD = D3D11_FLOAT32_MAX;
+    if (FAILED(pDevice->CreateSamplerState(&sampler, &espLiquidGlassSampler))) return false;
+    D3D11_BLEND_DESC blend = {};
+    blend.RenderTarget[0].BlendEnable = TRUE;
+    blend.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    blend.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    blend.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    blend.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    blend.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    blend.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    blend.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    return SUCCEEDED(pDevice->CreateBlendState(&blend, &espLiquidGlassBlend));
+}
+
+static bool EnsureEspLiquidGlassScene(IDXGISwapChain* swapChain,
+    ID3D11Texture2D** backBufferOut)
+{
+    if (backBufferOut) *backBufferOut = nullptr;
+    if (!swapChain || !pDevice || !backBufferOut) return false;
+    ID3D11Texture2D* backBuffer = nullptr;
+    if (FAILED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D),
+        reinterpret_cast<void**>(&backBuffer))) || !backBuffer)
+        return false;
+    D3D11_TEXTURE2D_DESC sourceDesc = {};
+    backBuffer->GetDesc(&sourceDesc);
+    if (sourceDesc.SampleDesc.Count != 1) { backBuffer->Release(); return false; }
+    if (!espLiquidGlassVertexShader && !CreateEspLiquidGlassPipeline()) {
+        backBuffer->Release(); return false;
+    }
+    if (!espLiquidGlassSceneTexture || espLiquidGlassWidth != sourceDesc.Width ||
+        espLiquidGlassHeight != sourceDesc.Height || espLiquidGlassFormat != sourceDesc.Format) {
+        if (espLiquidGlassSceneSrv) { espLiquidGlassSceneSrv->Release(); espLiquidGlassSceneSrv = nullptr; }
+        if (espLiquidGlassSceneTexture) { espLiquidGlassSceneTexture->Release(); espLiquidGlassSceneTexture = nullptr; }
+        D3D11_TEXTURE2D_DESC copyDesc = sourceDesc;
+        copyDesc.Usage = D3D11_USAGE_DEFAULT;
+        copyDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        copyDesc.CPUAccessFlags = 0;
+        copyDesc.MiscFlags = 0;
+        if (FAILED(pDevice->CreateTexture2D(&copyDesc, nullptr,
+            &espLiquidGlassSceneTexture)) ||
+            FAILED(pDevice->CreateShaderResourceView(espLiquidGlassSceneTexture,
+                nullptr, &espLiquidGlassSceneSrv))) {
+            backBuffer->Release(); return false;
+        }
+        espLiquidGlassWidth = sourceDesc.Width;
+        espLiquidGlassHeight = sourceDesc.Height;
+        espLiquidGlassFormat = sourceDesc.Format;
+    }
+    *backBufferOut = backBuffer;
+    return true;
+}
+
+static void QueueEspLiquidGlass(const ImVec2& min, const ImVec2& max,
+    float radius, float opacity, const float color[3])
+{
+    if (!espLiquidGlass || min.x >= max.x || min.y >= max.y) return;
+    EspLiquidGlassCommand command = {};
+    command.min = min; command.max = max;
+    command.radius = radius; command.opacity = opacity;
+    command.tint = ImVec4(color[0], color[1], color[2], 0.24f);
+    espLiquidGlassCommands.push_back(command);
+}
+
+static void RenderEspLiquidGlass(IDXGISwapChain* swapChain)
+{
+    if (!espLiquidGlass || espLiquidGlassCommands.empty() || !pContext ||
+        !mainRenderTargetView) return;
+    ID3D11Texture2D* backBuffer = nullptr;
+    if (!EnsureEspLiquidGlassScene(swapChain, &backBuffer)) return;
+    pContext->CopyResource(espLiquidGlassSceneTexture, backBuffer);
+    backBuffer->Release();
+    const float blendFactor[4] = {};
+    pContext->OMSetRenderTargets(1, &mainRenderTargetView, nullptr);
+    pContext->OMSetBlendState(espLiquidGlassBlend, blendFactor, 0xFFFFFFFFu);
+    pContext->IASetInputLayout(nullptr);
+    pContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    pContext->VSSetShader(espLiquidGlassVertexShader, nullptr, 0);
+    pContext->VSSetConstantBuffers(0, 1, &espLiquidGlassConstantBuffer);
+    pContext->PSSetShader(espLiquidGlassPixelShader, nullptr, 0);
+    pContext->PSSetConstantBuffers(0, 1, &espLiquidGlassConstantBuffer);
+    pContext->PSSetShaderResources(0, 1, &espLiquidGlassSceneSrv);
+    pContext->PSSetSamplers(0, 1, &espLiquidGlassSampler);
+    for (size_t i = 0; i < espLiquidGlassCommands.size(); ++i) {
+        const EspLiquidGlassCommand& command = espLiquidGlassCommands[i];
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+        if (FAILED(pContext->Map(espLiquidGlassConstantBuffer, 0,
+            D3D11_MAP_WRITE_DISCARD, 0, &mapped))) continue;
+        EspLiquidGlassConstants* constants =
+            reinterpret_cast<EspLiquidGlassConstants*>(mapped.pData);
+        constants->rect[0] = command.min.x; constants->rect[1] = command.min.y;
+        constants->rect[2] = command.max.x; constants->rect[3] = command.max.y;
+        constants->viewport[0] = static_cast<float>(espLiquidGlassWidth);
+        constants->viewport[1] = static_cast<float>(espLiquidGlassHeight);
+        constants->viewport[2] = command.radius;
+        constants->viewport[3] = command.opacity * espLiquidGlassStrength;
+        constants->tint[0] = command.tint.x; constants->tint[1] = command.tint.y;
+        constants->tint[2] = command.tint.z; constants->tint[3] = command.tint.w;
+        constants->optical[0] = espLiquidGlassRefraction;
+        constants->optical[1] = espLiquidGlassBlur;
+        constants->optical[2] = static_cast<float>(ImGui::GetTime());
+        constants->optical[3] = 0.0f;
+        pContext->Unmap(espLiquidGlassConstantBuffer, 0);
+        pContext->Draw(6, 0);
+    }
+    ID3D11ShaderResourceView* nullSrv = nullptr;
+    pContext->PSSetShaderResources(0, 1, &nullSrv);
+}
+
 HRESULT __stdcall hkResizeBuffers(IDXGISwapChain* swapChain, UINT bufferCount, UINT width, UINT height, DXGI_FORMAT format, UINT flags) {
     ReleaseRenderTarget();
+    if (espLiquidGlassSceneSrv) { espLiquidGlassSceneSrv->Release(); espLiquidGlassSceneSrv = nullptr; }
+    if (espLiquidGlassSceneTexture) { espLiquidGlassSceneTexture->Release(); espLiquidGlassSceneTexture = nullptr; }
+    espLiquidGlassWidth = espLiquidGlassHeight = 0;
     const HRESULT result = oResizeBuffers(swapChain, bufferCount, width, height, format, flags);
     if (SUCCEEDED(result)) CreateRenderTarget(swapChain);
     return result;
@@ -1232,6 +1481,10 @@ bool espGradient = true;
 bool espHealthGradient = true;
 bool espBoxGlow = false;
 bool espHealthGlow = false;
+bool espLiquidGlass = false;
+float espLiquidGlassStrength = 0.55f;
+float espLiquidGlassBlur = 2.5f;
+float espLiquidGlassRefraction = 4.0f;
 float espGlowRadius = 10.0f;
 float espGlowIntensity = 0.55f;
 float espTopColor[3] = { 1.0f, 0.20f, 0.35f };
@@ -2219,6 +2472,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(silentAntiAimEnabled); SAVE_INT(silentAntiAimMode); SAVE_INT(silentAntiAimPitch); SAVE_FLOAT(silentAntiAimYaw); SAVE_FLOAT(silentAntiAimJitterRange); SAVE_FLOAT(silentAntiAimSpinSpeed); SAVE_FLOAT(silentAntiAimEdgeDistance); SAVE_FLOAT(silentAntiAimEdgeOffset); SAVE_INT(silentAntiAimJumpMode); SAVE_INT(silentAntiAimJumpPitch); SAVE_FLOAT(silentAntiAimJumpYaw); SAVE_FLOAT(silentAntiAimJumpJitterRange); SAVE_FLOAT(silentAntiAimJumpSpinSpeed); SAVE_FLOAT(silentAntiAimJumpEdgeDistance); SAVE_FLOAT(silentAntiAimJumpEdgeOffset); SAVE_BOOL(freezeCorpsesEnabled); SAVE_FLOAT(freezeCorpsesDuration); SAVE_BOOL(freezeCorpsesFadeEnabled); SAVE_FLOAT(freezeCorpsesFadeDuration); SAVE_INT(freezeCorpsesChamsMode); SAVE_FLOAT(freezeCorpsesChamsAlpha); SAVE_FLOAT(freezeCorpsesMetallic); SAVE_FLOAT(freezeCorpsesSmoothness); SAVE_FLOAT(freezeCorpsesAnimationSpeed); SAVE_BOOL(boxEsp); SAVE_INT(espCount); SAVE_FLOAT(espMaxDistance);
     SAVE_BOOL(espShowName); SAVE_BOOL(espShowHealth); SAVE_BOOL(espShowWeapon); SAVE_BOOL(espGradient);
     SAVE_BOOL(espBoxGlow); SAVE_BOOL(espHealthGlow); SAVE_FLOAT(espGlowRadius); SAVE_FLOAT(espGlowIntensity);
+    SAVE_BOOL(espLiquidGlass); SAVE_FLOAT(espLiquidGlassStrength); SAVE_FLOAT(espLiquidGlassBlur); SAVE_FLOAT(espLiquidGlassRefraction);
     SAVE_BOOL(worldColorEnabled); SAVE_INT(worldColorMode); SAVE_FLOAT(worldColorStrength); SAVE_FLOAT(worldColorAlpha);
     SAVE_BOOL(penetrableSurfacesEnabled); SAVE_FLOAT(penetrableSurfaceAlpha); SAVE_FLOAT(penetrableSurfaceScanDistance);
     SAVE_BOOL(fogEnabled); SAVE_FLOAT(fogStartDistance); SAVE_FLOAT(fogEndDistance); SAVE_FLOAT(fogDensity);
@@ -2320,6 +2574,13 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(silentAntiAimEnabled); LOAD_INT(silentAntiAimMode); LOAD_INT(silentAntiAimPitch); LOAD_FLOAT(silentAntiAimYaw); LOAD_FLOAT(silentAntiAimJitterRange); LOAD_FLOAT(silentAntiAimSpinSpeed); LOAD_FLOAT(silentAntiAimEdgeDistance); LOAD_FLOAT(silentAntiAimEdgeOffset); LOAD_INT(silentAntiAimJumpMode); LOAD_INT(silentAntiAimJumpPitch); LOAD_FLOAT(silentAntiAimJumpYaw); LOAD_FLOAT(silentAntiAimJumpJitterRange); LOAD_FLOAT(silentAntiAimJumpSpinSpeed); LOAD_FLOAT(silentAntiAimJumpEdgeDistance); LOAD_FLOAT(silentAntiAimJumpEdgeOffset); if (!isfinite(silentAntiAimYaw)) silentAntiAimYaw = 180.0f; if (!isfinite(silentAntiAimJitterRange)) silentAntiAimJitterRange = 45.0f; if (!isfinite(silentAntiAimSpinSpeed)) silentAntiAimSpinSpeed = 180.0f; if (!isfinite(silentAntiAimEdgeDistance)) silentAntiAimEdgeDistance = 3.0f; if (!isfinite(silentAntiAimEdgeOffset)) silentAntiAimEdgeOffset = 0.0f; if (silentAntiAimMode < 0 || silentAntiAimMode > 3) silentAntiAimMode = 0; if (silentAntiAimPitch < 0 || silentAntiAimPitch > 2) silentAntiAimPitch = 0; if (silentAntiAimYaw < -180.0f) silentAntiAimYaw = -180.0f; if (silentAntiAimYaw > 180.0f) silentAntiAimYaw = 180.0f; if (silentAntiAimJitterRange < 0.0f) silentAntiAimJitterRange = 0.0f; if (silentAntiAimJitterRange > 180.0f) silentAntiAimJitterRange = 180.0f; if (silentAntiAimSpinSpeed < 1.0f) silentAntiAimSpinSpeed = 1.0f; if (silentAntiAimSpinSpeed > 3600.0f) silentAntiAimSpinSpeed = 3600.0f; if (silentAntiAimEdgeDistance < 0.5f) silentAntiAimEdgeDistance = 0.5f; if (silentAntiAimEdgeDistance > 6.0f) silentAntiAimEdgeDistance = 6.0f; if (silentAntiAimEdgeOffset < -180.0f) silentAntiAimEdgeOffset = -180.0f; if (silentAntiAimEdgeOffset > 180.0f) silentAntiAimEdgeOffset = 180.0f; if (!isfinite(silentAntiAimJumpYaw)) silentAntiAimJumpYaw = 180.0f; if (!isfinite(silentAntiAimJumpJitterRange)) silentAntiAimJumpJitterRange = 45.0f; if (!isfinite(silentAntiAimJumpSpinSpeed)) silentAntiAimJumpSpinSpeed = 180.0f; if (!isfinite(silentAntiAimJumpEdgeDistance)) silentAntiAimJumpEdgeDistance = 3.0f; if (!isfinite(silentAntiAimJumpEdgeOffset)) silentAntiAimJumpEdgeOffset = 0.0f; if (silentAntiAimJumpMode < 0 || silentAntiAimJumpMode > 3) silentAntiAimJumpMode = 0; if (silentAntiAimJumpPitch < 0 || silentAntiAimJumpPitch > 2) silentAntiAimJumpPitch = 0; if (silentAntiAimJumpYaw < -180.0f) silentAntiAimJumpYaw = -180.0f; if (silentAntiAimJumpYaw > 180.0f) silentAntiAimJumpYaw = 180.0f; if (silentAntiAimJumpJitterRange < 0.0f) silentAntiAimJumpJitterRange = 0.0f; if (silentAntiAimJumpJitterRange > 180.0f) silentAntiAimJumpJitterRange = 180.0f; if (silentAntiAimJumpSpinSpeed < 1.0f) silentAntiAimJumpSpinSpeed = 1.0f; if (silentAntiAimJumpSpinSpeed > 3600.0f) silentAntiAimJumpSpinSpeed = 3600.0f; if (silentAntiAimJumpEdgeDistance < 0.5f) silentAntiAimJumpEdgeDistance = 0.5f; if (silentAntiAimJumpEdgeDistance > 6.0f) silentAntiAimJumpEdgeDistance = 6.0f; if (silentAntiAimJumpEdgeOffset < -180.0f) silentAntiAimJumpEdgeOffset = -180.0f; if (silentAntiAimJumpEdgeOffset > 180.0f) silentAntiAimJumpEdgeOffset = 180.0f; LOAD_BOOL(freezeCorpsesEnabled); LOAD_FLOAT(freezeCorpsesDuration); LOAD_BOOL(freezeCorpsesFadeEnabled); LOAD_FLOAT(freezeCorpsesFadeDuration); LOAD_INT(freezeCorpsesChamsMode); LOAD_FLOAT(freezeCorpsesChamsAlpha); LOAD_FLOAT(freezeCorpsesMetallic); LOAD_FLOAT(freezeCorpsesSmoothness); LOAD_FLOAT(freezeCorpsesAnimationSpeed); LOAD_BOOL(boxEsp); LOAD_INT(espCount); LOAD_FLOAT(espMaxDistance);
     LOAD_BOOL(espShowName); LOAD_BOOL(espShowHealth); LOAD_BOOL(espShowWeapon); LOAD_BOOL(espGradient);
     LOAD_BOOL(espBoxGlow); LOAD_BOOL(espHealthGlow); LOAD_FLOAT(espGlowRadius); LOAD_FLOAT(espGlowIntensity);
+    LOAD_BOOL(espLiquidGlass); LOAD_FLOAT(espLiquidGlassStrength); LOAD_FLOAT(espLiquidGlassBlur); LOAD_FLOAT(espLiquidGlassRefraction);
+    if (!isfinite(espLiquidGlassStrength) || espLiquidGlassStrength < 0.10f) espLiquidGlassStrength = 0.10f;
+    if (espLiquidGlassStrength > 1.0f) espLiquidGlassStrength = 1.0f;
+    if (!isfinite(espLiquidGlassBlur) || espLiquidGlassBlur < 0.0f) espLiquidGlassBlur = 0.0f;
+    if (espLiquidGlassBlur > 8.0f) espLiquidGlassBlur = 8.0f;
+    if (!isfinite(espLiquidGlassRefraction) || espLiquidGlassRefraction < 0.0f) espLiquidGlassRefraction = 0.0f;
+    if (espLiquidGlassRefraction > 12.0f) espLiquidGlassRefraction = 12.0f;
     if (!isfinite(espGlowRadius) || espGlowRadius < 1.0f) espGlowRadius = 1.0f;
     if (espGlowRadius > 24.0f) espGlowRadius = 24.0f;
     if (!isfinite(espGlowIntensity) || espGlowIntensity < 0.05f) espGlowIntensity = 0.05f;
@@ -8635,6 +8896,7 @@ void BoxEsp() {
         const float bottom = fmaxf(headScreen.y, feetScreen.y);
         const ImVec2 boxMin(centerX - width * 0.5f, top);
         const ImVec2 boxMax(centerX + width * 0.5f, bottom);
+        QueueEspLiquidGlass(boxMin, boxMax, 7.0f, 0.22f, espTopColor);
         DrawEspBoxGlow(draw, boxMin, boxMax);
         draw->AddRect(boxMin, boxMax, IM_COL32(0, 0, 0, 220), 2.0f, 0, 4.0f);
         if (espGradient) {
@@ -8659,6 +8921,9 @@ void BoxEsp() {
             GetPCName(player, playerName, sizeof(playerName));
             const ImVec2 size = ImGui::CalcTextSize(playerName);
             const ImVec2 pos(centerX - size.x * 0.5f, top - size.y - 3.0f);
+            QueueEspLiquidGlass(ImVec2(pos.x - 4.0f, pos.y - 2.0f),
+                ImVec2(pos.x + size.x + 4.0f, pos.y + size.y + 2.0f),
+                5.0f, 0.52f, espNameColor);
             draw->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 255), playerName);
             draw->AddText(pos, EspArrayColor(espNameColor), playerName);
         }
@@ -8669,6 +8934,8 @@ void BoxEsp() {
                 const float healthFraction = fmaxf(0.0f, fminf(1.0f, health / 100.0f));
                 const float barX = boxMin.x - 9.0f;
                 const float fillTop = bottom - height * healthFraction;
+                QueueEspLiquidGlass(ImVec2(barX - 2.0f, top - 2.0f),
+                    ImVec2(barX + 7.0f, bottom + 2.0f), 4.0f, 0.50f, espHealthColor);
                 DrawEspHealthGlow(draw, barX, fillTop, bottom);
                 draw->AddRectFilled(ImVec2(barX - 1.0f, top - 1.0f), ImVec2(barX + 6.0f, bottom + 1.0f), IM_COL32(0, 0, 0, 235));
                 constexpr int healthSegments = 24;
@@ -8682,6 +8949,10 @@ void BoxEsp() {
                 }
                 char hpText[16]; sprintf_s(hpText, "%d HP", health);
                 const ImVec2 hpPos(boxMax.x + 5.0f, top);
+                const ImVec2 hpSize = ImGui::CalcTextSize(hpText);
+                QueueEspLiquidGlass(ImVec2(hpPos.x - 3.0f, hpPos.y - 2.0f),
+                    ImVec2(hpPos.x + hpSize.x + 3.0f, hpPos.y + hpSize.y + 2.0f),
+                    5.0f, 0.48f, espHealthColor);
                 DrawAsciiGradientText(draw, hpPos, hpText);
             }
         }
@@ -8691,6 +8962,9 @@ void BoxEsp() {
             const char* weaponName = GetPCWeaponName(player);
             const ImVec2 size = ImGui::CalcTextSize(weaponName);
             const ImVec2 pos(centerX - size.x * 0.5f, infoY);
+            QueueEspLiquidGlass(ImVec2(pos.x - 4.0f, pos.y - 2.0f),
+                ImVec2(pos.x + size.x + 4.0f, pos.y + size.y + 2.0f),
+                5.0f, 0.50f, espBottomColor);
             draw->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 255), weaponName);
             draw->AddText(pos, EspColorAt(1.0f), weaponName);
             infoY += size.y + 1.0f;
@@ -8699,6 +8973,10 @@ void BoxEsp() {
             char distanceText[32]; sprintf_s(distanceText, "%.0fm", basePosition.Distance(localPosition));
             const ImVec2 size = ImGui::CalcTextSize(distanceText);
             const ImVec2 pos(centerX - size.x * 0.5f, infoY);
+            const float distanceGlassColor[3] = { 0.72f, 0.88f, 1.0f };
+            QueueEspLiquidGlass(ImVec2(pos.x - 4.0f, pos.y - 2.0f),
+                ImVec2(pos.x + size.x + 4.0f, pos.y + size.y + 2.0f),
+                5.0f, 0.42f, distanceGlassColor);
             draw->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 255), distanceText);
             draw->AddText(pos, IM_COL32(235, 235, 235, 255), distanceText);
         }
@@ -9460,6 +9738,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     
 
     // Render ESP if enabled
+    espLiquidGlassCommands.clear();
 
     if (boxEsp) {
 
@@ -9823,6 +10102,13 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             ImGui::Checkbox("ESP Gradient", &espGradient);
             ImGui::Checkbox("ESP Box Glow", &espBoxGlow);
             ImGui::Checkbox("ESP HP Glow", &espHealthGlow);
+            ImGui::Checkbox("ESP Liquid Glass", &espLiquidGlass);
+            if (espLiquidGlass) {
+                ImGui::SliderFloat("Glass Strength", &espLiquidGlassStrength, 0.10f, 1.0f, "%.2f");
+                ImGui::SliderFloat("Glass Blur", &espLiquidGlassBlur, 0.0f, 8.0f, "%.1f px");
+                ImGui::SliderFloat("Glass Refraction", &espLiquidGlassRefraction, 0.0f, 12.0f, "%.1f px");
+                ImGui::TextDisabled("Lensing + dispersion + frosted blur + Fresnel rim");
+            }
             if (espBoxGlow || espHealthGlow) {
                 ImGui::SliderFloat("ESP Glow Radius", &espGlowRadius,
                     2.0f, 24.0f, "%.1f px");
@@ -10425,7 +10711,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     ImGui::Render();
 
     pContext->OMSetRenderTargets(1, &mainRenderTargetView, NULL);
-
+    RenderEspLiquidGlass(pSwapChain);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
     return oPresent(pSwapChain, SyncInterval, Flags);
@@ -10855,6 +11141,7 @@ BOOL WINAPI DllMain(HMODULE hMod, DWORD dwReason, LPVOID lpReserved)
     case DLL_PROCESS_DETACH:
 
         ReleaseEspGlowTexture();
+        ReleaseEspLiquidGlassResources();
         kiero::shutdown();
 
         MH_Uninitialize();
