@@ -445,7 +445,6 @@ struct Matrix16 {
 #define OFFSET_ARMSLOD_SET_GLOVE_MATERIALS         0xBCD2B0
 #define OFFSET_WEAPONRY_TAKE_WEAPON                0xBFA0C0
 #define OFFSET_WEAPONRY_GIVE_WEAPON                 0xBFC8A0  // WeaponryController.nhw(dvu,cdy)
-#define OFFSET_PLAYER_MODEL_SET_NAME                0x6FF750  // djg.beqx(string) -> PlayerRemoteService.setPlayerName
 #define OFFSET_GUNCONTROLLER_FIRE                  0xA21040
 #define OFFSET_GUNCONTROLLER_COMMAND               0xA1E030
 #define OFFSET_HITCASTER_CAST                      0xEEE090  // HitCaster.vxe<ceq>
@@ -1200,7 +1199,9 @@ Il2CppClass* g_PlayerManagerClass = nullptr;
 Il2CppField* g_PlayerManagerInstanceField = nullptr;
 Il2CppObject* g_PlayerControllerReflectionType = nullptr;
 Il2CppClass* g_PlayerModelClass = nullptr;
-Il2CppField* g_PlayerModelInstanceField = nullptr;
+const Il2CppMethod* g_PlayerModelGetInstanceMethod = nullptr;
+const Il2CppMethod* g_PlayerModelSetNameMethod = nullptr;
+uintptr_t g_LivePlayerModel = 0;
 std::vector<void*> g_LivePlayerRegistry;
 SRWLOCK g_LivePlayerRegistryLock = SRWLOCK_INIT;
 
@@ -5086,24 +5087,45 @@ static void ProcessPendingGiveWeapon()
     if (remaining <= 0) InterlockedExchange(&pendingGiveWeaponId, 0);
 }
 
+static uintptr_t ResolveLivePlayerModelUnsafe()
+{
+    if (g_LivePlayerModel) return g_LivePlayerModel;
+    if (!g_PlayerModelGetInstanceMethod || !g_il2cpp.runtime_invoke) return 0;
+    __try {
+        Il2CppObject* exception = nullptr;
+        Il2CppObject* result = g_il2cpp.runtime_invoke(
+            g_PlayerModelGetInstanceMethod, nullptr, nullptr, &exception);
+        if (exception || !result) return 0;
+        g_LivePlayerModel = reinterpret_cast<uintptr_t>(result);
+        return g_LivePlayerModel;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
 static bool ApplyNicknameServerUnsafe(const char* nickname)
 {
-    if (!nickname || !nickname[0] || !base || !g_PlayerModelInstanceField ||
-        !g_il2cpp.field_static_get_value || !g_il2cpp.string_new)
+    if (!nickname || !nickname[0] || !g_PlayerModelSetNameMethod ||
+        !g_il2cpp.runtime_invoke || !g_il2cpp.string_new)
         return false;
     __try {
-        uintptr_t playerModel = 0;
-        g_il2cpp.field_static_get_value(g_PlayerModelInstanceField, &playerModel);
+        const uintptr_t playerModel = ResolveLivePlayerModelUnsafe();
         if (!playerModel) return false;
         Il2CppString* managedName = g_il2cpp.string_new(nickname);
         if (!managedName) return false;
-        using SetNameFn = uintptr_t(__fastcall*)(uintptr_t, Il2CppString*,
-            const Il2CppMethod*);
-        reinterpret_cast<SetNameFn>(base + OFFSET_PLAYER_MODEL_SET_NAME)(
-            playerModel, managedName, nullptr);
+        void* args[] = { managedName };
+        Il2CppObject* exception = nullptr;
+        g_il2cpp.runtime_invoke(g_PlayerModelSetNameMethod,
+            reinterpret_cast<void*>(playerModel), args, &exception);
+        if (exception) {
+            g_LivePlayerModel = 0;
+            return false;
+        }
         return true;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_LivePlayerModel = 0;
+        return false;
+    }
 }
 
 static void ProcessNicknameChanger()
@@ -5129,9 +5151,13 @@ static void ProcessNicknameChanger()
         return;
     }
     if (ApplyNicknameServerUnsafe(requestedName))
-        sprintf_s(nicknameStatus, "Server name request sent: %s", requestedName);
+        sprintf_s(nicknameStatus, "Name change invoked: %s", requestedName);
+    else if (!g_PlayerModelGetInstanceMethod)
+        strcpy_s(nicknameStatus, "Player model getter not resolved");
+    else if (!g_PlayerModelSetNameMethod)
+        strcpy_s(nicknameStatus, "Player name method not resolved");
     else
-        strcpy_s(nicknameStatus, "Player service unavailable; try after login");
+        strcpy_s(nicknameStatus, "Live player model unavailable; try after login");
 
     float interval = nicknameAnimationInterval;
     if (!isfinite(interval) || interval < 0.5f) interval = 0.5f;
@@ -10248,18 +10274,18 @@ DWORD WINAPI HackThread(LPVOID)
             }
         }
         g_PlayerModelClass = g_il2cpp.find_class("", "djg");
-        if (g_PlayerModelClass) {
+        if (g_PlayerModelClass && g_il2cpp.class_get_method_from_name) {
+            g_PlayerModelSetNameMethod = g_il2cpp.class_get_method_from_name(
+                g_PlayerModelClass, "beqx", 1);
             Il2CppClass* playerModelParent = g_il2cpp.class_get_parent ?
                 g_il2cpp.class_get_parent(g_PlayerModelClass) : nullptr;
             if (playerModelParent)
-                g_PlayerModelInstanceField = g_il2cpp.class_get_field_from_name(
-                    playerModelParent, "<cmlz>k__BackingField");
-            if (!g_PlayerModelInstanceField)
-                g_PlayerModelInstanceField = g_il2cpp.class_get_field_from_name(
-                    g_PlayerModelClass, "<cmlz>k__BackingField");
+                g_PlayerModelGetInstanceMethod = g_il2cpp.class_get_method_from_name(
+                    playerModelParent, "bemy", 0);
         }
-        LINDY_LOG("[nickname] model=%p instance-field=%p",
-            (void*)g_PlayerModelClass, (void*)g_PlayerModelInstanceField);
+        LINDY_LOG("[nickname] model=%p getter=%p setter=%p",
+            (void*)g_PlayerModelClass, (void*)g_PlayerModelGetInstanceMethod,
+            (void*)g_PlayerModelSetNameMethod);
         g_GlovesManagerClass = g_il2cpp.find_class("Chillow.StandChillow.Main.Inventory.Gloves", "GlovesManager");
         LINDY_LOG("[init] GlovesManagerClass=%p", (void*)g_GlovesManagerClass);
         if (g_GlovesManagerClass) {
