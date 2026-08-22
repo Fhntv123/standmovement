@@ -861,6 +861,9 @@ char adminBhopStatus[96] = "Disabled";
 bool infinityAmmo = false;
 bool doubleTapEnabled = false;
 volatile LONG doubleTapExtraShots = 0;
+float doubleTapMoveNudgeDistance = 0.18f;
+volatile LONG pendingDoubleTapMoveNudge = 0;
+volatile LONG64 pendingDoubleTapMoveNudgeUntil = 0;
 uintptr_t frozenAmmoWeapon = 0;
 short frozenAmmoValue = -1;
 volatile LONG infinityAmmoFireCalls = 0;
@@ -2046,7 +2049,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(penetrableSurfacesEnabled); SAVE_FLOAT(penetrableSurfaceAlpha); SAVE_FLOAT(penetrableSurfaceScanDistance);
     SAVE_BOOL(fogEnabled); SAVE_FLOAT(fogStartDistance); SAVE_FLOAT(fogEndDistance); SAVE_FLOAT(fogDensity);
     SAVE_BOOL(thirdPersonEnabled); SAVE_FLOAT(thirdPersonHorizontalOffset); SAVE_FLOAT(thirdPersonHeightAdjustment); SAVE_FLOAT(thirdPersonDistanceAdjustment);
-    SAVE_BOOL(infinityAmmo); SAVE_BOOL(doubleTapEnabled); SAVE_BOOL(noSpreadEnabled); SAVE_BOOL(removeScopeBorders);
+    SAVE_BOOL(infinityAmmo); SAVE_BOOL(doubleTapEnabled); SAVE_FLOAT(doubleTapMoveNudgeDistance); SAVE_BOOL(noSpreadEnabled); SAVE_BOOL(removeScopeBorders);
     SAVE_INT(removeScopeMode); SAVE_FLOAT(customScopeOpacity); SAVE_FLOAT(customScopeLength);
     SAVE_FLOAT(customScopeGap); SAVE_FLOAT(customScopeThickness); SAVE_BOOL(customScopeShadow);
     SAVE_BOOL(weaponChamsEnabled); SAVE_INT(weaponChamsMode); SAVE_BOOL(armChamsEnabled); SAVE_INT(armChamsMode);
@@ -2142,7 +2145,10 @@ static bool LoadConfig(const char* requestedName)
     if (penetrableSurfaceScanDistance < 10.0f) penetrableSurfaceScanDistance = 10.0f; if (penetrableSurfaceScanDistance > 250.0f) penetrableSurfaceScanDistance = 250.0f;
     LOAD_BOOL(fogEnabled); LOAD_FLOAT(fogStartDistance); LOAD_FLOAT(fogEndDistance); LOAD_FLOAT(fogDensity);
     LOAD_BOOL(thirdPersonEnabled); LOAD_FLOAT(thirdPersonHorizontalOffset); LOAD_FLOAT(thirdPersonHeightAdjustment); LOAD_FLOAT(thirdPersonDistanceAdjustment);
-    LOAD_BOOL(infinityAmmo); LOAD_BOOL(doubleTapEnabled); LOAD_BOOL(noSpreadEnabled); LOAD_BOOL(removeScopeBorders);
+    LOAD_BOOL(infinityAmmo); LOAD_BOOL(doubleTapEnabled); LOAD_FLOAT(doubleTapMoveNudgeDistance); LOAD_BOOL(noSpreadEnabled); LOAD_BOOL(removeScopeBorders);
+    if (!isfinite(doubleTapMoveNudgeDistance) || doubleTapMoveNudgeDistance < 0.02f)
+        doubleTapMoveNudgeDistance = 0.02f;
+    if (doubleTapMoveNudgeDistance > 1.0f) doubleTapMoveNudgeDistance = 1.0f;
     LOAD_INT(removeScopeMode); LOAD_FLOAT(customScopeOpacity); LOAD_FLOAT(customScopeLength);
     LOAD_FLOAT(customScopeGap); LOAD_FLOAT(customScopeThickness); LOAD_BOOL(customScopeShadow);
     LOAD_BOOL(weaponChamsEnabled); LOAD_INT(weaponChamsMode); LOAD_BOOL(armChamsEnabled); LOAD_INT(armChamsMode);
@@ -6309,6 +6315,11 @@ void __fastcall hk_GunController_Fire(uintptr_t instance, Vector3 playSound, con
             __except (EXCEPTION_EXECUTE_HANDLER) {}
         }
         InterlockedIncrement(&doubleTapExtraShots);
+        // Fire remains latency-free: movement is applied once from the next local
+        // CharacterController.Move call, using that call's real travel direction.
+        InterlockedExchange64(&pendingDoubleTapMoveNudgeUntil,
+            static_cast<LONG64>(GetTickCount64()) + 180);
+        InterlockedExchange(&pendingDoubleTapMoveNudge, 1);
     }
     hitCasterDirectionPending = false;
     localShotGeometryPending = false;
@@ -8142,6 +8153,24 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
         // Enforce the configured horizontal units/second cap on the movement
         // passed to Unity, using the real frame delta.
         motion = ApplyVelocityLimitToMotion(motion);
+
+        if (InterlockedCompareExchange(&pendingDoubleTapMoveNudge, 0, 0)) {
+            const LONG64 now = static_cast<LONG64>(GetTickCount64());
+            const LONG64 validUntil = InterlockedCompareExchange64(
+                &pendingDoubleTapMoveNudgeUntil, 0, 0);
+            const float horizontalLength = sqrtf(
+                motion.x * motion.x + motion.z * motion.z);
+            if (now > validUntil) {
+                InterlockedExchange(&pendingDoubleTapMoveNudge, 0);
+            }
+            else if (isfinite(horizontalLength) && horizontalLength > 0.00001f) {
+                const float nudge = fminf(1.0f,
+                    fmaxf(0.02f, doubleTapMoveNudgeDistance));
+                motion.x += (motion.x / horizontalLength) * nudge;
+                motion.z += (motion.z / horizontalLength) * nudge;
+                InterlockedExchange(&pendingDoubleTapMoveNudge, 0);
+            }
+        }
     }
 
     return o_CC_Move(instance, motion);
@@ -9624,8 +9653,18 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ImGui::Separator();
         ImGui::Spacing();
         
-        if (ImGui::Checkbox("Double Tap", &doubleTapEnabled))
+        if (ImGui::Checkbox("Double Tap", &doubleTapEnabled)) {
             InterlockedExchange(&doubleTapExtraShots, 0);
+            if (!doubleTapEnabled) {
+                InterlockedExchange(&pendingDoubleTapMoveNudge, 0);
+                InterlockedExchange64(&pendingDoubleTapMoveNudgeUntil, 0);
+            }
+        }
+        if (doubleTapEnabled) {
+            ImGui::SliderFloat("Double Tap Move Nudge",
+                &doubleTapMoveNudgeDistance, 0.02f, 1.0f, "%.2f m");
+            ImGui::TextDisabled("After the extra shot, nudges you in your current movement direction.");
+        }
         if (ImGui::Checkbox("Infinity Ammo", &infinityAmmo)) {
             frozenAmmoWeapon = 0;
             frozenAmmoValue = -1;
