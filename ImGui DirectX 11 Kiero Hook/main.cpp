@@ -5637,6 +5637,8 @@ static void ProcessNicknameChanger()
         now + static_cast<LONG64>(interval * 1000.0f));
 }
 
+static void UpdateSkyParticlesGameThread();
+
 void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method)
 {
     __try {
