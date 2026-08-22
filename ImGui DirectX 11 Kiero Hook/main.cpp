@@ -1047,6 +1047,8 @@ float silentAntiAimEdgeYaw = 0.0f;
 bool silentAntiAimEdgeFound = false;
 bool silentAntiAimHookReady = false;
 volatile LONG silentAntiAimInputBuildCalls = 0;
+volatile LONG silentAntiAimFilterCalls = 0;
+volatile LONG silentAntiAimNetworkCalls = 0;
 volatile LONG silentAntiAimCommandCalls = 0;
 volatile LONG silentAntiAimAppliedCalls = 0;
 bool silentAntiAimLatestInputValid = false;
@@ -3187,8 +3189,8 @@ void(__fastcall* o_MovementSnapshot_nev)(uintptr_t, uintptr_t, const Il2CppMetho
 void(__fastcall* o_PlayerSnapshot_nev)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_MovementController_GetSnapshot)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_PlayerControls_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
-// InputFilter delegate hook: void(xl*)
-typedef void(__fastcall* t_InputFilter)(uintptr_t, const Il2CppMethod*);
+// Action<xl> target ABI: target/this, xl*, MethodInfo*.
+typedef void(__fastcall* t_InputFilter)(uintptr_t, uintptr_t, const Il2CppMethod*);
 t_InputFilter o_InputFilter = nullptr;
 void(__fastcall* o_CameraMovementController_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_CameraMovementController_FixedUpdate)(uintptr_t, const Il2CppMethod*) = nullptr;
@@ -5046,12 +5048,116 @@ uintptr_t __fastcall hk_MovementController_GetSnapshot(uintptr_t movementControl
     return snapshot;
 }
 
-// hk_AimingData_nev removed: replaced with InputFilter delegate hook
-
-// InputFilter delegate hook: patches fake angles into AimingData before original InputFilter runs
-void __fastcall hk_InputFilter(uintptr_t inputsPtr, const Il2CppMethod* method)
+// Source-style InputFilter anti-aim. This is the authoritative createMove path:
+// update real camera angles from xl::caxq, write fake live aim for native snapshots,
+// correct movement, then let the original filter consume the modified command.
+static bool RunSourceAntiAimInputUnsafe(uintptr_t inputs)
 {
-    if (o_InputFilter) o_InputFilter(inputsPtr, method);
+    if (!silentAntiAimEnabled || !inputs || !liveHudLocalPlayer) return false;
+    __try {
+        const uintptr_t aimController =
+            *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xC8);
+        const uintptr_t aimingData = aimController ?
+            *reinterpret_cast<uintptr_t*>(aimController + 0x80) : 0;
+        if (!aimController || !aimingData) return false;
+
+        Vector3 realAngles = silentAntiAimRealCameraAngles;
+        if (!silentAntiAimRealCameraValid) {
+            const Vector3 currentAim =
+                *reinterpret_cast<Vector3*>(aimingData + 0x18);
+            const Vector3 currentEuler =
+                *reinterpret_cast<Vector3*>(aimingData + 0x24);
+            realAngles = Vector3(currentAim.x, currentEuler.y, 0.0f);
+            if (!isfinite(realAngles.x) || !isfinite(realAngles.y)) return false;
+            silentAntiAimRealCameraValid = true;
+        }
+
+        const Vector2 delta = *reinterpret_cast<Vector2*>(inputs + 0x38);
+        if (!isfinite(delta.x) || !isfinite(delta.y)) return false;
+        // Literal sourse/ragebot.cpp behavior for the current xl layout.
+        realAngles.x -= delta.x * 2.0f;
+        realAngles.y += delta.y * 2.0f;
+        realAngles.x = fmaxf(-70.0f,
+            fminf(70.0f, NormalizeAngle180(realAngles.x)));
+        realAngles.y = NormalizeAngle360(realAngles.y);
+        realAngles.z = 0.0f;
+        silentAntiAimRealCameraAngles = realAngles;
+
+        bool jumpProfile = false;
+        if (o_CC_get_isGrounded) {
+            const uintptr_t movement =
+                *reinterpret_cast<uintptr_t*>(liveHudLocalPlayer + 0xE0);
+            const uintptr_t characterController = movement ?
+                *reinterpret_cast<uintptr_t*>(movement + 0xD0) : 0;
+            if (characterController)
+                jumpProfile = !o_CC_get_isGrounded(characterController);
+        }
+        silentAntiAimActiveJumpProfile = jumpProfile;
+        const int mode = jumpProfile ? silentAntiAimJumpMode : silentAntiAimMode;
+        const int pitchMode = jumpProfile ? silentAntiAimJumpPitch : silentAntiAimPitch;
+        const float configuredYaw = jumpProfile ? silentAntiAimJumpYaw : silentAntiAimYaw;
+        const float jitterRange = jumpProfile ?
+            silentAntiAimJumpJitterRange : silentAntiAimJitterRange;
+        const float spinSpeed = jumpProfile ?
+            silentAntiAimJumpSpinSpeed : silentAntiAimSpinSpeed;
+        const float flickRate = jumpProfile ?
+            silentAntiAimJumpFlickRate : silentAntiAimFlickRate;
+        Vector3 offset = GetSourceStyleAntiAimAngles(mode,
+            GetRotationAntiAimPitch(pitchMode), configuredYaw,
+            jitterRange, spinSpeed, flickRate, jumpProfile);
+        if (silentAntiAimDefensive && (aimbotEnabled || visibleAimbotEnabled) &&
+            aimbotAutoStopHasTarget) {
+            offset.x = NextAntiAimRandomAngle(-70.0f, 70.0f);
+            offset.y = NextAntiAimRandomAngle(-180.0f, 180.0f);
+        }
+        const Vector3 fake(offset.x,
+            NormalizeAngle360(realAngles.y - offset.y), 0.0f);
+
+        // sourse/hooks.hpp PlayerInputs: fire +0x21, drop +0x23,
+        // pickup +0x26. Use real view for actions that require it.
+        const bool returnAngles =
+            *reinterpret_cast<bool*>(inputs + 0x21) ||
+            *reinterpret_cast<bool*>(inputs + 0x23) ||
+            *reinterpret_cast<bool*>(inputs + 0x26);
+        const Vector3 output = returnAngles ? realAngles : fake;
+
+        const float oldSide = *reinterpret_cast<float*>(inputs + 0x10);
+        const float oldForward = *reinterpret_cast<float*>(inputs + 0x14);
+        const float radians = NormalizeAngle180(realAngles.y - output.y) *
+            0.01745329251994329577f;
+        const float cosine = cosf(radians);
+        const float sine = sinf(radians);
+        *reinterpret_cast<float*>(inputs + 0x14) = fmaxf(-1.0f,
+            fminf(1.0f, cosine * oldForward - sine * oldSide));
+        *reinterpret_cast<float*>(inputs + 0x10) = fmaxf(-1.0f,
+            fminf(1.0f, sine * oldForward + cosine * oldSide));
+
+        // Match the original source: only the actual aim components are changed.
+        reinterpret_cast<Vector3*>(aimingData + 0x18)->x = output.x;
+        reinterpret_cast<Vector3*>(aimingData + 0x24)->y = output.y;
+
+        InterlockedIncrement(&silentAntiAimSnapshotSequence);
+        silentAntiAimLatestInputValid = false;
+        silentAntiAimLatestPlayer = liveHudLocalPlayer;
+        silentAntiAimLatestController = aimController;
+        silentAntiAimLatestAimingData = aimingData;
+        silentAntiAimLatestRealAimAngle = realAngles;
+        silentAntiAimLatestFakeAngles = output;
+        silentAntiAimLatestCommandTick = GetTickCount64();
+        silentAntiAimLatestInputValid = true;
+        InterlockedIncrement(&silentAntiAimSnapshotSequence);
+        InterlockedIncrement(&silentAntiAimFilterCalls);
+        InterlockedIncrement(&silentAntiAimAppliedCalls);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+void __fastcall hk_InputFilter(uintptr_t target, uintptr_t inputs,
+    const Il2CppMethod* method)
+{
+    if (inputs) RunSourceAntiAimInputUnsafe(inputs);
+    if (o_InputFilter) o_InputFilter(target, inputs, method);
 }
 
 // Initialize InputFilter delegate hook from PlayerControls instance
@@ -5203,92 +5309,19 @@ uintptr_t __fastcall hk_KeyboardControl_BuildCommand(
         aimbotAutoStopNextScanAt = 0;
     }
 
-    if (keyValidated && silentAntiAimEnabled && player && command &&
-        liveHudLocalPlayer && player == liveHudLocalPlayer) {
-        bool jumpProfile = false;
-        if (o_CC_get_isGrounded) {
-            __try {
-                // dump1: PlayerController::MovementController +0xE0, then
-                // MovementController::CharacterController backing field +0xD0.
-                // This is tied to this exact local player; a shared movement
-                // controller pointer could be overwritten by another character.
-                const uintptr_t movementController =
-                    *reinterpret_cast<uintptr_t*>(player + 0xE0);
-                const uintptr_t characterController = movementController ?
-                    *reinterpret_cast<uintptr_t*>(movementController + 0xD0) : 0;
-                if (characterController &&
-                    IsRotationAntiAimTransformAliveUnsafe(characterController)) {
-                    // Native trampoline: Air Jump/Pixel Surf hook overrides do not
-                    // affect movement-profile selection.
-                    jumpProfile = !o_CC_get_isGrounded(characterController);
-                }
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) { jumpProfile = false; }
-        }
-        // Build the fake target from real local AimingData. The command receives
-        // movement correction only; fake aim is scoped later to the network clone.
-        silentAntiAimLatestFiring = false;
-        UpdateRotationAntiAimTarget(player, jumpProfile);
-        if (silentAntiAimLatestInputValid &&
-            ApplySourceStyleMovementFixUnsafe(command,
-                silentAntiAimLatestRealAimAngle, silentAntiAimLatestFakeAngles)) {
-            InterlockedIncrement(&silentAntiAimCommandCalls);
-            InterlockedIncrement(&silentAntiAimAppliedCalls);
-        }
-    }
-    else if (silentAntiAimLatestPlayer == player || !silentAntiAimEnabled)
+    if (!silentAntiAimEnabled && silentAntiAimLatestPlayer == player)
         ClearRotationAntiAimTargetUnsafe();
     return command;
-}
-
-static bool PatchSourceStyleNetworkAimUnsafe(Vector3* savedAim,
-    Vector3* savedEuler)
-{
-    if (!savedAim || !savedEuler || !silentAntiAimLatestInputValid ||
-        !silentAntiAimLatestAimingData) return false;
-    __try {
-        *savedAim = *reinterpret_cast<Vector3*>(
-            silentAntiAimLatestAimingData + 0x18);
-        *savedEuler = *reinterpret_cast<Vector3*>(
-            silentAntiAimLatestAimingData + 0x24);
-        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x18) =
-            silentAntiAimLatestFakeAngles;
-        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x24) =
-            silentAntiAimLatestFakeAngles;
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
-
-static void RestoreSourceStyleNetworkAimUnsafe(const Vector3& savedAim,
-    const Vector3& savedEuler)
-{
-    if (!silentAntiAimLatestAimingData) return;
-    __try {
-        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x18) = savedAim;
-        *reinterpret_cast<Vector3*>(silentAntiAimLatestAimingData + 0x24) = savedEuler;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 void __fastcall hk_NetworkController_WriteSnapshot(
     uintptr_t networkController, uintptr_t writer, const Il2CppMethod* method)
 {
     if (!o_NetworkController_WriteSnapshot) return;
-    Vector3 savedAim = {};
-    Vector3 savedEuler = {};
-    const bool patched = silentAntiAimEnabled && networkController && writer &&
-        PatchSourceStyleNetworkAimUnsafe(&savedAim, &savedEuler);
-
-    // mxc(gfk) clones current AimingData into the outgoing PlayerSnapshot.
-    // Fake state exists only for that clone; local input, pitch and camera always
-    // retain real angles, matching setAngles/rotateCamera separation in the source.
     o_NetworkController_WriteSnapshot(networkController, writer, method);
-
-    if (patched) {
-        RestoreSourceStyleNetworkAimUnsafe(savedAim, savedEuler);
-        InterlockedIncrement(&silentAntiAimCommandCalls);
-    }
+    if (silentAntiAimEnabled && networkController && writer &&
+        silentAntiAimLatestInputValid)
+        InterlockedIncrement(&silentAntiAimNetworkCalls);
 }
 
 static Quaternion QuaternionFromAxisAngle(float axisX, float axisY,
@@ -5502,11 +5535,23 @@ static bool ApplyRotationAntiAimAfterAimPassUnsafe(
 void __fastcall hk_AimController_LateAim(
     uintptr_t aimController, const Il2CppMethod* method)
 {
-    // Local visual state is never made fake. The outbound hook scopes fake
-    // AimingData only around the native snapshot clone, so no camera correction
-    // belongs here and mouse pitch/yaw cannot be overwritten by anti-aim.
     o_AimController_LateAim(aimController, method);
     InterlockedIncrement(&silentAntiAimLateAimCalls);
+    if (!silentAntiAimEnabled || !silentAntiAimRealCameraValid ||
+        aimController != silentAntiAimLatestController ||
+        !o_Transform_set_eulerAngles) return;
+    __try {
+        uintptr_t cameraTransform =
+            *reinterpret_cast<uintptr_t*>(aimController + 0x68);
+        if (!cameraTransform)
+            cameraTransform = *reinterpret_cast<uintptr_t*>(aimController + 0x78);
+        if (cameraTransform) {
+            o_Transform_set_eulerAngles(cameraTransform,
+                silentAntiAimRealCameraAngles);
+            InterlockedIncrement(&silentAntiAimCameraRestoreCalls);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 static uintptr_t GetAuthoritativeLocalWeaponController();
@@ -10660,6 +10705,8 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         if (ImGui::Checkbox("Rotation Anti-Aim", &silentAntiAimEnabled)) {
             if (!silentAntiAimEnabled) RestoreSourceStyleAntiAimViewUnsafe();
             InterlockedExchange(&silentAntiAimInputBuildCalls, 0);
+            InterlockedExchange(&silentAntiAimFilterCalls, 0);
+            InterlockedExchange(&silentAntiAimNetworkCalls, 0);
             InterlockedExchange(&silentAntiAimCommandCalls, 0);
             InterlockedExchange(&silentAntiAimAppliedCalls, 0);
             InterlockedExchange(&silentAntiAimCameraRestoreCalls, 0);
@@ -10733,13 +10780,15 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             silentAntiAimActiveJumpProfile ? "Jump" : "Default");
         const char* antiAimRuntimeStatus = !silentAntiAimEnabled ? "Disabled" :
             (!silentAntiAimHookReady ? "Rotation anti-aim hook failed" :
-            (InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0) > 0 ?
-                "Working: source-style angles applied" :
-                "Waiting for local input command"));
+            (InterlockedCompareExchange(&silentAntiAimFilterCalls, 0, 0) <= 0 ?
+                "Waiting for source InputFilter" :
+            (InterlockedCompareExchange(&silentAntiAimNetworkCalls, 0, 0) <= 0 ?
+                "Source InputFilter active; waiting for network" :
+                "Working: source InputFilter + network")));
         ImGui::TextWrapped("Status: %s", antiAimRuntimeStatus);
-        ImGui::TextDisabled("cmd:%ld input:%ld fake:(%.0f, %.0f)",
-            InterlockedCompareExchange(&silentAntiAimCommandCalls, 0, 0),
-            InterlockedCompareExchange(&silentAntiAimInputBuildCalls, 0, 0),
+        ImGui::TextDisabled("filter:%ld net:%ld fake:(%.0f, %.0f)",
+            InterlockedCompareExchange(&silentAntiAimFilterCalls, 0, 0),
+            InterlockedCompareExchange(&silentAntiAimNetworkCalls, 0, 0),
             silentAntiAimLatestFakeAngles.x,
             silentAntiAimLatestFakeAngles.y);
 
