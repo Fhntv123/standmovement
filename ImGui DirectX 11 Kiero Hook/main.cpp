@@ -2095,6 +2095,24 @@ int maxTrailPoints = 600;
 
 float trailMinDistance = 0.05f; // Unity units are meters; sample every 5 cm
 
+bool skyParticlesEnabled = false;
+int skyParticleCount = 64;
+float skyParticleRadius = 14.0f;
+float skyParticleHeight = 14.0f;
+float skyParticleFallSpeed = 4.0f;
+float skyParticleSize = 2.2f;
+float skyParticleColor[3] = { 0.72f, 0.88f, 1.0f };
+struct SkyParticleEntry {
+    Vector3 position;
+    float floorY;
+    float phase;
+    float alpha;
+    bool visible;
+};
+std::vector<SkyParticleEntry> skyParticles;
+SRWLOCK skyParticleLock = SRWLOCK_INIT;
+uint32_t skyParticleSequence = 1;
+
 
 
 // Tabs
@@ -2493,6 +2511,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(bulletTracerEnabled); SAVE_FLOAT(bulletTracerDuration); SAVE_FLOAT(bulletTracerThickness);
     SAVE_BOOL(bulletImpactsEnabled); SAVE_FLOAT(bulletImpactsDuration); SAVE_FLOAT(bulletImpactsSize);
     SAVE_BOOL(showVelocity); SAVE_BOOL(showTrail); SAVE_INT(maxTrailPoints); SAVE_FLOAT(trailMinDistance);
+    SAVE_BOOL(skyParticlesEnabled); SAVE_INT(skyParticleCount); SAVE_FLOAT(skyParticleRadius); SAVE_FLOAT(skyParticleHeight); SAVE_FLOAT(skyParticleFallSpeed); SAVE_FLOAT(skyParticleSize);
     SAVE_BOOL(cameraFovEnabled); SAVE_FLOAT(cameraFov); SAVE_BOOL(scopedFovEnabled); SAVE_FLOAT(scopedFov); SAVE_BOOL(armsFovEnabled); SAVE_FLOAT(armsFov);
     SAVE_BOOL(weaponViewModelEnabled); SAVE_FLOAT(weaponViewModelOffsetX); SAVE_FLOAT(weaponViewModelOffsetY); SAVE_FLOAT(weaponViewModelOffsetZ);
     SAVE_BOOL(viewModelEnabled); SAVE_FLOAT(viewModelOffsetX); SAVE_FLOAT(viewModelOffsetY); SAVE_FLOAT(viewModelOffsetZ);
@@ -2533,6 +2552,7 @@ static bool SaveConfig(const char* requestedName)
     SAVE_BOOL(nicknameAnimationEnabled);
     SAVE_FLOAT(nicknameAnimationInterval);
     WriteConfigColor(path, "menuColor", menuColor); WriteConfigColor(path, "accentColor", accentColor);
+    WriteConfigColor(path, "skyParticleColor", skyParticleColor);
     WriteConfigColor(path, "worldColor", worldColor); WriteConfigColor(path, "fogColor", fogColor);
     WriteConfigColor(path, "penetrableSurfaceFillColor", penetrableSurfaceFillColor);
     WriteConfigColor(path, "penetrableSurfaceOutlineColor", penetrableSurfaceOutlineColor);
@@ -2610,6 +2630,7 @@ static bool LoadConfig(const char* requestedName)
     LOAD_BOOL(bulletTracerEnabled); LOAD_FLOAT(bulletTracerDuration); LOAD_FLOAT(bulletTracerThickness);
     LOAD_BOOL(bulletImpactsEnabled); LOAD_FLOAT(bulletImpactsDuration); LOAD_FLOAT(bulletImpactsSize);
     LOAD_BOOL(showVelocity); LOAD_BOOL(showTrail); LOAD_INT(maxTrailPoints); LOAD_FLOAT(trailMinDistance);
+    LOAD_BOOL(skyParticlesEnabled); LOAD_INT(skyParticleCount); LOAD_FLOAT(skyParticleRadius); LOAD_FLOAT(skyParticleHeight); LOAD_FLOAT(skyParticleFallSpeed); LOAD_FLOAT(skyParticleSize);
     LOAD_BOOL(cameraFovEnabled); LOAD_FLOAT(cameraFov); LOAD_BOOL(scopedFovEnabled); LOAD_FLOAT(scopedFov); LOAD_BOOL(armsFovEnabled); LOAD_FLOAT(armsFov);
     LOAD_BOOL(weaponViewModelEnabled); LOAD_FLOAT(weaponViewModelOffsetX); LOAD_FLOAT(weaponViewModelOffsetY); LOAD_FLOAT(weaponViewModelOffsetZ);
     LOAD_BOOL(viewModelEnabled); LOAD_FLOAT(viewModelOffsetX); LOAD_FLOAT(viewModelOffsetY); LOAD_FLOAT(viewModelOffsetZ);
@@ -2737,9 +2758,14 @@ static bool LoadConfig(const char* requestedName)
     if (!isfinite(trailMinDistance) || trailMinDistance < 0.01f)
         trailMinDistance = 0.01f;
     if (trailMinDistance > 10.0f) trailMinDistance = 10.0f;
+    if (skyParticleCount < 8) skyParticleCount = 8; if (skyParticleCount > 160) skyParticleCount = 160;
+    if (!isfinite(skyParticleRadius) || skyParticleRadius < 4.0f) skyParticleRadius = 4.0f; if (skyParticleRadius > 40.0f) skyParticleRadius = 40.0f;
+    if (!isfinite(skyParticleHeight) || skyParticleHeight < 6.0f) skyParticleHeight = 6.0f; if (skyParticleHeight > 40.0f) skyParticleHeight = 40.0f;
+    if (!isfinite(skyParticleFallSpeed) || skyParticleFallSpeed < 0.5f) skyParticleFallSpeed = 0.5f; if (skyParticleFallSpeed > 20.0f) skyParticleFallSpeed = 20.0f;
+    if (!isfinite(skyParticleSize) || skyParticleSize < 0.5f) skyParticleSize = 0.5f; if (skyParticleSize > 8.0f) skyParticleSize = 8.0f;
     if (espCount < 1) espCount = 1;
     if (espCount > 64) espCount = 64;
-    ReadConfigColor(path, "menuColor", menuColor); ReadConfigColor(path, "accentColor", accentColor);
+    ReadConfigColor(path, "menuColor", menuColor); ReadConfigColor(path, "accentColor", accentColor); ReadConfigColor(path, "skyParticleColor", skyParticleColor);
     ReadConfigColor(path, "worldColor", worldColor); ReadConfigColor(path, "fogColor", fogColor);
     ReadConfigColor(path, "penetrableSurfaceFillColor", penetrableSurfaceFillColor);
     ReadConfigColor(path, "penetrableSurfaceOutlineColor", penetrableSurfaceOutlineColor);
@@ -5650,6 +5676,7 @@ void __fastcall hk_HUDView_Update(uintptr_t instance, const Il2CppMethod* method
         SendPendingPixelSurfChatMessageUnsafe();
     UpdateFrozenCorpses();
     UpdatePenetrableSurfaceVisualization();
+    UpdateSkyParticlesGameThread();
     UpdateVisibleAimbotCamera();
     InfinityAmmoLoop();
     if (thirdPersonEnabled && !InterlockedCompareExchange(&pendingThirdPersonCommand, 0, 0))
@@ -8758,6 +8785,148 @@ int __fastcall hk_CC_Move(uintptr_t instance, Vector3 motion)
 
 
 
+static float SkyParticleHash01(uint32_t value)
+{
+    value ^= value >> 16; value *= 0x7feb352du;
+    value ^= value >> 15; value *= 0x846ca68bu;
+    value ^= value >> 16;
+    return static_cast<float>(value & 0x00FFFFFFu) / 16777215.0f;
+}
+
+static bool RaycastSkyParticleUnsafe(const Vector3& origin,
+    const Vector3& direction, float distance, RaycastHitNative* hit)
+{
+    if (!o_Physics_RaycastHit || !hit || distance <= 0.0f) return false;
+    __try {
+        *hit = {};
+        return o_Physics_RaycastHit(origin, direction, hit,
+            distance, -1, 1, nullptr) && isfinite(hit->distance) &&
+            hit->distance >= 0.0f && hit->distance <= distance;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { *hit = {}; return false; }
+}
+
+static bool GetMainCameraPositionUnsafe(Vector3* position)
+{
+    if (!position || !o_Component_get_transform || !o_Transform_get_position)
+        return false;
+    __try {
+        const uintptr_t camera = GetCamera();
+        const uintptr_t transform = camera ? o_Component_get_transform(camera) : 0;
+        if (!transform) return false;
+        *position = o_Transform_get_position(transform);
+        return isfinite(position->x) && isfinite(position->y) && isfinite(position->z);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { *position = {}; return false; }
+}
+
+static bool SpawnSkyParticle(const Vector3& center, SkyParticleEntry* particle)
+{
+    if (!particle) return false;
+    const uint32_t seed = skyParticleSequence++;
+    const float angle = SkyParticleHash01(seed * 3u + 1u) * 6.2831853071795864769f;
+    const float radial = sqrtf(SkyParticleHash01(seed * 3u + 2u)) * skyParticleRadius;
+    Vector3 origin(center.x + cosf(angle) * radial,
+        center.y + skyParticleHeight + SkyParticleHash01(seed * 3u + 3u) * 4.0f,
+        center.z + sinf(angle) * radial);
+    RaycastHitNative hit = {};
+    // The first collider below the spawn point is authoritative. A roof therefore
+    // catches the particle before the room floor; it can never fall through geometry.
+    if (!RaycastSkyParticleUnsafe(origin, Vector3(0.0f, -1.0f, 0.0f),
+        skyParticleHeight * 2.5f + 12.0f, &hit))
+        return false;
+    particle->position = origin;
+    particle->floorY = hit.point.y + 0.025f;
+    particle->phase = SkyParticleHash01(seed * 5u + 4u) * 6.2831853071795864769f;
+    particle->alpha = 0.45f + SkyParticleHash01(seed * 5u + 5u) * 0.55f;
+    particle->visible = false;
+    return particle->position.y > particle->floorY + 0.05f;
+}
+
+static bool IsSkyParticleVisibleUnsafe(const Vector3& cameraPosition,
+    const Vector3& particlePosition)
+{
+    const Vector3 delta(particlePosition.x - cameraPosition.x,
+        particlePosition.y - cameraPosition.y,
+        particlePosition.z - cameraPosition.z);
+    const float distance = delta.Length();
+    if (!isfinite(distance) || distance < 0.05f) return true;
+    const Vector3 direction(delta.x / distance, delta.y / distance, delta.z / distance);
+    RaycastHitNative hit = {};
+    // Any collider before the particle occludes it. This prevents screen-space flakes
+    // from appearing through walls, ceilings and closed geometry.
+    return !RaycastSkyParticleUnsafe(cameraPosition, direction,
+        fmaxf(0.0f, distance - 0.08f), &hit);
+}
+
+static void UpdateSkyParticlesGameThread()
+{
+    if (!skyParticlesEnabled || !keyValidated) {
+        AcquireSRWLockExclusive(&skyParticleLock);
+        skyParticles.clear();
+        ReleaseSRWLockExclusive(&skyParticleLock);
+        return;
+    }
+    void* localPlayer = GetLocalPC();
+    Vector3 center;
+    Vector3 cameraPosition;
+    if (!localPlayer || !GetPCPosition(localPlayer, center) ||
+        !GetMainCameraPositionUnsafe(&cameraPosition)) return;
+    const float delta = o_Time_get_deltaTime ? o_Time_get_deltaTime() : 0.016f;
+    const float step = fmaxf(0.0f, fminf(0.05f, delta)) * skyParticleFallSpeed;
+    AcquireSRWLockExclusive(&skyParticleLock);
+    while (skyParticles.size() < static_cast<size_t>(skyParticleCount)) {
+        SkyParticleEntry particle = {};
+        if (!SpawnSkyParticle(center, &particle)) break;
+        skyParticles.push_back(particle);
+    }
+    if (skyParticles.size() > static_cast<size_t>(skyParticleCount))
+        skyParticles.resize(static_cast<size_t>(skyParticleCount));
+    for (size_t i = 0; i < skyParticles.size(); ++i) {
+        SkyParticleEntry& particle = skyParticles[i];
+        const float nextY = particle.position.y - step;
+        if (nextY <= particle.floorY) {
+            SkyParticleEntry replacement = {};
+            if (SpawnSkyParticle(center, &replacement)) particle = replacement;
+            else particle.position.y = particle.floorY;
+        }
+        else particle.position.y = nextY;
+        particle.phase += delta * 1.8f;
+        particle.visible = IsSkyParticleVisibleUnsafe(
+            cameraPosition, particle.position);
+    }
+    ReleaseSRWLockExclusive(&skyParticleLock);
+}
+
+
+static void DrawSkyParticles()
+{
+    if (!skyParticlesEnabled || !keyValidated || !o_WorldToScreenPoint) return;
+    std::vector<SkyParticleEntry> snapshot;
+    AcquireSRWLockShared(&skyParticleLock);
+    snapshot = skyParticles;
+    ReleaseSRWLockShared(&skyParticleLock);
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    const float time = static_cast<float>(ImGui::GetTime());
+    for (const SkyParticleEntry& particle : snapshot) {
+        if (!particle.visible) continue;
+        Vector2 screen;
+        if (!UnityWorldToScreen(particle.position, screen)) continue;
+        const float pulse = 0.82f + 0.18f * sinf(time * 1.6f + particle.phase);
+        const float size = skyParticleSize * pulse;
+        const ImU32 glow = ImGui::ColorConvertFloat4ToU32(ImVec4(
+            skyParticleColor[0], skyParticleColor[1], skyParticleColor[2],
+            particle.alpha * 0.16f));
+        const ImU32 core = ImGui::ColorConvertFloat4ToU32(ImVec4(
+            skyParticleColor[0], skyParticleColor[1], skyParticleColor[2],
+            particle.alpha));
+        draw->AddCircleFilled(ImVec2(screen.x, screen.y), size * 2.4f, glow, 12);
+        draw->AddCircleFilled(ImVec2(screen.x, screen.y), size, core, 12);
+        draw->AddLine(ImVec2(screen.x, screen.y - size * 2.8f),
+            ImVec2(screen.x, screen.y + size * 1.2f), glow, size * 0.65f);
+    }
+}
+
 void UpdateTrail() {
 
     if (!keyValidated) { 
@@ -9747,6 +9916,7 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     UpdateTrail();
     DrawTrail();
+    DrawSkyParticles();
 
     
 
@@ -10137,6 +10307,16 @@ HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
         ImGui::Checkbox("Show Velocity", &showVelocity);
         ImGui::Checkbox("Show Trail", &showTrail);
+        ImGui::Checkbox("Sky Particles", &skyParticlesEnabled);
+        if (skyParticlesEnabled) {
+            ImGui::SliderInt("Particle Count", &skyParticleCount, 8, 160);
+            ImGui::SliderFloat("Particle Radius", &skyParticleRadius, 4.0f, 40.0f, "%.0f m");
+            ImGui::SliderFloat("Particle Spawn Height", &skyParticleHeight, 6.0f, 40.0f, "%.0f m");
+            ImGui::SliderFloat("Particle Fall Speed", &skyParticleFallSpeed, 0.5f, 20.0f, "%.1f m/s");
+            ImGui::SliderFloat("Particle Size", &skyParticleSize, 0.5f, 8.0f, "%.1f px");
+            ImGui::ColorEdit3("Particle Color", skyParticleColor);
+            ImGui::TextDisabled("Physics floor collision + camera wall occlusion");
+        }
         if (ImGui::Checkbox("Freeze Corpses", &freezeCorpsesEnabled) && !freezeCorpsesEnabled)
             UpdateFrozenCorpses();
         if (freezeCorpsesEnabled) {
