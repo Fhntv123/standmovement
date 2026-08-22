@@ -800,7 +800,8 @@ struct Matrix16 {
 #define OFFSET_PLAYER_HIT_CONFIRMED_B                  0xC2ACD0  // PlayerHitController.obm(bai)
 #define OFFSET_KEYBOARDCONTROL_BUILD_COMMAND        0xB4A790
 // OFFSET_AIMINGDATA_NEV removed: replaced with InputFilter delegate hook
-#define OFFSET_AIMSNAPSHOT_NEV                      0xC1C940  // AimSnapshot.nev(gfk), verified authoritative outbound aim serializer
+#define OFFSET_AIMSNAPSHOT_NEV                      0xC1C940  // AimSnapshot.nev(gfk)
+#define OFFSET_MOVEMENTSNAPSHOT_NEV                 0xC0A3F0  // MovementSnapshot.nev(gfk), remote character rotation
 #define OFFSET_PLAYERCONTROLS_UPDATE                 0xB4CFB0
 #define OFFSET_PLAYERCONTROLS_INPUTFILTER_DELEGATE   0x88  // Action<xl> <ckqt>k__BackingField
 #define OFFSET_CAMERAMOVEMENTCONTROLLER_UPDATE       0xB5C790
@@ -3171,6 +3172,7 @@ void(__fastcall* o_HitMarkerView_LocalHit)(uintptr_t, void*, uintptr_t, const Il
 void(__fastcall* o_PlayerController_Command)(uintptr_t, uintptr_t, float, const Il2CppMethod*) = nullptr;
 uintptr_t(__fastcall* o_KeyboardControl_BuildCommand)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_AimSnapshot_nev)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
+void(__fastcall* o_MovementSnapshot_nev)(uintptr_t, uintptr_t, const Il2CppMethod*) = nullptr;
 void(__fastcall* o_PlayerControls_Update)(uintptr_t, const Il2CppMethod*) = nullptr;
 // InputFilter delegate hook: void(xl*)
 typedef void(__fastcall* t_InputFilter)(uintptr_t, const Il2CppMethod*);
@@ -4893,6 +4895,60 @@ void __fastcall hk_AimSnapshot_nev(uintptr_t snapshot, uintptr_t writer, const I
             InterlockedIncrement(&silentAntiAimAppliedCalls);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+}
+
+static bool PatchMovementSnapshotRotationUnsafe(uintptr_t snapshot,
+    const Vector3& fake, Vector3* savedCharacterRotation, Vector3* savedEuler)
+{
+    if (!snapshot || !savedCharacterRotation || !savedEuler ||
+        !isfinite(fake.x) || !isfinite(fake.y)) return false;
+    __try {
+        *savedCharacterRotation = *reinterpret_cast<Vector3*>(snapshot + 0x58);
+        *savedEuler = *reinterpret_cast<Vector3*>(snapshot + 0x98);
+        Vector3 fakeCharacterRotation = *savedCharacterRotation;
+        Vector3 fakeEuler = *savedEuler;
+        // MovementSnapshot drives the root model orientation remotely. Keep roll zero
+        // and preserve every non-rotation movement field in the detached snapshot.
+        fakeCharacterRotation.y = fake.y;
+        fakeCharacterRotation.z = 0.0f;
+        fakeEuler.x = fake.x;
+        fakeEuler.y = fake.y;
+        fakeEuler.z = 0.0f;
+        *reinterpret_cast<Vector3*>(snapshot + 0x58) = fakeCharacterRotation;
+        *reinterpret_cast<Vector3*>(snapshot + 0x98) = fakeEuler;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static void RestoreMovementSnapshotRotationUnsafe(uintptr_t snapshot,
+    const Vector3& savedCharacterRotation, const Vector3& savedEuler)
+{
+    if (!snapshot) return;
+    __try {
+        *reinterpret_cast<Vector3*>(snapshot + 0x58) = savedCharacterRotation;
+        *reinterpret_cast<Vector3*>(snapshot + 0x98) = savedEuler;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+void __fastcall hk_MovementSnapshot_nev(uintptr_t snapshot, uintptr_t writer,
+    const Il2CppMethod* method)
+{
+    if (!o_MovementSnapshot_nev) return;
+    Vector3 savedCharacterRotation = {};
+    Vector3 savedEuler = {};
+    const bool outgoing = silentAntiAimEnabled && snapshot && writer &&
+        silentAntiAimLatestInputValid && !silentAntiAimLatestFiring;
+    const bool patched = outgoing && PatchMovementSnapshotRotationUnsafe(
+        snapshot, silentAntiAimLatestFakeAngles,
+        &savedCharacterRotation, &savedEuler);
+    o_MovementSnapshot_nev(snapshot, writer, method);
+    if (patched) {
+        RestoreMovementSnapshotRotationUnsafe(
+            snapshot, savedCharacterRotation, savedEuler);
+        InterlockedIncrement(&silentAntiAimAppliedCalls);
     }
 }
 
@@ -11525,6 +11581,14 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimSnapshotNevCreateStatus == MH_OK ?
         MH_EnableHook((LPVOID)(base + OFFSET_AIMSNAPSHOT_NEV)) :
         antiAimSnapshotNevCreateStatus;
+    const MH_STATUS antiAimMovementNevCreateStatus = MH_CreateHook(
+        (LPVOID)(base + OFFSET_MOVEMENTSNAPSHOT_NEV),
+        hk_MovementSnapshot_nev,
+        (LPVOID*)&o_MovementSnapshot_nev);
+    const MH_STATUS antiAimMovementNevEnableStatus =
+        antiAimMovementNevCreateStatus == MH_OK ?
+        MH_EnableHook((LPVOID)(base + OFFSET_MOVEMENTSNAPSHOT_NEV)) :
+        antiAimMovementNevCreateStatus;
     silentAntiAimHookReady = antiAimLateAimCreateStatus == MH_OK &&
         antiAimLateAimEnableStatus == MH_OK &&
         antiAimInputCreateStatus == MH_OK &&
@@ -11533,16 +11597,20 @@ DWORD WINAPI HackThread(LPVOID)
         antiAimNetworkEnableStatus == MH_OK &&
         antiAimSnapshotNevCreateStatus == MH_OK &&
         antiAimSnapshotNevEnableStatus == MH_OK &&
+        antiAimMovementNevCreateStatus == MH_OK &&
+        antiAimMovementNevEnableStatus == MH_OK &&
         o_Transform_get_rotation_Injected &&
         o_Transform_set_rotation_Injected && o_Transform_get_forward &&
         o_Object_IsAlive;
 
-    LINDY_LOG("[anti-aim] input=%d/%d; outbound-mxc=%d/%d; nhi=%d/%d; snapshot-nev=%d/%d; quaternion=%p/%p; ready=%d",
+    LINDY_LOG("[anti-aim] input=%d/%d; outbound-mxc=%d/%d; nhi=%d/%d; aim-nev=%d/%d; move-nev=%d/%d; quaternion=%p/%p; ready=%d",
         (int)antiAimInputCreateStatus, (int)antiAimInputEnableStatus,
         (int)antiAimNetworkCreateStatus, (int)antiAimNetworkEnableStatus,
         (int)antiAimLateAimCreateStatus, (int)antiAimLateAimEnableStatus,
         (int)antiAimSnapshotNevCreateStatus,
         (int)antiAimSnapshotNevEnableStatus,
+        (int)antiAimMovementNevCreateStatus,
+        (int)antiAimMovementNevEnableStatus,
         (void*)o_Transform_get_rotation_Injected,
         (void*)o_Transform_set_rotation_Injected,
         silentAntiAimHookReady ? 1 : 0);
